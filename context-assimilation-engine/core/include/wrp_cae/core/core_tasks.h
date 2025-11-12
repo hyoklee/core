@@ -1,0 +1,112 @@
+#ifndef WRP_CAE_CORE_TASKS_H_
+#define WRP_CAE_CORE_TASKS_H_
+
+#include <chimaera/chimaera.h>
+#include <wrp_cae/core/autogen/core_methods.h>
+#include <chimaera/admin/admin_tasks.h>
+#include <wrp_cae/core/factory/assimilation_ctx.h>
+#include <cereal/archives/binary.hpp>
+#include <cereal/types/vector.hpp>
+#include <sstream>
+#include <vector>
+
+namespace wrp_cae::core {
+
+/**
+ * CreateParams for core chimod
+ * Contains configuration parameters for core container creation
+ */
+struct CreateParams {
+  // Core-specific parameters
+  chi::u32 worker_count_;
+
+  // Required: chimod library name for module manager
+  static constexpr const char* chimod_lib_name = "wrp_cae_core";
+
+  // Default constructor
+  CreateParams() : worker_count_(1) {}
+
+  // Constructor with allocator and parameters
+  CreateParams(const hipc::CtxAllocator<CHI_MAIN_ALLOC_T> &alloc,
+               chi::u32 worker_count = 1)
+      : worker_count_(worker_count) {}
+
+  // Copy constructor with allocator (for BaseCreateTask)
+  CreateParams(const hipc::CtxAllocator<CHI_MAIN_ALLOC_T> &alloc,
+               const CreateParams& other)
+      : worker_count_(other.worker_count_) {}
+
+  // Serialization support for cereal
+  template<class Archive>
+  void serialize(Archive& ar) {
+    ar(worker_count_);
+  }
+};
+
+/**
+ * CreateTask - Initialize the core container
+ * Type alias for GetOrCreatePoolTask with CreateParams
+ */
+using CreateTask = chimaera::admin::GetOrCreatePoolTask<CreateParams>;
+
+/**
+ * DestroyTask - Destroy the core container
+ */
+using DestroyTask = chi::Task;  // Simple task for destruction
+
+/**
+ * ParseOmniTask - Parse OMNI YAML file and schedule assimilation tasks
+ */
+struct ParseOmniTask : public chi::Task {
+  // Task-specific data using HSHM macros
+  IN hipc::string serialized_ctx_;   // Input: Serialized AssimilationCtx (internal use)
+  OUT chi::u32 num_tasks_scheduled_; // Output: Number of assimilation tasks scheduled
+  OUT chi::u32 result_code_;         // Output: Result code (0 = success)
+  OUT hipc::string error_message_;   // Output: Error message if failed
+
+  // SHM constructor
+  explicit ParseOmniTask(const hipc::CtxAllocator<CHI_MAIN_ALLOC_T> &alloc)
+      : chi::Task(alloc),
+        serialized_ctx_(alloc),
+        num_tasks_scheduled_(0),
+        result_code_(0),
+        error_message_(alloc) {}
+
+  // Emplace constructor - accepts vector of AssimilationCtx and serializes internally
+  explicit ParseOmniTask(
+      const hipc::CtxAllocator<CHI_MAIN_ALLOC_T> &alloc,
+      const chi::TaskId &task_node,
+      const chi::PoolId &pool_id,
+      const chi::PoolQuery &pool_query,
+      const std::vector<wrp_cae::core::AssimilationCtx> &contexts)
+      : chi::Task(alloc, task_node, pool_id, pool_query, Method::kParseOmni),
+        serialized_ctx_(alloc),
+        num_tasks_scheduled_(0),
+        result_code_(0),
+        error_message_(alloc) {
+    task_id_ = task_node;
+    method_ = Method::kParseOmni;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+
+    // Serialize the vector of contexts transparently using cereal
+    std::stringstream ss;
+    {
+      cereal::BinaryOutputArchive ar(ss);
+      ar(contexts);
+    }
+    serialized_ctx_ = hipc::string(alloc, ss.str());
+  }
+
+  // Copy method for distributed execution (optional)
+  void Copy(const hipc::FullPtr<ParseOmniTask> &other) {
+    serialized_ctx_ = other->serialized_ctx_;
+    num_tasks_scheduled_ = other->num_tasks_scheduled_;
+    result_code_ = other->result_code_;
+    error_message_ = other->error_message_;
+  }
+};
+
+}  // namespace wrp_cae::core
+
+#endif  // WRP_CAE_CORE_TASKS_H_

@@ -1,0 +1,56 @@
+# HDF5 Assimilation OMNI Configuration Example
+#
+# This example shows how to configure HDF5 data assimilation using the OMNI format.
+# The CAE HDF5 assimilator will discover all datasets in the HDF5 file and create
+# separate tags for each dataset in the CTE.
+#
+# Usage:
+#   wrp_cae_omni hdf5_assim_omni.yaml
+
+version: "1.0"
+
+# Assimilation task for HDF5 file
+transfers:
+  - name: "example_hdf5_assimilation"
+    description: "Load HDF5 datasets into CTE tags"
+
+    # Source: HDF5 file path
+    # Format: hdf5::/path/to/file.h5
+    src: "hdf5::/path/to/example_data.h5"
+
+    # Destination: Base tag name in CTE
+    # Format: iowarp::<tag_base_name>
+    # Each dataset will create a tag: <tag_base_name>/<dataset_path>
+    dst: "iowarp::hdf5_example"
+
+    # Format: Must be "hdf5" for HDF5 assimilation
+    format: "hdf5"
+
+    # Optional: Dependencies (comma-separated list of task names)
+    depends_on: ""
+
+    # Range: Not typically used for HDF5 (processes all datasets)
+    range_off: 0
+    range_size: 0
+
+# Example with multiple HDF5 files
+  - name: "science_data_assimilation"
+    description: "Load scientific simulation results"
+    src: "hdf5::/data/simulation/results.h5"
+    dst: "iowarp::simulation_results"
+    format: "hdf5"
+    depends_on: ""
+
+  - name: "experiment_data_assimilation"
+    description: "Load experimental measurements"
+    src: "hdf5::/data/experiments/measurements.h5"
+    dst: "iowarp::experiment_data"
+    format: "hdf5"
+    depends_on: "science_data_assimilation"  # Run after simulation data loads
+
+# Notes:
+# - The HDF5 assimilator will recursively discover all datasets in the file
+# - Each dataset becomes a separate tag: <dst>/<dataset_path>
+# - Hierarchical groups are preserved in the tag names
+# - Metadata about tensor shape and type is stored in the description blob
+# - Large datasets are automatically chunked into multiple blobs

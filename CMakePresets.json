@@ -1,0 +1,76 @@
+{
+    "version": 3,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 19,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "debug",
+            "hidden": false,
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "WRP_CORE_ENABLE_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_CTE": "ON",
+                "WRP_CORE_ENABLE_CAE": "ON",
+                "WRP_CORE_ENABLE_CEE": "ON",
+                "WRP_CTE_ENABLE_PYTHON": "ON",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "ENABLE_ASAN": "ON"
+            }
+        },
+        {
+            "name": "cuda-debug",
+            "hidden": false,
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "WRP_CORE_ENABLE_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_CTE": "ON",
+                "WRP_CORE_ENABLE_CAE": "ON",
+                "WRP_CORE_ENABLE_CEE": "ON",
+                "CTE_ENABLE_CUDA": "ON",
+                "WRP_RUNTIME_ENABLE_CUDA": "ON",
+                "CMAKE_CUDA_ARCHITECTURES": "86",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "ENABLE_ASAN": "ON"
+            }
+        },
+        {
+            "name": "rocm-debug",
+            "hidden": false,
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "WRP_CORE_ENABLE_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_CTE": "ON",
+                "WRP_CORE_ENABLE_CAE": "ON",
+                "WRP_CORE_ENABLE_CEE": "ON",
+                "CTE_ENABLE_ROCM": "ON",
+                "WRP_RUNTIME_ENABLE_ROCM": "ON",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "ENABLE_ASAN": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "hidden": false,
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "WRP_CORE_ENABLE_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_CTE": "ON",
+                "WRP_CORE_ENABLE_CAE": "ON",
+                "WRP_CORE_ENABLE_CEE": "ON",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "ENABLE_ASAN": "OFF"
+            }
+        }
+    ]
+}

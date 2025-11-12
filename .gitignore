@@ -1,0 +1,156 @@
+# Build directories
+build/
+out/
+cmake-build-*/
+*build*/
+/dist
+/bench
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+cmake_uninstall.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+CPackConfig.cmake
+CPackSourceConfig.cmake
+Testing/
+compile_commands.json
+*.cmake.in
+CMakeDoxyfile.in
+CMakeDoxygenDefaults.cmake
+_deps/
+
+# Makefiles
+Makefile
+*.make
+
+# Ninja build files
+.ninja_deps
+.ninja_log
+.ninja_*
+*.ninja
+build.ninja
+rules.ninja
+
+# Package config files
+*Config*.cmake
+*Targets.cmake
+nanobind-config-version.cmake
+pybind11Config*.cmake
+pybind11Targets.cmake
+
+# Compiled Object files
+*.o
+*.obj
+*.a
+*.lib
+
+# Shared libraries
+*.so
+*.so.*
+*.dylib
+*.dll
+*.pyd
+
+# Static libraries
+libnanobind-static.a
+libnanobind-static-abi3.a
+libnanobind-static-ft.a
+libnanobind.so
+libnanobind-abi3.so
+libnanobind-ft.so
+libnanobind.dylib
+libnanobind-abi3.dylib
+libnanobind-ft.dylib
+nanobind.dll
+nanobind-abi3.dll
+nanobind-ft.dll
+libinter_module.dylib
+libinter_module.so
+inter_module.dll
+
+# Python bindings
+test_*_ext*.so
+test_*_ext*.pyd
+*.pyi
+py.typed
+
+# Python compiled files
+__pycache__/
+*.py[co]
+*.egg-info
+.mypy_cache
+nanobind.egg-info
+
+# Executables
+*.exe
+*.out
+*.app
+
+# Temporary and log files
+*.tmp
+*.log
+*~
+*.swp
+.*.swp
+
+# IDE and editor files
+.vscode/
+.vs/
+*.sln
+*.sdf
+*.opensdf
+*.vcxproj
+*.vcxproj.user
+*.filters
+.DS_Store
+.ipynb_checkpoints/
+.ruby-version
+
+# Cache directories
+.cache/
+.cache
+.*cache*/
+
+# Documentation build
+/docs/.build
+/docs/_build/*
+autogen/
+
+# Environment files
+/*env*/
+/Python
+/tmp*
+
+# Dependency locks
+*.lock
+
+# Example and debug directories
+example.dir
+Win32/
+x64/
+Release/
+Debug/
+
+# MANIFEST
+MANIFEST
+
+# Generated include/share directories (for submodules)
+/pybind11/include/*
+/pybind11/share/*
+/src/nanobind/cmake
+/src/nanobind/include
+/src/nanobind/ext
+/src/nanobind/src
+
+# Test files
+tests/main.cpp
+
+# Size analysis
+sosize-*.txt
+
+# CMake user presets (typo in original, keeping for compatibility)
+CMakeUserPresents.json
