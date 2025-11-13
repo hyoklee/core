@@ -15,7 +15,7 @@ RUN sudo chown -R $(whoami):$(whoami) /workspace && \
     git submodule update --init --recursive && \
     mkdir -p build && \
     cd build && \
-    cmake --preset release && \
+    cmake --preset release ../ && \
     sudo make -j$(nproc) install && \
     cmake ../ --DCMAKE_INSTALL_PREFIX=/iowarp-core && \
     sudo make -j$(nproc) install && \
