@@ -10,15 +10,14 @@ WORKDIR /workspace
 COPY . /workspace/
 
 # Initialize git submodules and build
-# Install to both /usr/local and /iowarp-cte for flexibility
+# Install to /iowarp-core, then copy to /usr/local
 RUN sudo chown -R $(whoami):$(whoami) /workspace && \
     git submodule update --init --recursive && \
     mkdir -p build && \
     cd build && \
-    cmake --preset release ../ && \
+    cmake --preset release -DCMAKE_INSTALL_PREFIX=/iowarp-core ../ && \
     sudo make -j$(nproc) install && \
-    cmake ../ -DCMAKE_INSTALL_PREFIX=/iowarp-core && \
-    sudo make -j$(nproc) install && \
+    sudo cp -r /iowarp-core/* /usr/local/ && \
     sudo rm -rf /workspace
 
 
