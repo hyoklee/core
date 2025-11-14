@@ -294,7 +294,7 @@ endif()
 # ------------------------------------------------------------------------------
 # Install hshm
 # ------------------------------------------------------------------------------
-install(DIRECTORY include DESTINATION ${CMAKE_INSTALL_PREFIX})
+install(DIRECTORY include/ DESTINATION include)
 
 
 configure_file(
