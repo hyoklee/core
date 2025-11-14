@@ -75,16 +75,33 @@ endif()
 
 # Cereal
 if(HSHM_ENABLE_CEREAL)
-    # Skip find_package if target already exists (from submodule)
+    # Skip find_package if target already exists (from submodule or export)
     if(NOT TARGET cereal AND NOT TARGET cereal::cereal)
-        find_package(cereal CONFIG REQUIRED)
+        find_package(cereal CONFIG QUIET)
 
         if(cereal_FOUND)
             message(STATUS "found cereal at ${cereal_DIR}")
+        else()
+            # Cereal is header-only, so we can create an interface target if headers exist
+            # Only do this when using installed package (HSHM_INCLUDE_DIR is absolute)
+            if(DEFINED HSHM_INCLUDE_DIR AND IS_ABSOLUTE "${HSHM_INCLUDE_DIR}")
+                if(EXISTS "${HSHM_INCLUDE_DIR}/cereal")
+                    message(STATUS "cereal not found via find_package, but headers exist at ${HSHM_INCLUDE_DIR}/cereal")
+                    add_library(cereal INTERFACE IMPORTED)
+                    set_target_properties(cereal PROPERTIES
+                        INTERFACE_INCLUDE_DIRECTORIES "${HSHM_INCLUDE_DIR}"
+                    )
+                    message(STATUS "Created cereal interface target from installed headers")
+                endif()
+            endif()
         endif()
     endif()
 
-    set(SERIALIZATION_LIBS cereal::cereal ${SERIALIZATION_LIBS})
+    if(TARGET cereal::cereal)
+        set(SERIALIZATION_LIBS cereal::cereal ${SERIALIZATION_LIBS})
+    elseif(TARGET cereal)
+        set(SERIALIZATION_LIBS cereal ${SERIALIZATION_LIBS})
+    endif()
 endif()
 
 # Boost
@@ -370,15 +387,20 @@ macro(jarvis_repo_add REPO_PATH PIPELINE_PATH)
 
     # Install jarvis repo
     install(DIRECTORY ${REPO_PATH}
-        DESTINATION ${CMAKE_INSTALL_PREFIX}/jarvis)
+        DESTINATION jarvis)
 
-    # Add jarvis repo after installation
+    # Add jarvis repo after installation (only if jarvis command exists)
     # Ensure install commands use env vars from host system, particularly PATH and PYTHONPATH
-    install(CODE "execute_process(COMMAND env \"PATH=$ENV{PATH}\" \"PYTHONPATH=$ENV{PYTHONPATH}\" jarvis repo add ${CMAKE_INSTALL_PREFIX}/jarvis/${REPO_NAME})")
+    install(CODE "
+        execute_process(COMMAND which jarvis RESULT_VARIABLE JARVIS_NOT_FOUND OUTPUT_QUIET ERROR_QUIET)
+        if(NOT JARVIS_NOT_FOUND)
+            execute_process(COMMAND env \"PATH=$ENV{PATH}\" \"PYTHONPATH=$ENV{PYTHONPATH}\" jarvis repo add \${CMAKE_INSTALL_PREFIX}/jarvis/${REPO_NAME})
+        endif()
+    ")
 
     if(REPO_NAME)
         install(DIRECTORY ${PIPELINE_PATH}
-            DESTINATION ${CMAKE_INSTALL_PREFIX}/jarvis)
+            DESTINATION jarvis)
     endif()
 endmacro()
 

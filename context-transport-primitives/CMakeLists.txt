@@ -75,19 +75,19 @@ set(HSHM_EXPORTED_TARGETS "HermesShm")
 # Setup install and output Directories
 # ------------------------------------------------------------------------------
 if(NOT HSHM_INSTALL_BIN_DIR)
-    set(HSHM_INSTALL_BIN_DIR ${CMAKE_INSTALL_PREFIX}/bin)
+    set(HSHM_INSTALL_BIN_DIR bin)
 endif()
 
 if(NOT HSHM_INSTALL_LIB_DIR)
-    set(HSHM_INSTALL_LIB_DIR ${CMAKE_INSTALL_PREFIX}/lib)
+    set(HSHM_INSTALL_LIB_DIR lib)
 endif()
 
 if(NOT HSHM_INSTALL_INCLUDE_DIR)
-    set(HSHM_INSTALL_INCLUDE_DIR ${CMAKE_INSTALL_PREFIX}/include)
+    set(HSHM_INSTALL_INCLUDE_DIR include)
 endif()
 
 if(NOT HSHM_INSTALL_DATA_DIR)
-    set(HSHM_INSTALL_DATA_DIR ${CMAKE_INSTALL_PREFIX}/share)
+    set(HSHM_INSTALL_DATA_DIR share)
 endif()
 
 # ------------------------------------------------------------------------------
@@ -294,7 +294,7 @@ endif()
 # ------------------------------------------------------------------------------
 # Install hshm
 # ------------------------------------------------------------------------------
-install(DIRECTORY include DESTINATION ${CMAKE_INSTALL_PREFIX})
+install(DIRECTORY include/ DESTINATION include)
 
 
 configure_file(
@@ -312,7 +312,7 @@ install(
     ${PROJECT_BINARY_DIR}/CMakeFiles/HermesShmConfig.cmake
     ${PROJECT_BINARY_DIR}/CMakeFiles/HermesShmCommonConfig.cmake
     DESTINATION
-    ${CMAKE_INSTALL_PREFIX}/lib/cmake/HermesShm
+    lib/cmake/HermesShm
 )
 
 install(EXPORT ${HSHM_EXPORTED_TARGETS}
