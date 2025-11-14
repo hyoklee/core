@@ -73,6 +73,7 @@ jobs:
 
     - name: Configure with CMake preset (debug)
       run: |
+        git submodule update --init --recursive      
         cmake --preset=debug \
           -DWRP_CORE_ENABLE_RUNTIME=ON \
           -DWRP_CORE_ENABLE_CTE=ON \
