@@ -18,11 +18,11 @@ cmake_minimum_required(VERSION 3.10)
 enable_testing()
 
 # Find required dependencies
-find_package(yaml-cpp REQUIRED)
+# yaml-cpp is already found by root CMakeLists.txt
 
 # Conditionally find HDF5 if enabled
 if(CAE_ENABLE_HDF5)
-  find_package(HDF5 COMPONENTS C)
+  # HDF5 is already found by root CMakeLists.txt
   if(NOT HDF5_FOUND)
     message(WARNING "CAE_ENABLE_HDF5 is ON but HDF5 not found. HDF5 tests will be disabled.")
     set(HDF5_ENABLED FALSE)
@@ -60,7 +60,7 @@ function(add_cae_unit_test TEST_NAME TEST_SOURCE)
       wrp_cae_core_client
       wrp_cte_core_client
       chimaera::cxx
-      yaml-cpp
+      hshm::configure
       ${ARG_EXTRA_LIBS}
   )
 

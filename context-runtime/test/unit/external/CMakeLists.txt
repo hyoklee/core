@@ -11,9 +11,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.env.cmake")
   include("${CMAKE_CURRENT_SOURCE_DIR}/.env.cmake")
 endif()
 
-# Find required Chimaera packages
-find_package(chimaera REQUIRED)
-find_package(chimaera_admin REQUIRED)
+# Unified IOWarp Core package - includes HermesShm, Chimaera, and build utilities
+find_package(IowarpCore REQUIRED)
+# This automatically provides:
+#   - All hshm::* modular targets (hshm::cxx, hshm::configure, hshm::serialize, etc.)
+#   - chimaera::cxx (core runtime library)
+#   - chimaera::admin_client and chimaera::admin_runtime
+#   - ChiMod build utilities
 
 # Create test executable
 add_executable(test_external_chimod test_external_chimod.cc)

@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.10)
 # CMAKE_RUNTIME_OUTPUT_DIRECTORY setting
 
 # Find required test dependencies
-find_package(Catch2 REQUIRED)
+# Catch2 is already found by root CMakeLists.txt
 
 # Create the test executable
 add_executable(cte_core_unit_tests

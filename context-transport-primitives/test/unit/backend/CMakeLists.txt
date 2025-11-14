@@ -13,7 +13,7 @@ if (HSHM_ENABLE_MPI)
             memory_manager.cc)
     add_dependencies(test_backend_exec hermes_shm_host)
     target_link_libraries(test_backend_exec
-            hermes_shm_host Catch2::Catch2 ${MPI_LIBS})
+            hermes_shm_host Catch2::Catch2 hshm::mpi)
 
     #------------------------------------------------------------------------------
     # Test Cases

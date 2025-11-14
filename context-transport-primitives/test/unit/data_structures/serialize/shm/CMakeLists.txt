@@ -8,8 +8,8 @@ project(hermes_shm)
 set (LIBS
         hermes_shm_host
         Catch2::Catch2
-        ${MPI_LIBS}
-        ${OpenMP_LIBS})
+        hshm::mpi
+        hshm::thread_all)
 add_executable(test_shm_exec
         ${TEST_MAIN}/main.cc
         test_init.cc

@@ -13,8 +13,8 @@ if (HSHM_ENABLE_MPI)
 
     add_dependencies(test_data_structure_mpi_exec hermes_shm_host)
     target_link_libraries(test_data_structure_mpi_exec
-            hermes_shm_host Catch2::Catch2 ${MPI_LIBS} ${OpenMP_LIBS})
-    message(STATUS "MPI_LIBS: ${MPI_LIBS}")
+            hermes_shm_host Catch2::Catch2 hshm::thread_all hshm::mpi)
+    message(STATUS "MPI_LIBS: hshm::mpi")
 
     #------------------------------------------------------------------------------
     # Build Tests

@@ -15,7 +15,7 @@ if (HSHM_ENABLE_OPENMP)
             hermes_shm_host
             $<$<BOOL:${HSHM_ENABLE_THALLIUM}>:thallium>
             Catch2::Catch2
-            ${OpenMP_LIBS})
+            hshm::thread_all)
 
     #------------------------------------------------------------------------------
     # Test Cases

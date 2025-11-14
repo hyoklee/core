@@ -16,8 +16,8 @@ target_include_directories(wrp_cte_cae_config PRIVATE
 )
 
 target_link_libraries(wrp_cte_cae_config
-    yaml-cpp
-    ${HSHM_TARGET}
+    hshm::configure
+    hshm::cxx
     wrp_cte_core_client  # Provides core headers transitively
 )
 

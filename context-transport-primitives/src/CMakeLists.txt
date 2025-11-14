@@ -11,7 +11,11 @@ set(SRC_FILES
     # system_info.cc   # NOTE(llogan): Commented out because ROCm is annoying and buggy
     memory_manager.cc)
 add_library(hermes_shm_host ${SRC_FILES})
-target_link_libraries(hermes_shm_host PUBLIC host_deps)
+target_link_libraries(hermes_shm_host PUBLIC
+    ${REAL_TIME_FLAGS}
+    configure
+    thread_all
+)
 hshm_target_compile_definitions(hermes_shm_host)
 list(APPEND HSHM_LIBS hermes_shm_host)
 add_library(cxx INTERFACE)
@@ -84,6 +88,14 @@ endif()
 
 install(TARGETS
     ${HSHM_LIBS}
+    configure
+    serialize
+    interceptor
+    lightbeam
+    thread_all
+    mpi
+    compress
+    encrypt
     host_deps
     ${_YAML_CPP_TARGET}
     ${_CEREAL_TARGET}
