@@ -368,34 +368,7 @@ if(WRP_CORE_ENABLE_ZMQ)
         set(ZMQ_INCLUDES ${ZeroMQ_INCLUDE_DIRS})
         set(ZMQ_LIB_DIRS ${ZeroMQ_LIBRARY_DIRS})
     else()
-        message(STATUS "System ZeroMQ not found, building from submodule")
-
-        # Initialize libzmq submodule if not already done
-        if(NOT EXISTS "${CMAKE_SOURCE_DIR}/external/libzmq/CMakeLists.txt")
-            message(STATUS "Initializing libzmq submodule...")
-            execute_process(
-                COMMAND git submodule update --init --recursive external/libzmq
-                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                RESULT_VARIABLE GIT_SUBMOD_RESULT
-            )
-            if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-                message(FATAL_ERROR "git submodule update --init failed for external/libzmq")
-            endif()
-        endif()
-
-        # Build libzmq from submodule
-        set(WITH_PERF_TOOL OFF CACHE BOOL "Build with perf-tools")
-        set(ZMQ_BUILD_TESTS OFF CACHE BOOL "Build the tests")
-        set(ENABLE_CPACK OFF CACHE BOOL "Enable CPack")
-        set(BUILD_SHARED OFF CACHE BOOL "Build shared library")
-        set(BUILD_STATIC ON CACHE BOOL "Build static library")
-        add_subdirectory(external/libzmq EXCLUDE_FROM_ALL)
-
-        # Set variables for our build system
-        set(ZMQ_LIBS libzmq-static)
-        set(ZMQ_INCLUDES ${CMAKE_SOURCE_DIR}/external/libzmq/include)
-        set(ZMQ_LIB_DIRS "")
-        message(STATUS "Building ZeroMQ from submodule")
+        message(FATAL_ERROR "ZeroMQ not found. Please install ZeroMQ or run install.sh to build from submodules.")
     endif()
 endif()
 
@@ -408,45 +381,13 @@ if(WRP_CORE_ENABLE_LIBFABRIC)
     set(LIBFABRIC_LIB_DIRS ${Libfabric_LIBRARY_DIRS})
 endif()
 
-# HDF5 (optional - for CAE component) - try system first, fall back to submodule
+# HDF5 (optional - for CAE component)
 if(WRP_CORE_ENABLE_HDF5)
     find_package(HDF5 COMPONENTS C QUIET)
     if(HDF5_FOUND)
         message(STATUS "found HDF5 at ${HDF5_INCLUDE_DIRS}")
     else()
-        message(STATUS "System HDF5 not found, building from submodule")
-
-        # Initialize hdf5 submodule if not already done
-        if(NOT EXISTS "${CMAKE_SOURCE_DIR}/external/hdf5/CMakeLists.txt")
-            message(STATUS "Initializing hdf5 submodule...")
-            execute_process(
-                COMMAND git submodule update --init --recursive external/hdf5
-                WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                RESULT_VARIABLE GIT_SUBMOD_RESULT
-            )
-            if(NOT GIT_SUBMOD_RESULT EQUAL "0")
-                message(FATAL_ERROR "git submodule update --init failed for external/hdf5")
-            endif()
-        endif()
-
-        # Build HDF5 from submodule with minimal configuration
-        set(HDF5_BUILD_EXAMPLES OFF CACHE BOOL "Build HDF5 examples")
-        set(HDF5_BUILD_TOOLS OFF CACHE BOOL "Build HDF5 tools")
-        set(BUILD_TESTING OFF CACHE BOOL "Build HDF5 tests")
-        set(HDF5_BUILD_CPP_LIB OFF CACHE BOOL "Build HDF5 C++ library")
-        set(HDF5_BUILD_FORTRAN OFF CACHE BOOL "Build HDF5 Fortran library")
-        set(HDF5_BUILD_JAVA OFF CACHE BOOL "Build HDF5 Java library")
-        set(HDF5_ENABLE_PARALLEL OFF CACHE BOOL "Enable parallel HDF5")
-        set(HDF5_ENABLE_Z_LIB_SUPPORT OFF CACHE BOOL "Enable Zlib support")
-        set(HDF5_ENABLE_SZIP_SUPPORT OFF CACHE BOOL "Enable SZIP support")
-        set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries")
-        add_subdirectory(external/hdf5 EXCLUDE_FROM_ALL)
-
-        # Set variables for our build system
-        set(HDF5_FOUND TRUE)
-        set(HDF5_LIBRARIES hdf5-static)
-        set(HDF5_INCLUDE_DIRS ${CMAKE_SOURCE_DIR}/external/hdf5/src ${CMAKE_BINARY_DIR}/external/hdf5)
-        message(STATUS "Building HDF5 from submodule")
+        message(FATAL_ERROR "HDF5 not found. Please install HDF5 or run install.sh with BUILD_HDF5=yes to build from submodules.")
     endif()
 else()
     message(STATUS "HDF5 support disabled")
@@ -621,13 +562,22 @@ if(WRP_CORE_ENABLE_TESTS)
   )
 endif()
 
-# Add cereal header-only library
-message(STATUS "Building cereal library (header-only)")
-set(JUST_INSTALL_CEREAL ON CACHE BOOL "Just install cereal headers" FORCE)
-set(BUILD_DOC OFF CACHE BOOL "Disable cereal documentation" FORCE)
-set(BUILD_SANDBOX OFF CACHE BOOL "Disable cereal sandbox" FORCE)
-set(SKIP_PERFORMANCE_COMPARISON ON CACHE BOOL "Skip cereal performance comparison" FORCE)
-add_subdirectory(external/cereal)
+# cereal header-only library - use installed version if available
+if(NOT TARGET cereal AND NOT TARGET cereal::cereal)
+    message(STATUS "cereal not found via find_package, checking submodule")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/external/cereal/CMakeLists.txt")
+        message(STATUS "Building cereal library from submodule (header-only)")
+        set(JUST_INSTALL_CEREAL ON CACHE BOOL "Just install cereal headers" FORCE)
+        set(BUILD_DOC OFF CACHE BOOL "Disable cereal documentation" FORCE)
+        set(BUILD_SANDBOX OFF CACHE BOOL "Disable cereal sandbox" FORCE)
+        set(SKIP_PERFORMANCE_COMPARISON ON CACHE BOOL "Skip cereal performance comparison" FORCE)
+        add_subdirectory(external/cereal)
+    else()
+        message(FATAL_ERROR "cereal not found. Please install cereal or run install.sh to build from submodules.")
+    endif()
+else()
+    message(STATUS "Using installed cereal")
+endif()
 
 # Add yaml-cpp library (only if not already found by IowarpCoreCommon)
 if(NOT TARGET yaml-cpp AND NOT TARGET yaml-cpp::yaml-cpp)
