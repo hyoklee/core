@@ -11,7 +11,6 @@ cd "$SCRIPT_DIR"
 # Default install prefix
 : ${INSTALL_PREFIX:=/usr/local}
 : ${BUILD_JOBS:=$(nproc)}
-: ${BUILD_HDF5:=yes}  # Disable HDF5 by default to avoid CMake conflicts
 
 echo "======================================================================"
 echo "IOWarp Core Installer"
@@ -61,14 +60,33 @@ fi
 #------------------------------------------------------------------------------
 
 #------------------------------------------------------------------------------
-# Boost - Build fiber, context, system libraries
+# Boost - Download and build fiber, context, system libraries
 #------------------------------------------------------------------------------
 if [ "$NEED_BOOST" = "1" ] || [ "$NEED_BOOST" = "TRUE" ]; then
-    echo ">>> Building Boost from submodule using CMake..."
-    mkdir -p external/boost/build
-    cd external/boost/build
+    echo ">>> Downloading and building Boost..."
 
-    # Build Boost using CMake to generate proper config files
+    BOOST_VERSION="1.89.0"
+    BOOST_ARCHIVE="boost-${BOOST_VERSION}-b2-nodocs.tar.gz"
+    BOOST_URL="https://github.com/boostorg/boost/releases/download/boost-${BOOST_VERSION}/${BOOST_ARCHIVE}"
+    BOOST_DIR="boost-${BOOST_VERSION}"
+
+    # Download Boost if not already downloaded
+    if [ ! -f "external/${BOOST_ARCHIVE}" ]; then
+        echo "Downloading Boost ${BOOST_VERSION}..."
+        mkdir -p external
+        curl -L -o "external/${BOOST_ARCHIVE}" "${BOOST_URL}"
+    fi
+
+    # Extract Boost
+    echo "Extracting Boost..."
+    cd external
+    tar -xzf "${BOOST_ARCHIVE}"
+    cd "${BOOST_DIR}"
+
+    # Build Boost using CMake
+    mkdir -p build
+    cd build
+
     cmake .. \
         -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
         -DCMAKE_BUILD_TYPE=Release \
@@ -116,39 +134,35 @@ fi
 echo ""
 
 #------------------------------------------------------------------------------
-# HDF5 - Build static library (optional)
+# HDF5 - Build static library
 #------------------------------------------------------------------------------
-if [ "${BUILD_HDF5}" = "yes" ]; then
-    if [ "$NEED_HDF5" = "1" ] || [ "$NEED_HDF5" = "TRUE" ]; then
-        echo ">>> Building HDF5 from submodule..."
-        mkdir -p external/hdf5/build
-        cd external/hdf5/build
+if [ "$NEED_HDF5" = "1" ] || [ "$NEED_HDF5" = "TRUE" ]; then
+    echo ">>> Building HDF5 from submodule..."
+    mkdir -p external/hdf5/build
+    cd external/hdf5/build
 
-        cmake .. \
-            -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DHDF5_BUILD_EXAMPLES=OFF \
-            -DHDF5_BUILD_TOOLS=OFF \
-            -DBUILD_TESTING=OFF \
-            -DHDF5_BUILD_CPP_LIB=OFF \
-            -DHDF5_BUILD_FORTRAN=OFF \
-            -DHDF5_BUILD_JAVA=OFF \
-            -DHDF5_ENABLE_PARALLEL=OFF \
-            -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF \
-            -DHDF5_ENABLE_SZIP_SUPPORT=OFF
+    cmake .. \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DBUILD_SHARED_LIBS=OFF \
+        -DHDF5_BUILD_EXAMPLES=OFF \
+        -DHDF5_BUILD_TOOLS=OFF \
+        -DBUILD_TESTING=OFF \
+        -DHDF5_BUILD_CPP_LIB=OFF \
+        -DHDF5_BUILD_FORTRAN=OFF \
+        -DHDF5_BUILD_JAVA=OFF \
+        -DHDF5_ENABLE_PARALLEL=OFF \
+        -DHDF5_ENABLE_Z_LIB_SUPPORT=OFF \
+        -DHDF5_ENABLE_SZIP_SUPPORT=OFF
 
-        cmake --build . -j${BUILD_JOBS}
-        cmake --install .
+    cmake --build . -j${BUILD_JOBS}
+    cmake --install .
 
-        cd "$SCRIPT_DIR"
-        echo "✓ HDF5 installed to $INSTALL_PREFIX"
-    else
-        echo "✓ HDF5 already available, skipping"
-    fi
+    cd "$SCRIPT_DIR"
+    echo "✓ HDF5 installed to $INSTALL_PREFIX"
 else
-    echo "⊘ HDF5 build skipped (BUILD_HDF5=no)"
+    echo "✓ HDF5 already available, skipping"
 fi
 echo ""
 
@@ -227,7 +241,7 @@ cmake -S . -B "$BUILD_DIR" \
     -DCMAKE_PREFIX_PATH="$INSTALL_PREFIX/lib/cmake;$INSTALL_PREFIX/cmake;$INSTALL_PREFIX" \
     -DWRP_CORE_ENABLE_ZMQ=ON \
     -DWRP_CORE_ENABLE_CEREAL=ON \
-    -DWRP_CORE_ENABLE_HDF5=${BUILD_HDF5}
+    -DWRP_CORE_ENABLE_HDF5=ON
 
 # Build IOWarp Core
 cmake --build "$BUILD_DIR" -j${BUILD_JOBS}

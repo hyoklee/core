@@ -96,13 +96,9 @@ class CMakeBuild(build_ext):
             import multiprocessing
             env["BUILD_JOBS"] = str(multiprocessing.cpu_count())
 
-        # Set HDF5 build option - disabled to avoid CMake conflicts
-        env["BUILD_HDF5"] = os.environ.get("BUILD_HDF5", "no")
-
         print(f"\nRunning install.sh with:")
         print(f"  INSTALL_PREFIX={env['INSTALL_PREFIX']}")
-        print(f"  BUILD_JOBS={env['BUILD_JOBS']}")
-        print(f"  BUILD_HDF5={env['BUILD_HDF5']}\n")
+        print(f"  BUILD_JOBS={env['BUILD_JOBS']}\n")
 
         # Run install.sh
         subprocess.check_call([str(install_script)], cwd=package_root, env=env)
