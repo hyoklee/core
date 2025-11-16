@@ -9,13 +9,23 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 # Initialize and update git submodules recursively (if in a git repository)
+# OR use bundled submodule content if not a git repo (for pip installs from sdist)
 if [ -d ".git" ]; then
     echo ">>> Initializing git submodules..."
     git submodule update --init --recursive
     echo ""
-else
-    echo ">>> Not a git repository, skipping submodule initialization"
+elif [ -d "external/yaml-cpp" ] && [ "$(ls -A external/yaml-cpp 2>/dev/null)" ]; then
+    echo ">>> Using bundled submodule content (source distribution)"
+    echo "    external/yaml-cpp: $(ls -1 external/yaml-cpp 2>/dev/null | wc -l) files"
+    echo "    external/cereal: $(ls -1 external/cereal 2>/dev/null | wc -l) files"
+    echo "    external/Catch2: $(ls -1 external/Catch2 2>/dev/null | wc -l) files"
+    echo "    external/nanobind: $(ls -1 external/nanobind 2>/dev/null | wc -l) files"
     echo ""
+else
+    echo "ERROR: Not a git repository and no bundled submodule content found"
+    echo "       Cannot proceed with build - missing external dependencies"
+    echo ""
+    exit 1
 fi
 
 # Default install prefix
@@ -193,6 +203,7 @@ if [ "$NEED_ZEROMQ" = "1" ] || [ "$NEED_ZEROMQ" = "TRUE" ]; then
         -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DBUILD_SHARED=OFF \
         -DBUILD_STATIC=ON \
         -DBUILD_TESTS=OFF \

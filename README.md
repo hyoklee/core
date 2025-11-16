@@ -136,6 +136,45 @@ Interactive tools and interfaces for exploring scientific data contents and meta
 
 ## Getting Started
 
+### Quick Start with uv (Fastest)
+
+[uv](https://docs.astral.sh/uv/) is a fast Python package installer and runner. Once IOWarp Core is published to PyPI:
+
+```bash
+# Install from PyPI (coming soon!)
+uv pip install iowarp-core
+
+# Or run the main tool directly without installation
+uvx iowarp-core --help
+
+# Run other tools (requires --from flag)
+uvx --from iowarp-core wrp_start --help
+uvx --from iowarp-core wrp_stop --help
+uvx --from iowarp-core wrp_compose --help
+```
+
+**After installation, all tools are available directly:**
+```bash
+# Main entry point
+iowarp-core --help
+
+# User-friendly aliases (recommended)
+wrp_start              # Start IOWarp runtime
+wrp_stop               # Stop IOWarp runtime
+wrp_compose            # Compose cluster configuration
+wrp_refresh            # Refresh repository
+wrp_cae                # CAE OMNI processor
+
+# Original names (backwards compatible)
+chimaera_start_runtime
+chimaera_stop_runtime
+chimaera_compose
+chi_refresh_repo
+wrp_cae_omni
+```
+
+**Note:** Build from source takes 10-30 minutes on first install (compiles C++ dependencies).
+
 ### Quick Install with pip (Easiest)
 
 The easiest way to install IOWarp Core is using pip. All dependencies are automatically built and installed into your Python environment - no system packages required!
