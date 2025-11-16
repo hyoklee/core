@@ -11,6 +11,7 @@ import shutil
 from pathlib import Path
 from setuptools import setup, Extension
 from setuptools.command.build_ext import build_ext
+from setuptools.command.sdist import sdist
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
@@ -21,6 +22,51 @@ class CMakeExtension(Extension):
         super().__init__(name, sources=[], **kwargs)
         self.sourcedir = os.path.abspath(sourcedir)
         self.repo_url = repo_url
+
+
+class CustomSDist(sdist):
+    """Custom sdist command that ensures git submodules are fully included."""
+
+    def run(self):
+        """Ensure git submodules are initialized before creating source distribution."""
+        # Check if we're in a git repository
+        if os.path.exists(".git"):
+            print("\n" + "="*60)
+            print("Ensuring git submodules are included in source distribution")
+            print("="*60 + "\n")
+
+            try:
+                # Initialize and update submodules to ensure they're present
+                subprocess.check_call(
+                    ["git", "submodule", "update", "--init", "--recursive"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+                print("✓ Git submodules initialized successfully")
+
+                # List submodules to verify
+                result = subprocess.run(
+                    ["git", "submodule", "status"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                if result.stdout:
+                    print("\nSubmodules found:")
+                    for line in result.stdout.strip().split('\n'):
+                        print(f"  {line}")
+
+                print("\nNote: MANIFEST.in will include submodule files in the tarball")
+                print("")
+
+            except subprocess.CalledProcessError as e:
+                print(f"Warning: Could not initialize git submodules: {e}")
+                print("Source distribution may be incomplete!")
+        else:
+            print("Not a git repository - skipping submodule initialization")
+
+        # Call parent sdist command to create the distribution
+        super().run()
 
 
 class CMakeBuild(build_ext):
@@ -371,6 +417,7 @@ ext_modules = [
 ]
 cmdclass = {
     "build_ext": CMakeBuild,
+    "sdist": CustomSDist,
 }
 
 
