@@ -100,8 +100,24 @@ class CMakeBuild(build_ext):
         print(f"  INSTALL_PREFIX={env['INSTALL_PREFIX']}")
         print(f"  BUILD_JOBS={env['BUILD_JOBS']}\n")
 
-        # Run install.sh
-        subprocess.check_call([str(install_script)], cwd=package_root, env=env)
+        # Run install.sh and capture output for debugging
+        result = subprocess.run(
+            [str(install_script)],
+            cwd=package_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        # Print all install.sh output
+        if result.stdout:
+            print(result.stdout)
+
+        # Check for errors
+        if result.returncode != 0:
+            print(f"\nERROR: install.sh failed with exit code {result.returncode}\n")
+            sys.exit(result.returncode)
 
         print(f"\nIOWarp core built and installed successfully!\n")
 
