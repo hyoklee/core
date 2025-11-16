@@ -79,7 +79,7 @@ jobs:
         # Remove build directory from install.sh to ensure clean build
         rm -rf build
         cmake --preset=debug \
-          -DCMAKE_PREFIX_PATH="/usr/local/lib/cmake;/usr/local/cmake;/usr/local" \
+          -DCMAKE_PREFIX_PATH="${{ env.INSTALL_PREFIX }};/usr/local/lib/cmake;/usr/local/cmake;/usr/local" \
           -DWRP_CORE_ENABLE_RUNTIME=ON \
           -DWRP_CORE_ENABLE_CTE=ON \
           -DWRP_CORE_ENABLE_CAE=ON \
@@ -88,7 +88,7 @@ jobs:
       env:
         CC: gcc
         CXX: g++
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+        PKG_CONFIG_PATH: ${{ env.INSTALL_PREFIX }}/lib/pkgconfig:/usr/local/lib/pkgconfig
 
     - name: Build all components
       run: |
