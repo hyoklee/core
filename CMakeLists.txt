@@ -32,8 +32,59 @@ option(WRP_CORE_ENABLE_RPATH "Enable RPATH for installed libraries" ON)
 option(WRP_CORE_ENABLE_CPACK "Enable CPack for package generation" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries (.dll/.so) instead of static ones (.lib/.a)" ON)
 
-# Note: For pip install, CMAKE_INSTALL_PREFIX should be set to the venv root (e.g., /path/to/venv)
+# Installation Prefix Configuration
+# - Conda: CMAKE_INSTALL_PREFIX is automatically set to $CONDA_PREFIX during conda build
+# - Pip: CMAKE_INSTALL_PREFIX should be set to the venv root (e.g., /path/to/venv)
 # Python bindings will install to site-packages via nanobind's install() commands
+
+#------------------------------------------------------------------------------
+# Build System Detection and Configuration
+#------------------------------------------------------------------------------
+# Detect if we're building in a Conda environment
+if(DEFINED ENV{CONDA_PREFIX})
+    set(IN_CONDA_BUILD TRUE)
+    message(STATUS "Conda environment detected: $ENV{CONDA_PREFIX}")
+
+    # Conda automatically sets CMAKE_INSTALL_PREFIX to $CONDA_PREFIX
+    # Verify this is set correctly
+    if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+        set(CMAKE_INSTALL_PREFIX "$ENV{CONDA_PREFIX}" CACHE PATH "Install prefix" FORCE)
+        message(STATUS "Setting CMAKE_INSTALL_PREFIX to CONDA_PREFIX: ${CMAKE_INSTALL_PREFIX}")
+    endif()
+
+    # Add conda prefix to CMAKE_PREFIX_PATH for better dependency discovery
+    list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}")
+
+    # Conda-specific library and include paths
+    list(APPEND CMAKE_PREFIX_PATH
+        "$ENV{CONDA_PREFIX}/lib/cmake"
+        "$ENV{CONDA_PREFIX}/share/cmake"
+    )
+    include_directories(SYSTEM "$ENV{CONDA_PREFIX}/include")
+    link_directories("$ENV{CONDA_PREFIX}/lib")
+
+    message(STATUS "Conda build configuration:")
+    message(STATUS "  Conda prefix:       $ENV{CONDA_PREFIX}")
+    message(STATUS "  Install prefix:     ${CMAKE_INSTALL_PREFIX}")
+    message(STATUS "  CMAKE_PREFIX_PATH:  ${CMAKE_PREFIX_PATH}")
+else()
+    set(IN_CONDA_BUILD FALSE)
+    message(STATUS "Not building in Conda environment")
+endif()
+
+# Detect if we're building with scikit-build-core (pip install)
+if(DEFINED SKBUILD)
+    set(IN_PIP_BUILD TRUE)
+    message(STATUS "Pip/scikit-build-core build detected")
+else()
+    set(IN_PIP_BUILD FALSE)
+endif()
+
+# Print build system summary
+message(STATUS "Build system configuration:")
+message(STATUS "  Conda build:        ${IN_CONDA_BUILD}")
+message(STATUS "  Pip build:          ${IN_PIP_BUILD}")
+message(STATUS "  Install prefix:     ${CMAKE_INSTALL_PREFIX}")
 
 #------------------------------------------------------------------------------
 # Transport and Network Features
@@ -186,11 +237,20 @@ endif()
 #------------------------------------------------------------------------------
 # External Library Discovery
 #------------------------------------------------------------------------------
+# Priority order for dependency discovery:
+# 1. Conda environment (if IN_CONDA_BUILD is TRUE)
+# 2. System packages via pkg-config
+# 3. CMake find_package() in standard locations
 
 # Pkg-Config
 find_package(PkgConfig REQUIRED)
 if(PkgConfig_FOUND)
-    message(STATUS "found pkg config")
+    message(STATUS "found pkg-config")
+    if(IN_CONDA_BUILD)
+        # Set pkg-config search path to prioritize conda environment
+        set(ENV{PKG_CONFIG_PATH} "$ENV{CONDA_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+        message(STATUS "PKG_CONFIG_PATH prioritizes Conda: $ENV{PKG_CONFIG_PATH}")
+    endif()
 endif()
 
 # Doxygen (conditional)
