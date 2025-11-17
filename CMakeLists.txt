@@ -32,6 +32,61 @@ option(WRP_CORE_ENABLE_RPATH "Enable RPATH for installed libraries" ON)
 option(WRP_CORE_ENABLE_CPACK "Enable CPack for package generation" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries (.dll/.so) instead of static ones (.lib/.a)" ON)
 
+# Installation Prefix Configuration
+# - Conda (primary): CMAKE_INSTALL_PREFIX is automatically set to $CONDA_PREFIX during conda build
+# - Custom installs: Set CMAKE_INSTALL_PREFIX to desired root directory
+# Libraries install to ${CMAKE_INSTALL_PREFIX}/lib
+# Python bindings install to ${CMAKE_INSTALL_PREFIX}/lib/pythonX.Y/site-packages
+
+#------------------------------------------------------------------------------
+# Build System Detection and Configuration
+#------------------------------------------------------------------------------
+# Detect if we're building in a Conda environment
+if(DEFINED ENV{CONDA_PREFIX})
+    set(IN_CONDA_BUILD TRUE)
+    message(STATUS "Conda environment detected: $ENV{CONDA_PREFIX}")
+
+    # Conda automatically sets CMAKE_INSTALL_PREFIX to $CONDA_PREFIX
+    # Verify this is set correctly
+    if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+        set(CMAKE_INSTALL_PREFIX "$ENV{CONDA_PREFIX}" CACHE PATH "Install prefix" FORCE)
+        message(STATUS "Setting CMAKE_INSTALL_PREFIX to CONDA_PREFIX: ${CMAKE_INSTALL_PREFIX}")
+    endif()
+
+    # Add conda prefix to CMAKE_PREFIX_PATH for better dependency discovery
+    list(APPEND CMAKE_PREFIX_PATH "$ENV{CONDA_PREFIX}")
+
+    # Conda-specific library and include paths
+    list(APPEND CMAKE_PREFIX_PATH
+        "$ENV{CONDA_PREFIX}/lib/cmake"
+        "$ENV{CONDA_PREFIX}/share/cmake"
+    )
+    include_directories(SYSTEM "$ENV{CONDA_PREFIX}/include")
+    link_directories("$ENV{CONDA_PREFIX}/lib")
+
+    message(STATUS "Conda build configuration:")
+    message(STATUS "  Conda prefix:       $ENV{CONDA_PREFIX}")
+    message(STATUS "  Install prefix:     ${CMAKE_INSTALL_PREFIX}")
+    message(STATUS "  CMAKE_PREFIX_PATH:  ${CMAKE_PREFIX_PATH}")
+else()
+    set(IN_CONDA_BUILD FALSE)
+    message(STATUS "Not building in Conda environment")
+endif()
+
+# Detect if we're building with scikit-build-core (pip install)
+if(DEFINED SKBUILD)
+    set(IN_PIP_BUILD TRUE)
+    message(STATUS "Pip/scikit-build-core build detected")
+else()
+    set(IN_PIP_BUILD FALSE)
+endif()
+
+# Print build system summary
+message(STATUS "Build system configuration:")
+message(STATUS "  Conda build:        ${IN_CONDA_BUILD}")
+message(STATUS "  Pip build:          ${IN_PIP_BUILD}")
+message(STATUS "  Install prefix:     ${CMAKE_INSTALL_PREFIX}")
+
 #------------------------------------------------------------------------------
 # Transport and Network Features
 #------------------------------------------------------------------------------
@@ -79,7 +134,6 @@ option(CHIMAERA_ENABLE_BENCHMARKS "Enable benchmarks for Chimaera runtime" ON)
 option(WRP_CTE_ENABLE_TESTS "Enable tests for CTE" ON)
 option(WRP_CTE_ENABLE_BENCHMARKS "Enable benchmarks for CTE" ON)
 option(WRP_CTE_ENABLE_PYTHON "Enable Python bindings for CTE (requires WRP_CORE_ENABLE_PYTHON=ON)" ON)
-option(WRP_CORE_INSTALL_TO_VENV "Install Python wrappers to Python site-packages instead of lib/" ON)
 
 # CTE Adapter Options (require WRP_CORE_ENABLE_ELF=ON)
 option(WRP_CTE_ENABLE_POSIX_ADAPTER "Enable POSIX adapter" ON)
@@ -184,11 +238,20 @@ endif()
 #------------------------------------------------------------------------------
 # External Library Discovery
 #------------------------------------------------------------------------------
+# Priority order for dependency discovery:
+# 1. Conda environment (if IN_CONDA_BUILD is TRUE)
+# 2. System packages via pkg-config
+# 3. CMake find_package() in standard locations
 
 # Pkg-Config
 find_package(PkgConfig REQUIRED)
 if(PkgConfig_FOUND)
-    message(STATUS "found pkg config")
+    message(STATUS "found pkg-config")
+    if(IN_CONDA_BUILD)
+        # Set pkg-config search path to prioritize conda environment
+        set(ENV{PKG_CONFIG_PATH} "$ENV{CONDA_PREFIX}/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+        message(STATUS "PKG_CONFIG_PATH prioritizes Conda: $ENV{PKG_CONFIG_PATH}")
+    endif()
 endif()
 
 # Doxygen (conditional)
@@ -418,19 +481,10 @@ if(WRP_CORE_ENABLE_PYTHON)
   # Add nanobind as subdirectory (git submodule)
   add_subdirectory(external/nanobind)
 
-  # Override CMAKE_INSTALL_PREFIX if installing to venv
-  # This makes the entire installation go to site-packages, creating a self-contained Python package
-  if(WRP_CORE_INSTALL_TO_VENV)
-    # Only override if not already set to site-packages
-    if(NOT CMAKE_INSTALL_PREFIX STREQUAL "${Python_SITEARCH}")
-      set(ORIGINAL_CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
-      set(CMAKE_INSTALL_PREFIX "${Python_SITEARCH}" CACHE PATH "Install path prefix (overridden by WRP_CORE_INSTALL_TO_VENV)" FORCE)
-      message(STATUS "WRP_CORE_INSTALL_TO_VENV=ON: Overriding CMAKE_INSTALL_PREFIX")
-      message(STATUS "  Original: ${ORIGINAL_CMAKE_INSTALL_PREFIX}")
-      message(STATUS "  New:      ${CMAKE_INSTALL_PREFIX}")
-      message(STATUS "  All IOWarp components will be installed to Python site-packages")
-    endif()
-  endif()
+  message(STATUS "Python bindings enabled:")
+  message(STATUS "  Install prefix:     ${CMAKE_INSTALL_PREFIX}")
+  message(STATUS "  Python bindings:    ${CMAKE_INSTALL_PREFIX}/lib/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages")
+  message(STATUS "  Python_SITEARCH:    ${Python_SITEARCH} (for reference only)")
 else()
   message(STATUS "Python bindings disabled")
 endif()
@@ -457,15 +511,16 @@ if(WRP_CORE_ENABLE_RPATH)
 
     # Platform-specific RPATH configuration using relative paths
     # This allows the installation to be relocated to any directory
+    # Order matters: Check same directory first, then ../lib for binaries
     if(APPLE)
         set(CMAKE_MACOSX_RPATH TRUE)
         # Use @loader_path for macOS - relative to the loading binary/library
-        set(CMAKE_INSTALL_RPATH "@loader_path/../lib:@loader_path")
-        set(CMAKE_BUILD_RPATH "@loader_path/../lib:@loader_path")
+        set(CMAKE_INSTALL_RPATH "@loader_path:@loader_path/../lib")
+        set(CMAKE_BUILD_RPATH "@loader_path:@loader_path/../lib")
     elseif(UNIX)
         # Use $ORIGIN for Linux - relative to the loading binary/library
-        set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib:$ORIGIN")
-        set(CMAKE_BUILD_RPATH "$ORIGIN/../lib:$ORIGIN")
+        set(CMAKE_INSTALL_RPATH "$ORIGIN:$ORIGIN/../lib")
+        set(CMAKE_BUILD_RPATH "$ORIGIN:$ORIGIN/../lib")
     endif()
 else()
     message(STATUS "RPATH disabled - libraries will not have embedded runtime paths")

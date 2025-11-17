@@ -7,7 +7,9 @@
     "workspaceFolder": "/workspace",
     "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
     "containerEnv": {
-        "IOWARP_CORE_ROOT": "${localWorkspaceFolder}"
+        "IOWARP_CORE_ROOT": "${localWorkspaceFolder}",
+        "CONDA_DEFAULT_ENV": "base",
+        "CONDA_AUTO_ACTIVATE_BASE": "true"
     },
     "mounts": [
         "source=${localEnv:HOME}/.ssh,target=/tmp/host-ssh,type=bind,readonly",
@@ -35,9 +37,10 @@
             ],
             "settings": {
                 "cmake.configureOnOpen": false,
-                "python.defaultInterpreterPath": "/home/iowarp/venv/bin/python",
+                "python.defaultInterpreterPath": "/home/iowarp/miniconda3/bin/python",
                 "python.terminal.activateEnvironment": true,
                 "python.venvPath": "/home/iowarp",
+                "python.condaPath": "/home/iowarp/miniconda3/bin/conda",
                 "python.formatting.provider": "black",
                 "python.linting.enabled": true,
                 "python.linting.pylintEnabled": false,
@@ -45,6 +48,6 @@
             }
         }
     },
-    "postCreateCommand": "bash -c 'git config --global --add safe.directory /workspace && sudo rm -rf /home/iowarp/.ssh && sudo cp -r /tmp/host-ssh /home/iowarp/.ssh && sudo chown -R iowarp:iowarp /home/iowarp/.ssh && chmod 700 /home/iowarp/.ssh && chmod 600 /home/iowarp/.ssh/* && chmod 644 /home/iowarp/.ssh/*.pub 2>/dev/null || true && sudo cp -r /tmp/host-claude /home/iowarp/.claude && sudo cp /tmp/host-claude.json /home/iowarp/.claude.json && sudo chown -R iowarp:iowarp /home/iowarp/.claude /home/iowarp/.claude.json && sudo chmod 666 /var/run/docker.sock && sudo service ssh start && source /home/iowarp/venv/bin/activate'",
+    "postCreateCommand": "bash -c 'git config --global --add safe.directory /workspace && sudo rm -rf /home/iowarp/.ssh && sudo cp -r /tmp/host-ssh /home/iowarp/.ssh && sudo chown -R iowarp:iowarp /home/iowarp/.ssh && chmod 700 /home/iowarp/.ssh && chmod 600 /home/iowarp/.ssh/* && chmod 644 /home/iowarp/.ssh/*.pub 2>/dev/null || true && sudo cp -r /tmp/host-claude /home/iowarp/.claude && sudo cp /tmp/host-claude.json /home/iowarp/.claude.json && sudo chown -R iowarp:iowarp /home/iowarp/.claude /home/iowarp/.claude.json && sudo chmod 666 /var/run/docker.sock && sudo service ssh start && eval \"$(~/miniconda3/bin/conda shell.bash hook)\" && echo \"Conda initialized. Use: conda activate <env>\"'",
     "remoteUser": "iowarp"
 }

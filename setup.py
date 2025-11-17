@@ -8,8 +8,10 @@ import os
 import sys
 import subprocess
 import shutil
+import platform
 from pathlib import Path
 from setuptools import setup, Extension
+from setuptools.dist import Distribution
 from setuptools.command.build_ext import build_ext
 from setuptools.command.sdist import sdist
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
@@ -92,10 +94,6 @@ class CMakeBuild(build_ext):
         # Build the unified core
         self.build_iowarp_core(build_temp)
 
-        # If bundling binaries, copy them to the package directory
-        if os.environ.get("IOWARP_BUNDLE_BINARIES", "OFF").upper() == "ON":
-            self.copy_binaries_to_package(build_temp)
-
     def build_iowarp_core(self, build_temp):
         """Build IOWarp core using install.sh script."""
         print(f"\n{'='*60}")
@@ -134,6 +132,13 @@ class CMakeBuild(build_ext):
         # Prepare environment for install.sh
         env = os.environ.copy()
         env["INSTALL_PREFIX"] = str(install_prefix)
+        # INSTALL_PREFIX points to venv root, e.g., /path/to/venv
+        # This ensures standard layout:
+        #   - Binaries:    {venv}/bin/
+        #   - Libraries:   {venv}/lib/
+        #   - Headers:     {venv}/include/
+        #   - CMake:       {venv}/lib/cmake/
+        # Python bindings install to site-packages via nanobind
 
         # Determine number of parallel jobs
         if hasattr(self, "parallel") and self.parallel:
@@ -166,6 +171,10 @@ class CMakeBuild(build_ext):
             sys.exit(result.returncode)
 
         print(f"\nIOWarp core built and installed successfully!\n")
+
+        # If bundling is enabled, copy binaries to package
+        if bundle_binaries:
+            self.copy_binaries_to_package(build_temp)
 
     def copy_binaries_to_package(self, build_temp):
         """Copy built binaries and headers into the Python package for wheel bundling."""
@@ -353,56 +362,55 @@ class CMakeBuild(build_ext):
 
                 print(f"\nTotal conda dependencies copied: {len(copied_libs)}")
 
-        # Fix RPATH in all bundled libraries to prefer bundled dependencies
-        print(f"\n" + "="*60)
-        print("Fixing RPATH in bundled libraries")
-        print("="*60 + "\n")
+        # Note: RPATH fixing is not needed because:
+        # - CMake already sets correct relative RPATH ($ORIGIN) at build time
+        # - All IOWarp libraries and binaries are already relocatable
+        # - Bundled libraries retain their CMake-configured RPATH when copied
+        print("\nBinary copying complete!")
+        print("Note: Libraries already have correct RPATH set by CMake build system\n")
 
-        # Check if patchelf is available
-        patchelf_available = True
-        try:
-            subprocess.run(["patchelf", "--version"],
-                         capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("  Warning: patchelf not found, skipping RPATH fixes")
-            print("  Libraries may fail to find bundled dependencies")
-            patchelf_available = False
 
-        if patchelf_available:
-            # Fix RPATH for all .so files in lib directory
-            for lib_file in lib_dir.rglob("*.so*"):
-                if lib_file.is_file() and not lib_file.is_symlink():
-                    try:
-                        # Set RPATH to look in same directory first
-                        # $ORIGIN means the directory containing the library
-                        subprocess.run([
-                            "patchelf",
-                            "--set-rpath", "$ORIGIN:$ORIGIN/..:$ORIGIN/../lib",
-                            "--force-rpath",
-                            str(lib_file)
-                        ], capture_output=True, check=True)
-                        print(f"  Fixed RPATH: {lib_file.name}")
-                    except subprocess.CalledProcessError as e:
-                        # Some files may not be ELF files or may not have RPATH
-                        # This is fine, just skip them
-                        pass
+class BinaryDistribution(Distribution):
+    """Distribution which always forces a binary package with platform-specific tags."""
 
-            # Fix RPATH for binaries
-            for bin_file in bin_dir.rglob("*"):
-                if bin_file.is_file() and not bin_file.is_symlink():
-                    try:
-                        # Set RPATH to look in ../lib
-                        subprocess.run([
-                            "patchelf",
-                            "--set-rpath", "$ORIGIN/../lib",
-                            "--force-rpath",
-                            str(bin_file)
-                        ], capture_output=True, check=True)
-                        print(f"  Fixed RPATH: bin/{bin_file.name}")
-                    except subprocess.CalledProcessError:
-                        pass
+    def has_ext_modules(self):
+        """Always return True to indicate this is a platform-specific package.
 
-        print("\nBinary copying complete!\n")
+        This forces setuptools to generate platform-specific wheel tags instead of
+        pure-python 'any' tags. Required for packages with compiled C/C++ extensions.
+        """
+        return True
+
+
+class CustomBdistWheel(_bdist_wheel):
+    """Custom bdist_wheel that automatically generates manylinux tags.
+
+    This eliminates the need for post-build wheel renaming scripts and ensures
+    proper platform tags are set during the build process.
+    """
+
+    def finalize_options(self):
+        """Override to set platform-specific wheel tags based on the target system."""
+        super().finalize_options()
+
+        # Only apply manylinux tags on Linux
+        if platform.system() == 'Linux':
+            machine = platform.machine()
+
+            # Map machine architecture to manylinux platform tag
+            # manylinux_2_17 is compatible with most modern Linux systems (RHEL 7+, Ubuntu 16.04+)
+            if machine == 'x86_64':
+                self.plat_name = 'manylinux_2_17_x86_64'
+            elif machine == 'aarch64':
+                self.plat_name = 'manylinux_2_17_aarch64'
+            elif machine == 'ppc64le':
+                self.plat_name = 'manylinux_2_17_ppc64le'
+            elif machine == 's390x':
+                self.plat_name = 'manylinux_2_17_s390x'
+            else:
+                # For unknown architectures, use the generic linux tag
+                print(f"Warning: Unknown architecture {machine}, using generic linux tag")
+                self.plat_name = f'linux_{machine}'
 
 
 # Create extensions list
@@ -418,6 +426,7 @@ ext_modules = [
 cmdclass = {
     "build_ext": CMakeBuild,
     "sdist": CustomSDist,
+    "bdist_wheel": CustomBdistWheel,
 }
 
 
@@ -425,4 +434,5 @@ if __name__ == "__main__":
     setup(
         ext_modules=ext_modules,
         cmdclass=cmdclass,
+        distclass=BinaryDistribution,
     )

@@ -22,26 +22,14 @@ target_include_directories(wrp_cte_core_ext PRIVATE
 # Ensure C++17 standard
 target_compile_features(wrp_cte_core_ext PRIVATE cxx_std_17)
 
-# Configure RPATH for Python module
-# Uses $ORIGIN for relocatable installation
-if(WRP_CORE_ENABLE_RPATH)
-    if(APPLE)
-        set_target_properties(wrp_cte_core_ext PROPERTIES
-            INSTALL_RPATH "@loader_path"
-        )
-    elseif(UNIX)
-        set_target_properties(wrp_cte_core_ext PROPERTIES
-            INSTALL_RPATH "$ORIGIN"
-        )
-    endif()
-endif()
-
-# Install Python module to CMAKE_INSTALL_PREFIX
+# Install Python module to site-packages within CMAKE_INSTALL_PREFIX
+# For conda: This will be ${CMAKE_INSTALL_PREFIX}/lib/pythonX.Y/site-packages
+set(PYTHON_SITE_PACKAGES "lib/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages")
 install(
     TARGETS wrp_cte_core_ext
-    LIBRARY DESTINATION .
+    LIBRARY DESTINATION "${PYTHON_SITE_PACKAGES}"
 )
-message(STATUS "CTE Python wrapper will be installed to: ${CMAKE_INSTALL_PREFIX}")
+message(STATUS "CTE Python wrapper will be installed to: ${CMAKE_INSTALL_PREFIX}/${PYTHON_SITE_PACKAGES}")
 
 # Generate stub file for type hints
 # Note: Stub generation is disabled because the module requires runtime initialization

@@ -61,26 +61,13 @@ if(WRP_CORE_ENABLE_PYTHON)
         wrp_cee_api
     )
 
-    # Configure RPATH for Python module
-    # Uses $ORIGIN for relocatable installation
-    # When installed to site-packages, libraries are in site-packages/lib/
-    if(WRP_CORE_ENABLE_RPATH)
-      if(APPLE)
-        set_target_properties(wrp_cee PROPERTIES
-          INSTALL_RPATH "@loader_path/lib:@loader_path/../lib:@loader_path"
-        )
-      elseif(UNIX)
-        set_target_properties(wrp_cee PROPERTIES
-          INSTALL_RPATH "$ORIGIN/lib:$ORIGIN/../lib:$ORIGIN"
-        )
-      endif()
-    endif()
-
-    # Install Python module to CMAKE_INSTALL_PREFIX
+    # Install Python module to site-packages within CMAKE_INSTALL_PREFIX
+    # For conda: This will be ${CMAKE_INSTALL_PREFIX}/lib/pythonX.Y/site-packages
+    set(PYTHON_SITE_PACKAGES "lib/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages")
     install(TARGETS wrp_cee
-      LIBRARY DESTINATION .
+      LIBRARY DESTINATION "${PYTHON_SITE_PACKAGES}"
     )
-    message(STATUS "CEE Python wrapper will be installed to: ${CMAKE_INSTALL_PREFIX}")
+    message(STATUS "CEE Python wrapper will be installed to: ${CMAKE_INSTALL_PREFIX}/${PYTHON_SITE_PACKAGES}")
   endif()
 else()
   message(STATUS "Python bindings disabled - set WRP_CORE_ENABLE_PYTHON=ON to enable")
