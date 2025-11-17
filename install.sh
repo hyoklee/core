@@ -107,6 +107,13 @@ ensure_conda() {
 # Ensure conda is available
 ensure_conda
 
+# Configure conda channels (add conda-forge if not already present)
+echo -e "${BLUE}Configuring conda channels...${NC}"
+conda config --add channels conda-forge 2>/dev/null || true
+conda config --set channel_priority flexible 2>/dev/null || true
+echo -e "${GREEN}✓ Conda channels configured${NC}"
+echo ""
+
 # Create and activate environment if not already in one
 if [ -z "$CONDA_PREFIX" ]; then
     ENV_NAME="iowarp-build"
@@ -212,10 +219,12 @@ fi
 echo -e "${BLUE}>>> Installing iowarp-core...${NC}"
 echo ""
 
-# Ensure conda is configured for non-interactive operation
+# Ensure conda is configured for non-interactive operation and has conda-forge channel
 conda config --set always_yes true 2>/dev/null || true
+conda config --add channels conda-forge 2>/dev/null || true
+conda config --set channel_priority flexible 2>/dev/null || true
 
-if conda install --use-local iowarp-core -y 2>&1; then
+if conda install --use-local iowarp-core -c conda-forge -y 2>&1; then
     echo ""
     echo -e "${GREEN}======================================================================"
     echo -e "✓ IOWarp Core installed successfully!"
@@ -243,7 +252,11 @@ else
     echo -e "======================================================================${NC}"
     echo ""
     echo -e "${YELLOW}You can try installing manually:${NC}"
-    echo "  conda install --use-local iowarp-core"
+    echo "  conda config --add channels conda-forge"
+    echo "  conda install --use-local iowarp-core -c conda-forge"
+    echo ""
+    echo -e "${YELLOW}Or check that conda-forge channel is available:${NC}"
+    echo "  conda config --show channels"
     echo ""
     exit 1
 fi
