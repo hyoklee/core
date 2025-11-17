@@ -269,57 +269,57 @@ jobs:
         python -c "import sys; print('Python version:', sys.version)"
         python -c "import iowarp_core; print('Module location:', iowarp_core.__file__)"
 
-  publish:
-    name: Publish to PyPI
-    # Publishes both source distributions and binary wheels
-    needs: [build-sdist, test-sdist, build, test-wheel-py313]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    environment:
-      name: pypi
-      url: https://pypi.org/project/iowarp-core/
-    permissions:
-      id-token: write  # Required for trusted publishing
+  # publish:
+  #   name: Publish to PyPI
+  #   # Publishes both source distributions and binary wheels
+  #   needs: [build-sdist, test-sdist, build, test-wheel-py313]
+  #   runs-on: ubuntu-latest
+  #   if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+  #   environment:
+  #     name: pypi
+  #     url: https://pypi.org/project/iowarp-core/
+  #   permissions:
+  #     id-token: write  # Required for trusted publishing
 
-    steps:
-    - name: Download source distribution
-      uses: actions/download-artifact@v4
-      with:
-        name: source-distribution
-        path: dist/
+  #   steps:
+  #   - name: Download source distribution
+  #     uses: actions/download-artifact@v4
+  #     with:
+  #       name: source-distribution
+  #       path: dist/
 
-    - name: Download all wheel artifacts
-      uses: actions/download-artifact@v4
-      with:
-        pattern: distributions-*
-        path: wheels/
-        merge-multiple: true
+  #   - name: Download all wheel artifacts
+  #     uses: actions/download-artifact@v4
+  #     with:
+  #       pattern: distributions-*
+  #       path: wheels/
+  #       merge-multiple: true
 
-    - name: Move wheels to dist directory
-      run: |
-        mkdir -p dist/
-        find wheels/ -name "*.whl" -exec mv {} dist/ \;
-        rm -rf wheels/
+  #   - name: Move wheels to dist directory
+  #     run: |
+  #       mkdir -p dist/
+  #       find wheels/ -name "*.whl" -exec mv {} dist/ \;
+  #       rm -rf wheels/
 
-    - name: Verify distributions
-      run: |
-        echo "=== Distribution files to publish ==="
-        ls -lh dist/
-        echo ""
-        echo "=== Verifying distributions ==="
-        python -m pip install --upgrade pip twine
-        twine check dist/*
+  #   - name: Verify distributions
+  #     run: |
+  #       echo "=== Distribution files to publish ==="
+  #       ls -lh dist/
+  #       echo ""
+  #       echo "=== Verifying distributions ==="
+  #       python -m pip install --upgrade pip twine
+  #       twine check dist/*
 
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      continue-on-error: true  # Don't fail workflow if PyPI rejects (e.g., file too large)
-      with:
-        password: ${{ secrets.PYPI_TOKEN }}
-        skip-existing: true
+  #   - name: Publish to PyPI
+  #     uses: pypa/gh-action-pypi-publish@release/v1
+  #     continue-on-error: true  # Don't fail workflow if PyPI rejects (e.g., file too large)
+  #     with:
+  #       password: ${{ secrets.PYPI_TOKEN }}
+  #       skip-existing: true
 
   github-release:
     name: Create GitHub Release
-    needs: [build-sdist, test-sdist, build, test-wheel-py313]  # Don't depend on publish - create release even if PyPI rejects
+    needs: [build-sdist, test-sdist, build, test-wheel-py313]  # PyPI publishing disabled for now
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
