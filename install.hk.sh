@@ -148,7 +148,12 @@ echo ""
 # Check if conda-build is installed
 if ! command -v conda-build &> /dev/null; then
     echo -e "${YELLOW}Installing conda-build...${NC}"
-    conda install -y conda-build -c conda-forge
+    conda config --remove channels defaults
+    conda config --add channels conda-forge
+    conda config --set channel_priority strict
+#    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+#    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+#    conda install -y conda-build -c conda-forge
     echo ""
 fi
 
