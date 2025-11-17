@@ -148,12 +148,18 @@ echo ""
 # Check if conda-build is installed
 if ! command -v conda-build &> /dev/null; then
     echo -e "${YELLOW}Installing conda-build...${NC}"
-    conda config --remove channels defaults
-    conda config --add channels conda-forge
+    # The following 3 gives
+    # CondaKeyError: 'channels': value 'defaults' not present in config    
+#    conda config --remove channels defaults
+#    conda config --add channels conda-forge
+#    conda config --set channel_priority strict
     conda config --set channel_priority strict
+    conda config --prepend channels conda-forge
+    conda config --set allow_conda_downgrades true
+    # The following 3 gives still TOS error.
 #    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
 #    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
-#    conda install -y conda-build -c conda-forge
+    conda install -y conda-build -c conda-forge
     echo ""
 fi
 
