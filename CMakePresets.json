@@ -18,14 +18,14 @@
                 "WRP_CORE_ENABLE_CAE": "ON",
                 "WRP_CORE_ENABLE_CEE": "ON",
                 "WRP_CORE_ENABLE_TESTS": "OFF",
-                "WRP_CORE_ENABLE_BENCHMARKS": "OFF",
+                "WRP_CORE_ENABLE_BENCHMARKS": "ON",
                 "WRP_CORE_ENABLE_PYTHON": "ON",
                 "WRP_CORE_ENABLE_CMAKE_DOTENV": "OFF",
                 "WRP_CORE_ENABLE_ASAN": "OFF",
                 "WRP_CORE_ENABLE_COVERAGE": "OFF",
                 "WRP_CORE_ENABLE_DOXYGEN": "OFF",
                 "WRP_CORE_ENABLE_RPATH": "ON",
-                "WRP_CORE_INSTALL_WRAPPER_TO_VENV": "ON",
+                "WRP_CORE_INSTALL_TO_VENV": "ON",
                 "WRP_CORE_ENABLE_MPI": "OFF",
                 "WRP_CORE_ENABLE_ZMQ": "ON",
                 "WRP_CORE_ENABLE_LIBFABRIC": "OFF",
@@ -55,7 +55,8 @@
                 "WRP_CORE_ENABLE_TESTS": "ON",
                 "WRP_CORE_ENABLE_ELF": "OFF",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-                "WRP_CORE_ENABLE_ASAN": "OFF"
+                "WRP_CORE_ENABLE_ASAN": "OFF",
+                "WRP_CORE_ENABLE_RPATH": "ON"
             }
         },
         {

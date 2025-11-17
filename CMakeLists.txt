@@ -22,7 +22,7 @@ option(WRP_CORE_ENABLE_CEE "Enable context-exploration-engine component" ON)
 # Global Master Switches
 #------------------------------------------------------------------------------
 option(WRP_CORE_ENABLE_TESTS "Master switch: Enable testing for all components" OFF)
-option(WRP_CORE_ENABLE_BENCHMARKS "Master switch: Enable benchmarks for all components" OFF)
+option(WRP_CORE_ENABLE_BENCHMARKS "Master switch: Enable benchmarks for all components" ON)
 option(WRP_CORE_ENABLE_PYTHON "Enable Python bindings for all components" OFF)
 option(WRP_CORE_ENABLE_CMAKE_DOTENV "Enable reading environment variables from .env.cmake" OFF)
 option(WRP_CORE_ENABLE_ASAN "Enable AddressSanitizer for debugging" OFF)
@@ -79,7 +79,7 @@ option(CHIMAERA_ENABLE_BENCHMARKS "Enable benchmarks for Chimaera runtime" ON)
 option(WRP_CTE_ENABLE_TESTS "Enable tests for CTE" ON)
 option(WRP_CTE_ENABLE_BENCHMARKS "Enable benchmarks for CTE" ON)
 option(WRP_CTE_ENABLE_PYTHON "Enable Python bindings for CTE (requires WRP_CORE_ENABLE_PYTHON=ON)" ON)
-option(WRP_CORE_INSTALL_WRAPPER_TO_VENV "Install Python wrappers to Python site-packages instead of lib/" ON)
+option(WRP_CORE_INSTALL_TO_VENV "Install Python wrappers to Python site-packages instead of lib/" ON)
 
 # CTE Adapter Options (require WRP_CORE_ENABLE_ELF=ON)
 option(WRP_CTE_ENABLE_POSIX_ADAPTER "Enable POSIX adapter" ON)
@@ -417,6 +417,20 @@ if(WRP_CORE_ENABLE_PYTHON)
 
   # Add nanobind as subdirectory (git submodule)
   add_subdirectory(external/nanobind)
+
+  # Override CMAKE_INSTALL_PREFIX if installing to venv
+  # This makes the entire installation go to site-packages, creating a self-contained Python package
+  if(WRP_CORE_INSTALL_TO_VENV)
+    # Only override if not already set to site-packages
+    if(NOT CMAKE_INSTALL_PREFIX STREQUAL "${Python_SITEARCH}")
+      set(ORIGINAL_CMAKE_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}")
+      set(CMAKE_INSTALL_PREFIX "${Python_SITEARCH}" CACHE PATH "Install path prefix (overridden by WRP_CORE_INSTALL_TO_VENV)" FORCE)
+      message(STATUS "WRP_CORE_INSTALL_TO_VENV=ON: Overriding CMAKE_INSTALL_PREFIX")
+      message(STATUS "  Original: ${ORIGINAL_CMAKE_INSTALL_PREFIX}")
+      message(STATUS "  New:      ${CMAKE_INSTALL_PREFIX}")
+      message(STATUS "  All IOWarp components will be installed to Python site-packages")
+    endif()
+  endif()
 else()
   message(STATUS "Python bindings disabled")
 endif()
@@ -436,18 +450,22 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # RPATH configuration (optional)
 if(WRP_CORE_ENABLE_RPATH)
-    message(STATUS "RPATH enabled for installed libraries")
+    message(STATUS "RPATH enabled with relative paths for relocatable installations")
     set(CMAKE_SKIP_BUILD_RPATH FALSE)
     set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
-    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+    set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 
-    # Platform-specific RPATH configuration
+    # Platform-specific RPATH configuration using relative paths
+    # This allows the installation to be relocated to any directory
     if(APPLE)
         set(CMAKE_MACOSX_RPATH TRUE)
-        set(CMAKE_INSTALL_RPATH "@loader_path/../lib:@loader_path:${CMAKE_INSTALL_PREFIX}/lib")
+        # Use @loader_path for macOS - relative to the loading binary/library
+        set(CMAKE_INSTALL_RPATH "@loader_path/../lib:@loader_path")
+        set(CMAKE_BUILD_RPATH "@loader_path/../lib:@loader_path")
     elseif(UNIX)
-        set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib:$ORIGIN:${CMAKE_INSTALL_PREFIX}/lib")
+        # Use $ORIGIN for Linux - relative to the loading binary/library
+        set(CMAKE_INSTALL_RPATH "$ORIGIN/../lib:$ORIGIN")
+        set(CMAKE_BUILD_RPATH "$ORIGIN/../lib:$ORIGIN")
     endif()
 else()
     message(STATUS "RPATH disabled - libraries will not have embedded runtime paths")

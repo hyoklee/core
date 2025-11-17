@@ -59,6 +59,14 @@ cmake --preset=debug -DWRP_CORE_ENABLE_CTE=ON -DWRP_CORE_ENABLE_CAE=OFF
 - Follow ChiMod build patterns from MODULE_DEVELOPMENT_GUIDE.md
 - All compilation warnings have been resolved as of the current state
 
+### RPATH Configuration
+The build system uses **relative RPATHs** for relocatable installations:
+- **Linux**: Uses `$ORIGIN` for runtime library search paths relative to the binary/library
+- **macOS**: Uses `@loader_path` for runtime library search paths relative to the binary/library
+- Libraries search for dependencies in `$ORIGIN/../lib` and `$ORIGIN` (or macOS equivalents)
+- This allows the entire installation directory to be moved to any location without breaking library dependencies
+- RPATH is enabled by default via `WRP_CORE_ENABLE_RPATH=ON`
+
 ### HSHM Usage
 
 Always use HSHM_MCTX macro unless we are writing GPU code, which necessitates a specific mctx to be created.
@@ -575,6 +583,41 @@ volumes:
 environment:
   - CHI_HOSTFILE=/etc/iowarp/hostfile
 ```
+
+## Python Wheel Distribution
+
+### Building Bundled Wheels
+
+IOWarp Core can be packaged as a self-contained Python wheel that includes all dependencies installed by `install.sh`.
+
+**Quick Build:**
+```bash
+# Build a bundled wheel with all dependencies
+export IOWARP_BUNDLE_BINARIES=ON
+python -m build --wheel
+
+# Or use the convenience script
+./build_wheel.sh
+```
+
+**What Gets Bundled:**
+- All IOWarp libraries (libchimaera_cxx.so, libhermes_shm_host.so, ChiMod libraries)
+- Dependencies from install.sh (Boost, HDF5, ZeroMQ, yaml-cpp, etc.)
+- Command-line tools (wrp_cte, wrp_cae_omni, chimaera_start_runtime, etc.)
+- Headers and CMake configuration files
+- Conda dependencies (if building in a Conda environment)
+
+**RPATH Configuration:**
+- All bundled libraries use relative RPATH (`$ORIGIN`)
+- The wheel is fully relocatable and works anywhere it's installed
+- No `LD_LIBRARY_PATH` configuration needed
+
+**Complete Documentation:** See `BUILD_WHEEL.md` for:
+- Detailed build instructions
+- Platform-specific wheels (manylinux, macOS)
+- CI/CD integration examples
+- Troubleshooting guide
+- PyPI distribution
 
 ## Documentation
 
