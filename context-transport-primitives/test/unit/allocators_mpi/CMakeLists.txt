@@ -13,7 +13,7 @@ if (HSHM_ENABLE_MPI)
             allocator_mpi.cc)
     add_dependencies(test_allocator_mpi_exec hermes_shm_host)
     target_link_libraries(test_allocator_mpi_exec
-            hermes_shm_host Catch2::Catch2 ${MPI_LIBS})
+            hermes_shm_host Catch2::Catch2 hshm::mpi)
 
 
 #------------------------------------------------------------------------------
@@ -25,7 +25,7 @@ set(MP_ALLOCATORS
         StackAllocator
         ScalablePageAllocator)
 foreach(ALLOCATOR ${MP_ALLOCATORS})
-    add_test(NAME test_${ALLOCATOR}_mpi COMMAND
+    add_test(NAME ctp_${ALLOCATOR}_mpi COMMAND
             mpirun -n 4 ${CMAKE_BINARY_DIR}/bin/test_allocator_mpi_exec "${ALLOCATOR}Mpi")
 endforeach()
 
@@ -36,9 +36,9 @@ endforeach()
 if (HSHM_ENABLE_MPI)
     install(TARGETS
             test_allocator_mpi_exec
-            LIBRARY DESTINATION ${HSHM_INSTALL_LIB_DIR}
-            ARCHIVE DESTINATION ${HSHM_INSTALL_LIB_DIR}
-            RUNTIME DESTINATION ${HSHM_INSTALL_BIN_DIR})
+            LIBRARY DESTINATION lib
+            ARCHIVE DESTINATION lib
+            RUNTIME DESTINATION bin)
 endif()
 
 #-----------------------------------------------------------------------------

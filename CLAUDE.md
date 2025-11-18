@@ -7,6 +7,9 @@ This repository contains the unified IOWarp Core framework, integrating multiple
 - **context-assimilation-engine**: Context assimilation engine
 - **context-exploration-engine**: Context exploration engine
 
+NEVER BUILD OUTSIDE OF THE BUILD DIRECTORY. DO NOT PLACE BUILD FILES IN SOURCE DIRECTORIES.
+NEVER EVER EVER.
+
 ## Code Style
 
 Use the Google C++ style guide for C++.
@@ -55,6 +58,18 @@ cmake --preset=debug -DWRP_CORE_ENABLE_CTE=ON -DWRP_CORE_ENABLE_CAE=OFF
 - Use find_package() for all dependencies
 - Follow ChiMod build patterns from MODULE_DEVELOPMENT_GUIDE.md
 - All compilation warnings have been resolved as of the current state
+
+### RPATH Configuration
+The build system uses **relative RPATHs** for relocatable installations:
+- **Linux**: Uses `$ORIGIN` for runtime library search paths relative to the binary/library
+- **macOS**: Uses `@loader_path` for runtime library search paths relative to the binary/library
+- Libraries search for dependencies in `$ORIGIN/../lib` and `$ORIGIN` (or macOS equivalents)
+- This allows the entire installation directory to be moved to any location without breaking library dependencies
+- RPATH is enabled by default via `WRP_CORE_ENABLE_RPATH=ON`
+
+### HSHM Usage
+
+Always use HSHM_MCTX macro unless we are writing GPU code, which necessitates a specific mctx to be created.
 
 ### ChiMod Build Patterns
 
@@ -201,14 +216,126 @@ ChiMod libraries automatically handle common dependencies:
 - Admin includes: Automatically added to include directories for non-admin ChiMods
 
 **For External Applications:**
-When linking against installed ChiMod libraries, use the underscore-based target pattern:
+
+Use the unified `find_package(iowarp-core)` which automatically includes all components and ChiMods:
+
 ```cmake
+# Single find_package call includes everything
+find_package(iowarp-core REQUIRED)
+# This automatically provides:
+#   Core Components:
+#     - All hshm::* modular targets (hshm::cxx, hshm::configure, hshm::serialize, etc.)
+#     - chimaera::cxx (core runtime library)
+#     - ChiMod build utilities (add_chimod_client, add_chimod_runtime, etc.)
+#
+#   Core ChiMods (Always Available):
+#     - chimaera::admin_client, chimaera::admin_runtime
+#     - chimaera::bdev_client, chimaera::bdev_runtime
+#
+#   Optional ChiMods (if enabled at build time):
+#     - wrp_cte::core_client, wrp_cte::core_runtime (if WRP_CORE_ENABLE_CTE=ON)
+#     - wrp_cae::core_client, wrp_cae::core_runtime (if WRP_CORE_ENABLE_CAE=ON)
+
+# Then link to the ChiMod libraries you need
 target_link_libraries(your_target
-  chimaera::mod_name_runtime    # Specific ChiMod runtime library
-  chimaera::mod_name_client     # Specific ChiMod client library
+  chimaera::admin_client     # Admin ChiMod (always available)
+  chimaera::bdev_client      # Block device ChiMod (always available)
+  wrp_cte::core_client       # CTE ChiMod (if enabled)
+  wrp_cae::core_client       # CAE ChiMod (if enabled)
 )
-# rt, admin, and chimaera::cxx dependencies are automatically included by ChiMod libraries
-# All target names use underscores consistently
+# Dependencies are automatically included by ChiMod libraries
+# No need to manually link hshm::cxx or chimaera::cxx
+```
+
+**Alternative (Manual):**
+If you need finer control, you can still find packages individually:
+```cmake
+find_package(HermesShm REQUIRED)        # Provides hshm::* targets
+find_package(chimaera REQUIRED)         # Provides chimaera::cxx
+find_package(chimaera_admin REQUIRED)   # Provides admin ChiMod
+find_package(chimaera_bdev REQUIRED)    # Provides bdev ChiMod
+find_package(wrp_cte_core REQUIRED)     # Provides CTE ChiMod (if enabled)
+find_package(wrp_cae_core REQUIRED)     # Provides CAE ChiMod (if enabled)
+```
+
+### HSHM Modular Dependency Targets
+
+HSHM (HermesShm/context-transport-primitives) provides modular INTERFACE library targets for optional dependencies. Each target includes only the specific dependency it represents, along with the associated compile definitions.
+
+**Available Modular Targets:**
+
+- **`hshm::cxx`** - Core HSHM library
+  - Provides: Basic shared memory and data structures
+  - Links to: `configure`, `thread_all`
+  - Always required by all HSHM users
+
+- **`hshm::configure`** - Configuration parsing (yaml-cpp)
+  - Provides: YAML configuration file parsing
+  - Use instead of linking to yaml-cpp directly
+  - Compile definitions: None (yaml-cpp is always enabled)
+
+- **`hshm::serialize`** - Serialization (cereal)
+  - Provides: Object serialization/deserialization
+  - Use instead of linking to cereal directly
+  - Compile definitions: `HSHM_ENABLE_CEREAL`
+
+- **`hshm::interceptor`** - ELF interception
+  - Provides: Dynamic library interception support
+  - Required for: Adapter real API functionality
+  - Compile definitions: `HSHM_ENABLE_ELF`
+
+- **`hshm::lightbeam`** - Network transport (ZeroMQ, libfabric, Thallium)
+  - Provides: High-performance network communication
+  - Used by: Chimaera runtime for distributed operations
+  - Compile definitions: `HSHM_ENABLE_ZMQ`, `HSHM_ENABLE_LIBFABRIC`, `HSHM_ENABLE_THALLIUM`
+
+- **`hshm::thread_all`** - Threading support
+  - Provides: pthread, OpenMP support
+  - Includes: Thread model definitions
+  - Compile definitions: `HSHM_ENABLE_OPENMP`, `HSHM_ENABLE_PTHREADS`, `HSHM_ENABLE_WINDOWS_THREADS`, `HSHM_DEFAULT_THREAD_MODEL`, `HSHM_DEFAULT_THREAD_MODEL_GPU`
+
+- **`hshm::mpi`** - MPI support
+  - Provides: Message Passing Interface
+  - Use only where MPI is actually needed
+  - Compile definitions: `HSHM_ENABLE_MPI`
+
+- **`hshm::compress`** - Compression libraries
+  - Provides: Data compression support
+  - Compile definitions: `HSHM_ENABLE_COMPRESS`
+
+- **`hshm::encrypt`** - Encryption libraries
+  - Provides: Data encryption support
+  - Compile definitions: `HSHM_ENABLE_ENCRYPT`
+
+**Linking Guidelines:**
+
+1. **Never link to yaml-cpp directly** - Use `hshm::configure` instead (except within hshm::configure itself)
+2. **Never link to cereal directly** - Use `hshm::serialize` instead
+3. **Be selective** - Only link to the modular targets you actually need
+4. **ChiMod clients** - Should only link to `hshm::cxx` (automatically included)
+5. **ChiMod runtimes** - May link to additional modular targets as needed
+6. **Tests** - Link only to the specific modular targets they test
+
+**Example Usage:**
+```cmake
+# External application needing configuration and serialization
+target_link_libraries(my_app
+  wrp_cte::core_client      # Provides hshm::cxx automatically
+  hshm::configure           # For YAML config parsing
+  hshm::serialize           # For object serialization
+)
+
+# Adapter needing ELF interception
+target_link_libraries(my_adapter
+  hshm::cxx
+  hshm::interceptor         # For real API functionality
+)
+
+# Test needing MPI
+target_link_libraries(my_test
+  hshm::cxx
+  hshm::mpi                 # Only link MPI where needed
+)
 ```
 
 ## ChiMod Runtime Code Standards
@@ -299,6 +426,89 @@ ASSERT_EQ(create_task->GetReturnCode(), 0) << "Create task failed with return co
 
 This requirement applies to ALL ChiMod Create operations in unit tests including admin, bdev, and any custom ChiMods.
 
+### Test Framework Requirements
+
+**CRITICAL**: Unit tests that initialize the Chimaera runtime MUST use the `simple_test.h` framework. **DO NOT use Catch2** with Chimaera runtime initialization.
+
+**Catch2 Incompatibility:**
+- Catch2's test framework causes segmentation faults when used with Chimaera runtime initialization
+- This issue was confirmed by copying working test code from `test_bdev_chimod.cc` (which uses simple_test.h) to a Catch2-based test - the identical code segfaulted with Catch2 but worked with simple_test.h
+- Root cause: Catch2's test runner infrastructure conflicts with Chimaera's runtime initialization
+
+**Required Test Framework:**
+- Use `#include "../../../context-runtime/test/simple_test.h"` instead of Catch2
+- Available macros: `TEST_CASE`, `SECTION`, `REQUIRE`, `REQUIRE_FALSE`, `REQUIRE_NOTHROW`, `INFO`, `FAIL`
+- Use `SIMPLE_TEST_MAIN()` at the end of your test file
+- Note: simple_test.h does NOT provide `CHECK` macro - use `REQUIRE` instead
+
+**Example simple_test.h Test:**
+```cpp
+#include "../../../context-runtime/test/simple_test.h"
+
+TEST_CASE("My Test", "[mytag]") {
+  // Test code here
+  REQUIRE(some_condition);
+}
+
+SIMPLE_TEST_MAIN()
+```
+
+### Chimaera Initialization in Unit Tests
+
+**CRITICAL**: All unit tests MUST use the unified `CHIMAERA_INIT()` function. Do NOT use deprecated initialization functions or direct calls to `CHIMAERA_RUNTIME_INIT()` or `CHIMAERA_CLIENT_INIT()`.
+
+**Required Pattern for All Unit Tests:**
+```cpp
+// At the beginning of your test or test fixture setup
+bool success = chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
+REQUIRE(success);
+
+// Optional: Wait for initialization to complete
+std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+// Verify core managers are available
+REQUIRE(CHI_IPC != nullptr);
+REQUIRE(CHI_IPC->IsInitialized());
+```
+
+**Initialization Parameters:**
+- **Mode**: Always use `chi::ChimaeraMode::kClient` for unit tests
+- **default_with_runtime**: Always use `true` for unit tests (starts runtime automatically)
+- **Environment Variable**: `CHIMAERA_WITH_RUNTIME` is handled automatically by `CHIMAERA_INIT()`
+  - If set to `1`: Runtime will be started
+  - If set to `0`: Only client initialization (useful for external runtime scenarios)
+  - If not set: Uses the `default_with_runtime` parameter value
+
+**DEPRECATED - Do NOT Use:**
+- `initializeBoth()` - Remove from all test fixtures
+- `initializeRuntime()` - Remove from all test fixtures
+- `initializeClient()` - Remove from all test fixtures
+- `chi::CHIMAERA_RUNTIME_INIT()` - Do not call directly in tests
+- `chi::CHIMAERA_CLIENT_INIT()` - Do not call directly in tests
+
+**Example Test Fixture:**
+```cpp
+class MyTestFixture {
+public:
+  MyTestFixture() {
+    // Initialize Chimaera with client mode and runtime
+    bool success = chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
+    REQUIRE(success);
+
+    // Give runtime time to initialize
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    // Verify initialization
+    REQUIRE(CHI_IPC != nullptr);
+    REQUIRE(CHI_POOL_MANAGER != nullptr);
+  }
+
+  ~MyTestFixture() {
+    // Cleanup handled automatically
+  }
+};
+```
+
 ## Device Configuration
 
 ### Directory Management
@@ -373,6 +583,41 @@ volumes:
 environment:
   - CHI_HOSTFILE=/etc/iowarp/hostfile
 ```
+
+## Python Wheel Distribution
+
+### Building Bundled Wheels
+
+IOWarp Core can be packaged as a self-contained Python wheel that includes all dependencies installed by `install.sh`.
+
+**Quick Build:**
+```bash
+# Build a bundled wheel with all dependencies
+export IOWARP_BUNDLE_BINARIES=ON
+python -m build --wheel
+
+# Or use the convenience script
+./build_wheel.sh
+```
+
+**What Gets Bundled:**
+- All IOWarp libraries (libchimaera_cxx.so, libhermes_shm_host.so, ChiMod libraries)
+- Dependencies from install.sh (Boost, HDF5, ZeroMQ, yaml-cpp, etc.)
+- Command-line tools (wrp_cte, wrp_cae_omni, chimaera_start_runtime, etc.)
+- Headers and CMake configuration files
+- Conda dependencies (if building in a Conda environment)
+
+**RPATH Configuration:**
+- All bundled libraries use relative RPATH (`$ORIGIN`)
+- The wheel is fully relocatable and works anywhere it's installed
+- No `LD_LIBRARY_PATH` configuration needed
+
+**Complete Documentation:** See `BUILD_WHEEL.md` for:
+- Detailed build instructions
+- Platform-specific wheels (manylinux, macOS)
+- CI/CD integration examples
+- Troubleshooting guide
+- PyPI distribution
 
 ## Documentation
 

@@ -30,52 +30,53 @@ add_executable(test_data_structure_exec
 
 add_dependencies(test_data_structure_exec hermes_shm_host)
 target_link_libraries(test_data_structure_exec
-        hermes_shm_host Catch2::Catch2
-        ${MPI_LIBS} ${OpenMP_LIBS})
+        hermes_shm_host
+        Catch2::Catch2
+        hshm::thread_all)
 
 # ------------------------------------------------------------------------------
 # Test Cases
 # ------------------------------------------------------------------------------
 
 # STRING TESTS
-add_test(NAME test_string COMMAND
+add_test(NAME ctp_string COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "String")
 
 # CHARBUF TESTS
-add_test(NAME test_charbuf COMMAND
+add_test(NAME ctp_charbuf COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "Charbuf")
 
 # VECTOR TESTS
-add_test(NAME test_vector COMMAND
+add_test(NAME ctp_vector COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "Vector*")
 
 # LIST TESTS
-add_test(NAME test_list COMMAND
+add_test(NAME ctp_list COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "*::List*")
 
 # SLIST TESTS
-add_test(NAME test_slist COMMAND
+add_test(NAME ctp_slist COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "Slist*")
 
 # UNORDERED_MAP TESTS
-add_test(NAME test_unordered_map COMMAND
+add_test(NAME ctp_unordered_map COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "UnorderedMap*")
 
 # PAIR TESTS
-add_test(NAME test_pair COMMAND
+add_test(NAME ctp_pair COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "Pair*")
 
 # lifo_list_queue TESTS
-add_test(NAME test_lifo_list_queue COMMAND
+add_test(NAME ctp_lifo_list_queue COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "lifo_list_queueOfMpPage")
 
 if(HSHM_ENABLE_OPENMP)
         # SPSC TESTS
-        add_test(NAME test_spsc COMMAND
+        add_test(NAME ctp_spsc COMMAND
                 ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "TestSpsc*")
 
         # MPSC TESTS
-        add_test(NAME test_mpsc COMMAND
+        add_test(NAME ctp_mpsc COMMAND
                 ${CMAKE_BINARY_DIR}/bin/test_data_structure_exec "TestMpsc*")
 endif()
 
@@ -84,9 +85,9 @@ endif()
 # ------------------------------------------------------------------------------
 install(TARGETS
         test_data_structure_exec
-        LIBRARY DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        ARCHIVE DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        RUNTIME DESTINATION ${HSHM_INSTALL_BIN_DIR})
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+        RUNTIME DESTINATION bin)
 
 # -----------------------------------------------------------------------------
 # Coverage

@@ -13,15 +13,15 @@ if (HSHM_ENABLE_MPI)
 
     add_dependencies(test_data_structure_mpi_exec hermes_shm_host)
     target_link_libraries(test_data_structure_mpi_exec
-            hermes_shm_host Catch2::Catch2 ${MPI_LIBS} ${OpenMP_LIBS})
-    message(STATUS "MPI_LIBS: ${MPI_LIBS}")
+            hermes_shm_host Catch2::Catch2 hshm::thread_all hshm::mpi)
+    message(STATUS "MPI_LIBS: hshm::mpi")
 
     #------------------------------------------------------------------------------
     # Build Tests
     #------------------------------------------------------------------------------
 
     # LIST TESTS
-    add_test(NAME test_mpsc_queue_mpi COMMAND
+    add_test(NAME ctp_mpsc_queue_mpi COMMAND
             mpirun -n 2 ${CMAKE_BINARY_DIR}/bin/test_data_structure_mpi_exec "TestMpscQueueMpi")
 
     #------------------------------------------------------------------------------
@@ -29,9 +29,9 @@ if (HSHM_ENABLE_MPI)
     #------------------------------------------------------------------------------
     install(TARGETS
             test_data_structure_mpi_exec
-            LIBRARY DESTINATION ${HSHM_INSTALL_LIB_DIR}
-            ARCHIVE DESTINATION ${HSHM_INSTALL_LIB_DIR}
-            RUNTIME DESTINATION ${HSHM_INSTALL_BIN_DIR})
+            LIBRARY DESTINATION lib
+            ARCHIVE DESTINATION lib
+            RUNTIME DESTINATION bin)
 
     #-----------------------------------------------------------------------------
     # Coverage

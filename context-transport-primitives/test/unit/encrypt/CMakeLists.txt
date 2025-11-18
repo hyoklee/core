@@ -13,7 +13,7 @@ add_dependencies(test_encrypt_exec hermes_shm_host)
 target_link_libraries(test_encrypt_exec
         hermes_shm_host Catch2::Catch2)
 
-add_test(NAME test_encrypt COMMAND
+add_test(NAME ctp_encrypt COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_encrypt_exec "~[error=FatalError]")
 
 #-----------------------------------------------------------------------------
@@ -21,9 +21,9 @@ add_test(NAME test_encrypt COMMAND
 #------------------------------------------------------------------------------
 install(TARGETS
         test_encrypt_exec
-        LIBRARY DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        ARCHIVE DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        RUNTIME DESTINATION ${HSHM_INSTALL_BIN_DIR})
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+        RUNTIME DESTINATION bin)
 
 #-----------------------------------------------------------------------------
 # Coverage

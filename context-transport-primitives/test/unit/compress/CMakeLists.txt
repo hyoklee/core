@@ -13,7 +13,7 @@ add_dependencies(test_compress_exec hermes_shm_host)
 target_link_libraries(test_compress_exec
         hermes_shm_host Catch2::Catch2)
 
-add_test(NAME test_compress COMMAND
+add_test(NAME ctp_compress COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_compress_exec "~[error=FatalError]")
 
 #-----------------------------------------------------------------------------
@@ -21,9 +21,9 @@ add_test(NAME test_compress COMMAND
 #------------------------------------------------------------------------------
 install(TARGETS
         test_compress_exec
-        LIBRARY DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        ARCHIVE DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        RUNTIME DESTINATION ${HSHM_INSTALL_BIN_DIR})
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+        RUNTIME DESTINATION bin)
 
 #-----------------------------------------------------------------------------
 # Coverage

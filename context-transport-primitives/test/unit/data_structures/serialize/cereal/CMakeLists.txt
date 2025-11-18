@@ -8,8 +8,9 @@ project(hermes_shm)
 set (LIBS
         hermes_shm_host
         Catch2::Catch2
-        ${MPI_LIBS}
-        ${OpenMP_LIBS})
+        hshm::serialize
+        hshm::mpi
+        hshm::thread_all)
 add_executable(test_cereal_exec
         ${TEST_MAIN}/main.cc
         test_init.cc
@@ -18,16 +19,16 @@ add_dependencies(test_cereal_exec
         hermes_shm_host)
 target_link_libraries(test_cereal_exec ${LIBS})
 
-add_test(NAME test_cereal COMMAND ${CMAKE_BINARY_DIR}/bin/test_cereal_exec)
+add_test(NAME ctp_cereal COMMAND ${CMAKE_BINARY_DIR}/bin/test_cereal_exec)
 
 #------------------------------------------------------------------------------
 # Install Targets
 #------------------------------------------------------------------------------
 install(TARGETS
         test_cereal_exec
-        LIBRARY DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        ARCHIVE DESTINATION ${HSHM_INSTALL_LIB_DIR}
-        RUNTIME DESTINATION ${HSHM_INSTALL_BIN_DIR})
+        LIBRARY DESTINATION lib
+        ARCHIVE DESTINATION lib
+        RUNTIME DESTINATION bin)
 
 #-----------------------------------------------------------------------------
 # Coverage

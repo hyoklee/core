@@ -8,9 +8,12 @@ import os
 import sys
 import subprocess
 import shutil
+import platform
 from pathlib import Path
 from setuptools import setup, Extension
+from setuptools.dist import Distribution
 from setuptools.command.build_ext import build_ext
+from setuptools.command.sdist import sdist
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 
 
@@ -21,6 +24,51 @@ class CMakeExtension(Extension):
         super().__init__(name, sources=[], **kwargs)
         self.sourcedir = os.path.abspath(sourcedir)
         self.repo_url = repo_url
+
+
+class CustomSDist(sdist):
+    """Custom sdist command that ensures git submodules are fully included."""
+
+    def run(self):
+        """Ensure git submodules are initialized before creating source distribution."""
+        # Check if we're in a git repository
+        if os.path.exists(".git"):
+            print("\n" + "="*60)
+            print("Ensuring git submodules are included in source distribution")
+            print("="*60 + "\n")
+
+            try:
+                # Initialize and update submodules to ensure they're present
+                subprocess.check_call(
+                    ["git", "submodule", "update", "--init", "--recursive"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT
+                )
+                print("✓ Git submodules initialized successfully")
+
+                # List submodules to verify
+                result = subprocess.run(
+                    ["git", "submodule", "status"],
+                    capture_output=True,
+                    text=True,
+                    check=True
+                )
+                if result.stdout:
+                    print("\nSubmodules found:")
+                    for line in result.stdout.strip().split('\n'):
+                        print(f"  {line}")
+
+                print("\nNote: MANIFEST.in will include submodule files in the tarball")
+                print("")
+
+            except subprocess.CalledProcessError as e:
+                print(f"Warning: Could not initialize git submodules: {e}")
+                print("Source distribution may be incomplete!")
+        else:
+            print("Not a git repository - skipping submodule initialization")
+
+        # Call parent sdist command to create the distribution
+        super().run()
 
 
 class CMakeBuild(build_ext):
@@ -46,148 +94,87 @@ class CMakeBuild(build_ext):
         # Build the unified core
         self.build_iowarp_core(build_temp)
 
-        # If bundling binaries, copy them to the package directory
-        if os.environ.get("IOWARP_BUNDLE_BINARIES", "OFF").upper() == "ON":
-            self.copy_binaries_to_package(build_temp)
-
     def build_iowarp_core(self, build_temp):
-        """Build IOWarp core using CMake presets from included source or clone."""
+        """Build IOWarp core using install.sh script."""
         print(f"\n{'='*60}")
-        print(f"Building IOWarp Core")
+        print(f"Building IOWarp Core using install.sh")
         print(f"{'='*60}\n")
 
-        # Set up directories
-        source_dir = build_temp / "iowarp-core"
-        build_dir = source_dir / "build"
-
         # Determine install prefix based on whether we're bundling binaries
-        bundle_binaries = os.environ.get("IOWARP_BUNDLE_BINARIES", "ON").upper() == "ON"
+        # For IOWarp Core, install directly to the Python environment (sys.prefix)
+        # This is the standard approach for packages with C++ libraries that need to be
+        # found by CMake and linked by other applications.
+        # Libraries → {sys.prefix}/lib/
+        # Headers → {sys.prefix}/include/
+        # CMake configs → {sys.prefix}/lib/cmake/
+        bundle_binaries = os.environ.get("IOWARP_BUNDLE_BINARIES", "OFF").upper() == "ON"
         if bundle_binaries:
             # Install to a staging directory that we'll copy into the wheel
+            # (Not recommended for IOWarp - use IOWARP_BUNDLE_BINARIES=ON to enable)
             install_prefix = build_temp / "install"
         else:
-            # Install to system prefix (for editable installs)
+            # Install directly to Python environment prefix
+            # This ensures libraries/headers are in standard locations
             install_prefix = Path(sys.prefix).absolute()
 
-        # Check if source is in the package root directory (direct copy)
+        print(f"Install prefix: {install_prefix}")
+
+        # Find install.sh in package root
         package_root = Path(__file__).parent.absolute()
-        root_cmake = package_root / "CMakeLists.txt"
+        install_script = package_root / "install.sh"
 
-        if not source_dir.exists():
-            if root_cmake.exists():
-                # Use source from package root (direct copy approach)
-                print(f"Using C++ source from package root: {package_root}")
-                print(f"Copying source to build directory...")
-                # Copy all C++ source directories
-                for item in ["CMakeLists.txt", "CMakePresets.json", "context-runtime",
-                           "context-transfer-engine", "context-assimilation-engine",
-                           "context-transport-primitives", "context-exploration-engine",
-                           "external", "docker", "ai-prompts"]:
-                    src_path = package_root / item
-                    if src_path.exists():
-                        dest_path = source_dir / item
-                        if src_path.is_dir():
-                            shutil.copytree(src_path, dest_path, symlinks=True, dirs_exist_ok=True)
-                        else:
-                            source_dir.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src_path, dest_path)
-                print(f"Source copied to {source_dir}")
-            else:
-                # Clone repository (fallback for old source distributions)
-                print(f"Source not found in package root, cloning {self.REPO_URL}...")
-                subprocess.check_call(["git", "clone", "--recursive", self.REPO_URL, str(source_dir)])
-        else:
-            print(f"Using existing source at {source_dir}")
+        if not install_script.exists():
+            raise RuntimeError(f"install.sh not found at {install_script}")
 
-        # Determine build type
-        build_type = os.environ.get("IOWARP_BUILD_TYPE", "release").lower()
-        preset = f"{build_type}"
+        # Make install.sh executable
+        install_script.chmod(0o755)
 
-        print(f"Configuring with CMake preset: {preset}")
-
-        # Configure using CMake preset
-        cmake_preset_args = [
-            "cmake",
-            f"--preset={preset}",
-        ]
-
-        # Additional configuration options
-        additional_args = []
-
-        # Override install prefix
-        additional_args.append(f"-DCMAKE_INSTALL_PREFIX={install_prefix}")
-
-        # Set RPATH for bundled binaries to find their libraries
-        if bundle_binaries:
-            # Disable building tests for distribution builds
-            additional_args.append("-DWRP_CORE_ENABLE_TESTS=OFF")
-
-            rpaths = []
-            if sys.platform.startswith("linux"):
-                rpaths.append("$ORIGIN/../lib")
-                conda_prefix = os.environ.get("CONDA_PREFIX")
-                if conda_prefix:
-                    rpaths.append(f"{conda_prefix}/lib")
-            elif sys.platform == "darwin":
-                rpaths.append("@loader_path/../lib")
-                conda_prefix = os.environ.get("CONDA_PREFIX")
-                if conda_prefix:
-                    rpaths.append(f"{conda_prefix}/lib")
-
-            if rpaths:
-                rpath = ":".join(rpaths) if sys.platform.startswith("linux") else ";".join(rpaths)
-                additional_args.extend([
-                    f"-DCMAKE_INSTALL_RPATH={rpath}",
-                    "-DCMAKE_INSTALL_RPATH_USE_LINK_PATH=TRUE",
-                    "-DCMAKE_BUILD_WITH_INSTALL_RPATH=TRUE",
-                ])
-
-        # Add HDF5_ROOT to use conda's HDF5 if available
-        conda_prefix = os.environ.get("CONDA_PREFIX")
-        if conda_prefix:
-            # Explicitly ignore paths that might have incompatible HDF5
-            home_dir = str(Path.home())
-            hdf5_lib = f"{conda_prefix}/lib/libhdf5.so"
-            additional_args.extend([
-                f"-DHDF5_ROOT={conda_prefix}",
-                f"-DHDF5_C_LIBRARY={hdf5_lib}",
-                f"-DHDF5_INCLUDE_DIR={conda_prefix}/include",
-                f"-DCMAKE_PREFIX_PATH={conda_prefix}",
-                f"-DCMAKE_IGNORE_PATH=/usr/lib/x86_64-linux-gnu/hdf5;{home_dir}/hdf5-install;{home_dir}/hdf5;/opt/hdf5",
-                "-DCMAKE_FIND_USE_SYSTEM_ENVIRONMENT_PATH=FALSE",
-            ])
-
-        # Apply additional CMake arguments if preset configuration needs overrides
-        if additional_args:
-            # First configure with preset
-            subprocess.check_call(cmake_preset_args, cwd=source_dir)
-            # Then apply additional configuration
-            cmake_config_args = ["cmake", "build"] + additional_args
-            print(f"Applying additional configuration: {' '.join(additional_args)}")
-            subprocess.check_call(cmake_config_args, cwd=source_dir)
-        else:
-            subprocess.check_call(cmake_preset_args, cwd=source_dir)
-
-        # Build
-        print(f"\nBuilding IOWarp core...")
-        build_args = ["cmake", "--build", "build"]
+        # Prepare environment for install.sh
+        env = os.environ.copy()
+        env["INSTALL_PREFIX"] = str(install_prefix)
+        # INSTALL_PREFIX points to venv root, e.g., /path/to/venv
+        # This ensures standard layout:
+        #   - Binaries:    {venv}/bin/
+        #   - Libraries:   {venv}/lib/
+        #   - Headers:     {venv}/include/
+        #   - CMake:       {venv}/lib/cmake/
+        # Python bindings install to site-packages via nanobind
 
         # Determine number of parallel jobs
         if hasattr(self, "parallel") and self.parallel:
-            build_args.extend(["--parallel", str(self.parallel)])
+            env["BUILD_JOBS"] = str(self.parallel)
         else:
-            # Use all available cores
             import multiprocessing
-            build_args.extend(["--parallel", str(multiprocessing.cpu_count())])
+            env["BUILD_JOBS"] = str(multiprocessing.cpu_count())
 
-        subprocess.check_call(build_args, cwd=source_dir)
+        print(f"\nRunning install.sh with:")
+        print(f"  INSTALL_PREFIX={env['INSTALL_PREFIX']}")
+        print(f"  BUILD_JOBS={env['BUILD_JOBS']}\n")
 
-        # Install
-        print(f"\nInstalling IOWarp core...")
-        install_args = ["cmake", "--install", "build", "--prefix", str(install_prefix)]
-        subprocess.check_call(install_args, cwd=source_dir)
+        # Run install.sh and capture output for debugging
+        result = subprocess.run(
+            [str(install_script)],
+            cwd=package_root,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
+        )
+
+        # Print all install.sh output
+        if result.stdout:
+            print(result.stdout)
+
+        # Check for errors
+        if result.returncode != 0:
+            print(f"\nERROR: install.sh failed with exit code {result.returncode}\n")
+            sys.exit(result.returncode)
 
         print(f"\nIOWarp core built and installed successfully!\n")
+
+        # If bundling is enabled, copy binaries to package
+        if bundle_binaries:
+            self.copy_binaries_to_package(build_temp)
 
     def copy_binaries_to_package(self, build_temp):
         """Copy built binaries and headers into the Python package for wheel bundling."""
@@ -375,56 +362,55 @@ class CMakeBuild(build_ext):
 
                 print(f"\nTotal conda dependencies copied: {len(copied_libs)}")
 
-        # Fix RPATH in all bundled libraries to prefer bundled dependencies
-        print(f"\n" + "="*60)
-        print("Fixing RPATH in bundled libraries")
-        print("="*60 + "\n")
+        # Note: RPATH fixing is not needed because:
+        # - CMake already sets correct relative RPATH ($ORIGIN) at build time
+        # - All IOWarp libraries and binaries are already relocatable
+        # - Bundled libraries retain their CMake-configured RPATH when copied
+        print("\nBinary copying complete!")
+        print("Note: Libraries already have correct RPATH set by CMake build system\n")
 
-        # Check if patchelf is available
-        patchelf_available = True
-        try:
-            subprocess.run(["patchelf", "--version"],
-                         capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            print("  Warning: patchelf not found, skipping RPATH fixes")
-            print("  Libraries may fail to find bundled dependencies")
-            patchelf_available = False
 
-        if patchelf_available:
-            # Fix RPATH for all .so files in lib directory
-            for lib_file in lib_dir.rglob("*.so*"):
-                if lib_file.is_file() and not lib_file.is_symlink():
-                    try:
-                        # Set RPATH to look in same directory first
-                        # $ORIGIN means the directory containing the library
-                        subprocess.run([
-                            "patchelf",
-                            "--set-rpath", "$ORIGIN:$ORIGIN/..:$ORIGIN/../lib",
-                            "--force-rpath",
-                            str(lib_file)
-                        ], capture_output=True, check=True)
-                        print(f"  Fixed RPATH: {lib_file.name}")
-                    except subprocess.CalledProcessError as e:
-                        # Some files may not be ELF files or may not have RPATH
-                        # This is fine, just skip them
-                        pass
+class BinaryDistribution(Distribution):
+    """Distribution which always forces a binary package with platform-specific tags."""
 
-            # Fix RPATH for binaries
-            for bin_file in bin_dir.rglob("*"):
-                if bin_file.is_file() and not bin_file.is_symlink():
-                    try:
-                        # Set RPATH to look in ../lib
-                        subprocess.run([
-                            "patchelf",
-                            "--set-rpath", "$ORIGIN/../lib",
-                            "--force-rpath",
-                            str(bin_file)
-                        ], capture_output=True, check=True)
-                        print(f"  Fixed RPATH: bin/{bin_file.name}")
-                    except subprocess.CalledProcessError:
-                        pass
+    def has_ext_modules(self):
+        """Always return True to indicate this is a platform-specific package.
 
-        print("\nBinary copying complete!\n")
+        This forces setuptools to generate platform-specific wheel tags instead of
+        pure-python 'any' tags. Required for packages with compiled C/C++ extensions.
+        """
+        return True
+
+
+class CustomBdistWheel(_bdist_wheel):
+    """Custom bdist_wheel that automatically generates manylinux tags.
+
+    This eliminates the need for post-build wheel renaming scripts and ensures
+    proper platform tags are set during the build process.
+    """
+
+    def finalize_options(self):
+        """Override to set platform-specific wheel tags based on the target system."""
+        super().finalize_options()
+
+        # Only apply manylinux tags on Linux
+        if platform.system() == 'Linux':
+            machine = platform.machine()
+
+            # Map machine architecture to manylinux platform tag
+            # manylinux_2_17 is compatible with most modern Linux systems (RHEL 7+, Ubuntu 16.04+)
+            if machine == 'x86_64':
+                self.plat_name = 'manylinux_2_17_x86_64'
+            elif machine == 'aarch64':
+                self.plat_name = 'manylinux_2_17_aarch64'
+            elif machine == 'ppc64le':
+                self.plat_name = 'manylinux_2_17_ppc64le'
+            elif machine == 's390x':
+                self.plat_name = 'manylinux_2_17_s390x'
+            else:
+                # For unknown architectures, use the generic linux tag
+                print(f"Warning: Unknown architecture {machine}, using generic linux tag")
+                self.plat_name = f'linux_{machine}'
 
 
 # Create extensions list
@@ -439,6 +425,8 @@ ext_modules = [
 ]
 cmdclass = {
     "build_ext": CMakeBuild,
+    "sdist": CustomSDist,
+    "bdist_wheel": CustomBdistWheel,
 }
 
 
@@ -446,4 +434,5 @@ if __name__ == "__main__":
     setup(
         ext_modules=ext_modules,
         cmdclass=cmdclass,
+        distclass=BinaryDistribution,
     )
