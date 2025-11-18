@@ -107,6 +107,13 @@ ensure_conda() {
 # Ensure conda is available
 ensure_conda
 
+# Accept Conda Terms of Service for Anaconda channels
+echo -e "${BLUE}Accepting Conda Terms of Service...${NC}"
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main 2>/dev/null || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r 2>/dev/null || true
+echo -e "${GREEN}✓ Conda ToS accepted${NC}"
+echo ""
+
 # Configure conda channels (add conda-forge if not already present)
 echo -e "${BLUE}Configuring conda channels...${NC}"
 conda config --add channels conda-forge 2>/dev/null || true
