@@ -219,7 +219,7 @@ echo ""
 
 # Show what was created in conda-bld directory
 echo -e "${BLUE}Checking conda-bld directory contents...${NC}"
-CONDA_BLD_PATH="$(conda info --base)/conda-bld"
+CONDA_BLD_PATH="$CONDA_PREFIX/conda-bld"
 if [ -d "$CONDA_BLD_PATH" ]; then
     echo "Directory structure:"
     ls -lah "$CONDA_BLD_PATH" 2>/dev/null || true
