@@ -234,7 +234,7 @@ fi
 
 # Find the built package in the conda-bld directory
 echo -e "${BLUE}Locating built package...${NC}"
-CONDA_BLD_PATH="$(conda info --base)/conda-bld"
+CONDA_BLD_PATH="$CONDA_PREFIX/conda-bld"
 
 # Conda places packages in platform-specific subdirectories (linux-64, osx-64, noarch, etc.)
 # Search in all subdirectories for the package (both .tar.bz2 and .conda formats)
