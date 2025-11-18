@@ -73,6 +73,7 @@ jobs:
 
     - name: Configure with CMake preset (debug)
       run: |
+        conda activate iowarp-build
         git submodule update --init --recursive
         # Remove build directory from install.sh to ensure clean build
         rm -rf build
