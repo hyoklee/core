@@ -35,7 +35,7 @@ jobs:
           doxygen \
           perl \
           libhdf5-dev \
-          libboost-dev
+          libboost-all-dev
 
     - name: Install compression libraries
       run: |
