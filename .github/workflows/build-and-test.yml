@@ -21,7 +21,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
       with:
         submodules: recursive
 
@@ -50,11 +50,7 @@ jobs:
     - name: Build and install dependencies using install.sh
       run: |
         chmod +x install.sh
-        sudo DEPS_ONLY=TRUE INSTALL_PREFIX=$INSTALL_PREFIX ./install.sh
-        # Fix ownership of build directory created by install.sh
-        sudo chown -R $USER:$USER build/ || true
-      env:
-        DEBIAN_FRONTEND: noninteractive
+        sudo ./install.sh
 
     - name: Show system information
       run: |
@@ -73,7 +69,7 @@ jobs:
         dpkg -l | grep -E "libmpich" || true
         echo ""
         echo "=== Installed Dependencies (install.sh) ==="
-        ls -la /usr/local/lib/libboost* /usr/local/lib/libzmq* /usr/local/lib/libhdf5* /usr/local/lib/libyaml* 2>/dev/null | head -20 || echo "Dependencies not yet visible"
+        ls -la /usr/share/miniconda/envs/iowarp-build/lib/libboost* /usr/share/miniconda/envs/iowarp-build/lib/libzmq* /usr/share/miniconda/envs/iowarp-build/lib/libhdf5* /usr/share/miniconda/envs/iowarp-build/lib/libyaml* 2>/dev/null | head -20 || echo "Dependencies not yet visible"
 
     - name: Configure with CMake preset (debug)
       run: |
@@ -81,7 +77,7 @@ jobs:
         # Remove build directory from install.sh to ensure clean build
         rm -rf build
         cmake --preset=debug \
-          -DCMAKE_PREFIX_PATH="/usr/local" \
+          -DCMAKE_PREFIX_PATH="/usr/share/miniconda/envs/iowarp-build" \
           -DWRP_CORE_ENABLE_RUNTIME=ON \
           -DWRP_CORE_ENABLE_CTE=ON \
           -DWRP_CORE_ENABLE_CAE=ON \
@@ -90,7 +86,7 @@ jobs:
       env:
         CC: gcc
         CXX: g++
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig
 
     - name: Build all components
       run: |
@@ -122,24 +118,24 @@ jobs:
           build/**/*_test.log
         retention-days: 7
 
-    - name: Install to /usr/local
+    - name: Install to /usr/share/miniconda/envs/iowarp-build
       run: |
-        sudo cmake --install build --prefix /usr/local
+        sudo cmake --install build --prefix /usr/share/miniconda/envs/iowarp-build
         echo ""
         echo "=== Installation Summary ==="
-        echo "Install prefix: /usr/local"
+        echo "Install prefix: /usr/share/miniconda/envs/iowarp-build"
         echo ""
 
     - name: Verify installation structure
       run: |
         echo "=== Installed Libraries ==="
-        find /usr/local -name "*.so*" -o -name "*.a" | grep iowarp | sort | head -30
+        find /usr/share/miniconda/envs/iowarp-build -name "*.so*" -o -name "*.a" | grep iowarp | sort | head -30
         echo ""
         echo "=== Installed Headers ==="
-        find /usr/local/include -name "*.h" -o -name "*.hpp" | grep -E "(chimaera|hshm|wrp)" | head -30
+        find /usr/share/miniconda/envs/iowarp-build/include -name "*.h" -o -name "*.hpp" | grep -E "(chimaera|hshm|wrp)" | head -30
         echo ""
         echo "=== CMake Config Files ==="
-        find /usr/local -name "*Config.cmake" -o -name "*-config.cmake" | grep -E "(iowarp|chimaera|hshm)" | head -20
+        find /usr/share/miniconda/envs/iowarp-build -name "*Config.cmake" -o -name "*-config.cmake" | grep -E "(iowarp|chimaera|hshm)" | head -20
 
     - name: Test external project linking (CTE)
       run: |
@@ -151,9 +147,9 @@ jobs:
         echo "✓ CTE external test built successfully"
       continue-on-error: false
       env:
-        CMAKE_PREFIX_PATH: /usr/local
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-        LD_LIBRARY_PATH: /usr/local/lib
+        CMAKE_PREFIX_PATH: /usr/share/miniconda/envs/iowarp-build
+        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig
+        LD_LIBRARY_PATH: /usr/share/miniconda/envs/iowarp-build/lib
 
     - name: Test external project linking (Runtime)
       run: |
@@ -165,9 +161,9 @@ jobs:
         echo "✓ Runtime external test built successfully"
       continue-on-error: false
       env:
-        CMAKE_PREFIX_PATH: /usr/local
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-        LD_LIBRARY_PATH: /usr/local/lib
+        CMAKE_PREFIX_PATH: /usr/share/miniconda/envs/iowarp-build
+        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig
+        LD_LIBRARY_PATH: /usr/share/miniconda/envs/iowarp-build/lib
 
     - name: Test external project linking (Transport Primitives)
       run: |
@@ -179,9 +175,9 @@ jobs:
         echo "✓ Transport Primitives external test built successfully"
       continue-on-error: false
       env:
-        CMAKE_PREFIX_PATH: /usr/local
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-        LD_LIBRARY_PATH: /usr/local/lib
+        CMAKE_PREFIX_PATH: /usr/share/miniconda/envs/iowarp-build
+        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig
+        LD_LIBRARY_PATH: /usr/share/miniconda/envs/iowarp-build/lib
 
     - name: Test external project linking (CAE)
       run: |
@@ -193,9 +189,9 @@ jobs:
         echo "✓ CAE external test built successfully"
       continue-on-error: false
       env:
-        CMAKE_PREFIX_PATH: /usr/local
-        PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
-        LD_LIBRARY_PATH: /usr/local/lib
+        CMAKE_PREFIX_PATH: /usr/share/miniconda/envs/iowarp-build
+        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig
+        LD_LIBRARY_PATH: /usr/share/miniconda/envs/iowarp-build/lib
 
     - name: Create package with CPack
       run: |
@@ -219,14 +215,6 @@ jobs:
           tar -tzf *.tar.gz | head -50
         fi
       continue-on-error: true
-
-    # - name: Upload installation artifacts
-    #   if: success()
-    #   uses: actions/upload-artifact@v4
-    #   with:
-    #     name: install-${{ matrix.os }}
-    #     path: /usr/local/
-    #     retention-days: 7
 
     - name: Upload packages
       if: success()
