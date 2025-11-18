@@ -86,7 +86,7 @@ jobs:
       env:
         CC: gcc
         CXX: g++
-        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig
+        PKG_CONFIG_PATH: /usr/share/miniconda/envs/iowarp-build/lib/pkgconfig:/usr/local/lib/pkgconfig
 
     - name: Build all components
       run: |
