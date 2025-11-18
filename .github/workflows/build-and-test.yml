@@ -15,38 +15,12 @@ jobs:
       fail-fast: false
       matrix:
         os: ['ubuntu-24.04', 'ubuntu-24.04-arm']
-
-#    env:
-#      INSTALL_PREFIX: /usr/local
-
     steps:
     - name: Checkout repository
       uses: actions/checkout@v5
       with:
         submodules: recursive
-
-    # - name: Install system build tools
-    #   run: |
-    #     sudo apt-get update
-    #     sudo apt-get install -y \
-    #       build-essential cmake pkg-config \
-    #       libelf-dev \
-    #       libssl-dev \
-    #       doxygen \
-    #       perl \
-
-    # - name: Install compression libraries
-    #   run: |
-    #     sudo apt-get install -y \
-    #       libbz2-dev liblzo2-dev libzstd-dev liblz4-dev \
-    #       zlib1g-dev liblzma-dev libbrotli-dev libsnappy-dev libblosc2-dev
-
-    # - name: Install MPI support
-    #   run: |
-    #     sudo apt-get install -y libmpich-dev
-
-    - name: Build and install dependencies using install.sh
+    - name: Build and test using install.sh
       run: |
         chmod +x install.sh
         sudo ./install.sh
-
