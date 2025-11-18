@@ -205,22 +205,23 @@ echo -e "Package built successfully!"
 echo -e "======================================================================${NC}"
 echo ""
 
-# Get the output package path (optional - for informational purposes only)
-# Note: This command may fail in some environments, but it's not critical
+# Find the built package in the conda-bld directory
 echo -e "${BLUE}Locating built package...${NC}"
-set +e  # Temporarily disable exit-on-error for this non-critical operation
-PACKAGE_PATH=$(conda build "$RECIPE_DIR" --output 2>&1)
-PACKAGE_EXIT_CODE=$?
-set -e  # Re-enable exit-on-error
+CONDA_BLD_PATH="$(conda info --base)/conda-bld"
+PACKAGE_PATH=$(find "$CONDA_BLD_PATH" -name "iowarp-core-*.tar.bz2" -type f 2>/dev/null | sort -V | tail -n 1)
 
-if [ $PACKAGE_EXIT_CODE -eq 0 ] && [ -n "$PACKAGE_PATH" ]; then
-    echo -e "${BLUE}Package location:${NC}"
-    echo "  $PACKAGE_PATH"
+if [ -z "$PACKAGE_PATH" ]; then
+    echo -e "${RED}Error: Could not find built package in $CONDA_BLD_PATH${NC}"
     echo ""
-else
-    echo -e "${YELLOW}Note: Could not determine package path (this is non-critical)${NC}"
+    echo -e "${YELLOW}Searching for package files:${NC}"
+    find "$CONDA_BLD_PATH" -name "*.tar.bz2" -type f 2>/dev/null || echo "No .tar.bz2 files found"
     echo ""
+    exit 1
 fi
+
+echo -e "${BLUE}Package location:${NC}"
+echo "  $PACKAGE_PATH"
+echo ""
 
 # Install the package non-interactively
 echo -e "${BLUE}>>> Installing iowarp-core...${NC}"
@@ -231,7 +232,9 @@ conda config --set always_yes true 2>/dev/null || true
 conda config --add channels conda-forge 2>/dev/null || true
 conda config --set channel_priority flexible 2>/dev/null || true
 
-if conda install --use-local iowarp-core -c conda-forge -y 2>&1; then
+# Install directly from the package file
+# Note: conda-forge channel is already configured above, so no -c flag needed
+if conda install "$PACKAGE_PATH" -y 2>&1; then
     echo ""
     echo -e "${GREEN}======================================================================"
     echo -e "✓ IOWarp Core installed successfully!"
@@ -260,7 +263,7 @@ else
     echo ""
     echo -e "${YELLOW}You can try installing manually:${NC}"
     echo "  conda config --add channels conda-forge"
-    echo "  conda install --use-local iowarp-core -c conda-forge"
+    echo "  conda install $PACKAGE_PATH"
     echo ""
     echo -e "${YELLOW}Or check that conda-forge channel is available:${NC}"
     echo "  conda config --show channels"
