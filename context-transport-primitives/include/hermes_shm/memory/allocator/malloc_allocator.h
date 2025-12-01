@@ -76,7 +76,7 @@ class _MallocAllocator : public Allocator {
    * Allocate a memory of \a size size with optional alignment.
    * */
   HSHM_CROSS_FUN
-  OffsetPtr AllocateOffset(const hipc::MemContext &ctx, size_t size, size_t alignment = 0) {
+  OffsetPtr<> AllocateOffset(const hipc::MemContext &ctx, size_t size, size_t alignment = 0) {
 #if HSHM_IS_HOST
     void *mem;
     if (alignment > 0) {
@@ -87,9 +87,9 @@ class _MallocAllocator : public Allocator {
     auto page = reinterpret_cast<MallocPage *>(mem);
     page->page_size_ = size;
     header_->AddSize(size);
-    return OffsetPtr((size_t)(page + 1));
+    return OffsetPtr<>((size_t)(page + 1));
 #else
-    return OffsetPtr(0);
+    return OffsetPtr<>(0);
 #endif
   }
 
@@ -99,8 +99,8 @@ class _MallocAllocator : public Allocator {
    * @return whether or not the pointer p was changed
    * */
   HSHM_CROSS_FUN
-  OffsetPtr ReallocateOffsetNoNullCheck(const hipc::MemContext &ctx,
-                                            OffsetPtr p, size_t new_size) {
+  OffsetPtr<> ReallocateOffsetNoNullCheck(const hipc::MemContext &ctx,
+                                            OffsetPtr<> p, size_t new_size) {
 #if HSHM_IS_HOST
     // Get the input page
     auto page =
@@ -113,9 +113,9 @@ class _MallocAllocator : public Allocator {
     new_page->page_size_ = new_size;
 
     // Create the pointer
-    return OffsetPtr(size_t(new_page + 1));
+    return OffsetPtr<>(size_t(new_page + 1));
 #else
-    return OffsetPtr(0);
+    return OffsetPtr<>(0);
 #endif
   }
 
@@ -123,7 +123,7 @@ class _MallocAllocator : public Allocator {
    * Free \a ptr pointer. Null check is performed elsewhere.
    * */
   HSHM_CROSS_FUN
-  void FreeOffsetNoNullCheck(const hipc::MemContext &ctx, OffsetPtr p) {
+  void FreeOffsetNoNullCheck(const hipc::MemContext &ctx, OffsetPtr<> p) {
     auto page =
         reinterpret_cast<MallocPage *>(p.off_.load() - sizeof(MallocPage));
     header_->SubSize(page->page_size_);

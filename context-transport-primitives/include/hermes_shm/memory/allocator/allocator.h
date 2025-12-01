@@ -109,10 +109,10 @@ class Allocator;
 class ShmPointer {};
 
 /** Forward declarations for pointer types */
-template<bool ATOMIC = false>
+template<typename T = void, bool ATOMIC = false>
 struct OffsetPtrBase;
 
-template<bool ATOMIC = false>
+template<typename T = void, bool ATOMIC = false>
 struct ShmPtrBase;
 
 /**
@@ -221,13 +221,13 @@ class Allocator {
                reinterpret_cast<size_t>(backend_.data_) + backend_.data_size_;
   }
 
-  template<bool ATOMIC>
-  HSHM_INLINE_CROSS_FUN bool ContainsPtr(const OffsetPtrBase<ATOMIC> &ptr) const {
+  template<typename T, bool ATOMIC>
+  HSHM_INLINE_CROSS_FUN bool ContainsPtr(const OffsetPtrBase<T, ATOMIC> &ptr) const {
     return ptr.off_.load() < backend_.data_size_;
   }
 
-  template<bool ATOMIC>
-  HSHM_INLINE_CROSS_FUN bool ContainsPtr(const ShmPtrBase<ATOMIC> &ptr) const {
+  template<typename T, bool ATOMIC>
+  HSHM_INLINE_CROSS_FUN bool ContainsPtr(const ShmPtrBase<T, ATOMIC> &ptr) const {
     return ptr.off_.load() < backend_.data_size_;
   }
 
@@ -309,8 +309,11 @@ class Allocator {
 /**
  * Stores an offset into a memory region. Assumes the developer knows
  * which allocator the pointer comes from.
+ *
+ * @tparam T The type being pointed to (void by default)
+ * @tparam ATOMIC Whether the offset should be atomic
  * */
-template <bool ATOMIC>
+template <typename T, bool ATOMIC>
 struct OffsetPtrBase : public ShmPointer {
   hipc::opt_atomic<hshm::size_t, ATOMIC>
       off_; /**< Offset within the allocator's slot */
@@ -339,6 +342,11 @@ struct OffsetPtrBase : public ShmPointer {
       hipc::opt_atomic<hshm::size_t, ATOMIC> off)
       : off_(off.load()) {}
 
+  /** Copy constructor from different type */
+  template<typename U>
+  HSHM_INLINE_CROSS_FUN explicit OffsetPtrBase(const OffsetPtrBase<U, ATOMIC> &other)
+      : off_(other.off_.load()) {}
+
   /** ShmPtr constructor */
   HSHM_INLINE_CROSS_FUN explicit OffsetPtrBase(AllocatorId alloc_id,
                                                    size_t off)
@@ -348,14 +356,14 @@ struct OffsetPtrBase : public ShmPointer {
 
   /** ShmPtr constructor (alloc + atomic offset)*/
   HSHM_INLINE_CROSS_FUN explicit OffsetPtrBase(AllocatorId id,
-                                                   OffsetPtrBase<true> off)
+                                                   OffsetPtrBase<T, true> off)
       : off_(off.load()) {
     (void)id;
   }
 
   /** ShmPtr constructor (alloc + non-offeset) */
   HSHM_INLINE_CROSS_FUN explicit OffsetPtrBase(AllocatorId id,
-                                                   OffsetPtrBase<false> off)
+                                                   OffsetPtrBase<T, false> off)
       : off_(off.load()) {
     (void)id;
   }
@@ -366,7 +374,7 @@ struct OffsetPtrBase : public ShmPointer {
 
   /** Other copy constructor */
   HSHM_INLINE_CROSS_FUN OffsetPtrBase(
-      const OffsetPtrBase<!ATOMIC> &other)
+      const OffsetPtrBase<T, !ATOMIC> &other)
       : off_(other.off_.load()) {}
 
   /** Move constructor */
@@ -376,8 +384,8 @@ struct OffsetPtrBase : public ShmPointer {
   }
 
   /** Get the offset pointer */
-  HSHM_INLINE_CROSS_FUN OffsetPtrBase<false> ToOffsetPtr() const {
-    return OffsetPtrBase<false>(off_.load());
+  HSHM_INLINE_CROSS_FUN OffsetPtrBase<T, false> ToOffsetPtr() const {
+    return OffsetPtrBase<T, false>(off_.load());
   }
 
   /** Set to null (offsets can be 0, so not 0) */
@@ -505,28 +513,25 @@ struct OffsetPtrBase : public ShmPointer {
   HSHM_INLINE_CROSS_FUN void SetZero() { off_ = 0; }
 };
 
-/** Non-atomic offset */
-typedef OffsetPtrBase<false> OffsetPtr;
-
-/** Atomic offset */
-typedef OffsetPtrBase<true> AtomicOffsetPtr;
-
-/** Typed offset pointer */
+/** Non-atomic offset pointer (defaults to void*) */
 template <typename T = void>
-using TypedOffsetPtr = OffsetPtr;
+using OffsetPtr = OffsetPtrBase<T, false>;
 
-/** Typed atomic pointer */
+/** Atomic offset pointer (defaults to void*) */
 template <typename T = void>
-using TypedAtomicOffsetPtr = AtomicOffsetPtr;
+using AtomicOffsetPtr = OffsetPtrBase<T, true>;
 
 /**
  * A process-independent pointer, which stores both the allocator's
  * information and the offset within the allocator's region
+ *
+ * @tparam T The type being pointed to (void by default)
+ * @tparam ATOMIC Whether the offset should be atomic
  * */
-template <bool ATOMIC>
+template <typename T, bool ATOMIC>
 struct ShmPtrBase : public ShmPointer {
   AllocatorId alloc_id_;           /// Allocator the pointer comes from
-  OffsetPtrBase<ATOMIC> off_;  /// Offset within the allocator's slot
+  OffsetPtrBase<T, ATOMIC> off_;  /// Offset within the allocator's slot
 
   /** Serialize a pointer */
   template <typename Ar>
@@ -549,15 +554,20 @@ struct ShmPtrBase : public ShmPointer {
       : alloc_id_(id), off_(off) {}
 
   /** Full constructor using offset pointer */
-  HSHM_INLINE_CROSS_FUN explicit ShmPtrBase(AllocatorId id, OffsetPtr off)
+  HSHM_INLINE_CROSS_FUN explicit ShmPtrBase(AllocatorId id, OffsetPtrBase<T, ATOMIC> off)
       : alloc_id_(id), off_(off) {}
 
   /** Copy constructor */
   HSHM_INLINE_CROSS_FUN ShmPtrBase(const ShmPtrBase &other)
       : alloc_id_(other.alloc_id_), off_(other.off_) {}
 
-  /** Other copy constructor */
-  HSHM_INLINE_CROSS_FUN ShmPtrBase(const ShmPtrBase<!ATOMIC> &other)
+  /** Other copy constructor (different atomicity) */
+  HSHM_INLINE_CROSS_FUN ShmPtrBase(const ShmPtrBase<T, !ATOMIC> &other)
+      : alloc_id_(other.alloc_id_), off_(other.off_.load()) {}
+
+  /** Copy constructor from different type */
+  template<typename U>
+  HSHM_INLINE_CROSS_FUN explicit ShmPtrBase(const ShmPtrBase<U, ATOMIC> &other)
       : alloc_id_(other.alloc_id_), off_(other.off_.load()) {}
 
   /** Move constructor */
@@ -567,8 +577,8 @@ struct ShmPtrBase : public ShmPointer {
   }
 
   /** Get the offset pointer */
-  HSHM_INLINE_CROSS_FUN OffsetPtrBase<false> ToOffsetPtr() const {
-    return OffsetPtrBase<false>(off_.load());
+  HSHM_INLINE_CROSS_FUN OffsetPtrBase<T, false> ToOffsetPtr() const {
+    return OffsetPtrBase<T, false>(off_.load());
   }
 
   /** Set to null */
@@ -579,7 +589,7 @@ struct ShmPtrBase : public ShmPointer {
 
   /** Get the null pointer */
   HSHM_INLINE_CROSS_FUN static ShmPtrBase GetNull() {
-    return ShmPtrBase{AllocatorId::GetNull(), OffsetPtr::GetNull()};
+    return ShmPtrBase{AllocatorId::GetNull(), OffsetPtrBase<T, ATOMIC>::GetNull()};
   }
 
   /** Copy assignment operator */
@@ -682,19 +692,13 @@ struct ShmPtrBase : public ShmPointer {
   HSHM_INLINE_CROSS_FUN void SetZero() { off_.SetZero(); }
 };
 
-/** Non-atomic pointer */
-typedef ShmPtrBase<false> ShmPtr;
-
-/** Atomic pointer */
-typedef ShmPtrBase<true> AtomicShmPtr;
-
-/** Typed pointer */
+/** Non-atomic shared memory pointer (defaults to void*) */
 template <typename T = void>
-using TypedShmPtr = ShmPtr;
+using ShmPtr = ShmPtrBase<T, false>;
 
-/** Typed atomic pointer */
+/** Atomic shared memory pointer (defaults to void*) */
 template <typename T = void>
-using TypedAtomicShmPtr = AtomicShmPtr;
+using AtomicShmPtr = ShmPtrBase<T, true>;
 
 /**
  * Allocator with thread-local storage identifier
@@ -760,7 +764,7 @@ struct CtxAllocator {
 };
 
 /** Struct containing both private and shared pointer */
-template <typename T = char, typename PointerT = ShmPtr>
+template <typename T = char, typename PointerT = ShmPtr<>>
 struct FullPtr : public ShmPointer {
   T *ptr_;
   PointerT shm_;
@@ -812,7 +816,7 @@ struct FullPtr : public ShmPointer {
   /** Shared half + alloc constructor for OffsetPtr */
   template<typename AllocT, bool ATOMIC>
   HSHM_INLINE_CROSS_FUN explicit FullPtr(const hipc::CtxAllocator<AllocT> &ctx_alloc,
-                                         const OffsetPtrBase<ATOMIC> &shm) {
+                                         const OffsetPtrBase<T, ATOMIC> &shm) {
     if (ctx_alloc->ContainsPtr(shm)) {
       shm_.off_ = shm.load();
       shm_.alloc_id_ = ctx_alloc->id_;
@@ -825,7 +829,7 @@ struct FullPtr : public ShmPointer {
  /** Shared half + alloc constructor for ShmPtr */
   template<typename AllocT, bool ATOMIC>
   HSHM_INLINE_CROSS_FUN explicit FullPtr(const hipc::CtxAllocator<AllocT> &ctx_alloc,
-                                         const ShmPtrBase<ATOMIC> &shm) {
+                                         const ShmPtrBase<T, ATOMIC> &shm) {
     if (ctx_alloc->ContainsPtr(shm)) {
       shm_.off_ = shm.off_.load();
       shm_.alloc_id_ = shm.alloc_id_;
@@ -838,7 +842,7 @@ struct FullPtr : public ShmPointer {
   /** Direct allocator + OffsetPtr constructor */
   template<typename AllocT, bool ATOMIC,
            typename = typename std::enable_if<!std::is_same<T, AllocT>::value>::type>
-  HSHM_INLINE_CROSS_FUN FullPtr(AllocT *alloc, const OffsetPtrBase<ATOMIC> &shm) {
+  HSHM_INLINE_CROSS_FUN FullPtr(AllocT *alloc, const OffsetPtrBase<T, ATOMIC> &shm) {
     shm_.off_ = shm.load();
     shm_.alloc_id_ = alloc->GetId();
     ptr_ = reinterpret_cast<T*>(alloc->backend_.data_ + shm.load());
@@ -847,7 +851,7 @@ struct FullPtr : public ShmPointer {
   /** Direct allocator + ShmPtr constructor */
   template<typename AllocT, bool ATOMIC,
            typename = typename std::enable_if<!std::is_same<T, AllocT>::value>::type>
-  HSHM_INLINE_CROSS_FUN FullPtr(AllocT *alloc, const ShmPtrBase<ATOMIC> &shm) {
+  HSHM_INLINE_CROSS_FUN FullPtr(AllocT *alloc, const ShmPtrBase<T, ATOMIC> &shm) {
     shm_.off_ = shm.off_.load();
     shm_.alloc_id_ = shm.alloc_id_;
     ptr_ = reinterpret_cast<T*>(alloc->backend_.data_ + shm.off_.load());
@@ -959,7 +963,7 @@ struct FullPtr : public ShmPointer {
 
   /** Get null */
   HSHM_INLINE_CROSS_FUN static FullPtr GetNull() {
-    return FullPtr(nullptr, ShmPtr::GetNull());
+    return FullPtr(nullptr, ShmPtr<>::GetNull());
   }
 
   /** Set to null */
@@ -1044,7 +1048,7 @@ class BaseAllocator : public CoreAllocT {
    * Allocate a region of memory of \a size size
    * */
   HSHM_CROSS_FUN
-  OffsetPtr AllocateOffset(const MemContext &ctx, size_t size) {
+  OffsetPtr<> AllocateOffset(const MemContext &ctx, size_t size) {
     return CoreAllocT::AllocateOffset(ctx, size);
   }
 
@@ -1052,7 +1056,7 @@ class BaseAllocator : public CoreAllocT {
    * Allocate a region of memory of \a size size with \a alignment alignment
    * */
   HSHM_CROSS_FUN
-  OffsetPtr AllocateOffset(const MemContext &ctx, size_t size, size_t alignment) {
+  OffsetPtr<> AllocateOffset(const MemContext &ctx, size_t size, size_t alignment) {
     return CoreAllocT::AllocateOffset(ctx, size, alignment);
   }
 
@@ -1063,8 +1067,8 @@ class BaseAllocator : public CoreAllocT {
    * @return true if p was modified.
    * */
   HSHM_CROSS_FUN
-  OffsetPtr ReallocateOffsetNoNullCheck(const MemContext &ctx,
-                                            OffsetPtr p, size_t new_size) {
+  OffsetPtr<> ReallocateOffsetNoNullCheck(const MemContext &ctx,
+                                            OffsetPtr<> p, size_t new_size) {
     return CoreAllocT::ReallocateOffsetNoNullCheck(ctx, p, new_size);
   }
 
@@ -1072,7 +1076,7 @@ class BaseAllocator : public CoreAllocT {
    * Free the memory pointed to by \a ptr Pointer
    * */
   HSHM_CROSS_FUN
-  void FreeOffsetNoNullCheck(const MemContext &ctx, OffsetPtr p) {
+  void FreeOffsetNoNullCheck(const MemContext &ctx, OffsetPtr<> p) {
     CoreAllocT::FreeOffsetNoNullCheck(ctx, p);
   }
 
@@ -1113,7 +1117,7 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Allocate a region of memory to a specific pointer type
    * */
-  template <typename T = void, typename PointerT = ShmPtr>
+  template <typename T = void, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Allocate(const MemContext &ctx, size_t size) {
     FullPtr<T, PointerT> result;
     CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
@@ -1125,7 +1129,7 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Allocate a region of memory to a specific pointer type
    * */
-  template <typename T = void, typename PointerT = ShmPtr>
+  template <typename T = void, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AlignedAllocate(const MemContext &ctx,
                                                  size_t size,
                                                  size_t alignment) {
@@ -1142,7 +1146,7 @@ class BaseAllocator : public CoreAllocT {
    * alignment. Will fall back to regular Allocate if
    * alignmnet is 0.
    * */
-  template <typename T = void, typename PointerT = ShmPtr>
+  template <typename T = void, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Allocate(const MemContext &ctx, size_t size,
                                           size_t alignment) {
     if (alignment == 0) {
@@ -1158,7 +1162,7 @@ class BaseAllocator : public CoreAllocT {
    *
    * @return the reallocated FullPtr.
    * */
-  template <typename T = void, typename PointerT = ShmPtr>
+  template <typename T = void, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Reallocate(const MemContext &ctx, const FullPtr<T, PointerT> &p,
                                         size_t new_size) {
     if (p.IsNull()) {
@@ -1176,12 +1180,12 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Free the memory pointed to by \a p Pointer
    * */
-  template <typename T = void, typename PointerT = ShmPtr>
+  template <typename T = void, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN void Free(const MemContext &ctx, const FullPtr<T, PointerT> &p) {
     if (p.IsNull()) {
       HSHM_THROW_ERROR(INVALID_FREE);
     }
-    FreeOffsetNoNullCheck(ctx, OffsetPtr(p.shm_.off_.load()));
+    FreeOffsetNoNullCheck(ctx, OffsetPtr<>(p.shm_.off_.load()));
   }
 
 
@@ -1197,7 +1201,7 @@ class BaseAllocator : public CoreAllocT {
    *
    * @return A FullPtr to the allocated memory
    * */
-  template <typename T, typename PointerT = ShmPtr>
+  template <typename T, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AllocateObjs(const MemContext &ctx, size_t count) {
     return Allocate<T, PointerT>(ctx, count * sizeof(T));
   }
@@ -1225,7 +1229,7 @@ class BaseAllocator : public CoreAllocT {
    *
    * @return A FullPtr to the reallocated objects
    * */
-  template <typename T, typename PointerT = ShmPtr>
+  template <typename T, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> ReallocateObjs(const MemContext &ctx, 
                                                              FullPtr<T, PointerT> &p,
                                                              size_t new_count) {
@@ -1239,7 +1243,7 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Free + destruct objects
    * */
-  template <typename T, typename PointerT = ShmPtr>
+  template <typename T, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN void DelObjs(const MemContext &ctx, 
                                      FullPtr<T, PointerT> &p,
                                      size_t count) {
@@ -1251,7 +1255,7 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Free + destruct an object
    * */
-  template <typename T, typename PointerT = ShmPtr>
+  template <typename T, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN void DelObj(const MemContext &ctx, 
                                     FullPtr<T, PointerT> &p) {
     DelObjs<T, PointerT>(ctx, p, 1);
@@ -1407,7 +1411,7 @@ class BaseAllocator : public CoreAllocT {
 
     // Get the offset of the sub-allocator's data region
     CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
-    OffsetPtr offset_ptr(sub_alloc->backend_.data_ - core_this->backend_.data_);
+    OffsetPtr<> offset_ptr(sub_alloc->backend_.data_ - core_this->backend_.data_);
 
     // Free the data region
     FreeOffsetNoNullCheck(ctx, offset_ptr);

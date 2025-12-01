@@ -26,19 +26,19 @@ namespace hshm::ipc::pre {
  */
 class slist_node {
  public:
-  OffsetPtr next_;  /**< Offset pointer to next node */
+  OffsetPtr<>next_;  /**< Offset pointer to next node */
 
   /**
    * Default constructor
    */
   HSHM_CROSS_FUN
-  slist_node() : next_(OffsetPtr::GetNull()) {}
+  slist_node() : next_(OffsetPtr<>::GetNull()) {}
 
   /**
    * Get the next pointer
    */
   HSHM_CROSS_FUN
-  OffsetPtr GetNext() const {
+  OffsetPtr<>GetNext() const {
     return next_;
   }
 
@@ -46,7 +46,7 @@ class slist_node {
    * Set the next pointer
    */
   HSHM_CROSS_FUN
-  void SetNext(const OffsetPtr &next) {
+  void SetNext(const OffsetPtr<> &next) {
     next_ = next;
   }
 };
@@ -66,14 +66,14 @@ template<bool ATOMIC = false>
 class slist {
  private:
   opt_atomic<size_t, ATOMIC> size_;  /**< Number of elements in the list */
-  OffsetPtr head_;               /**< Offset pointer to head node */
+  OffsetPtr<>head_;               /**< Offset pointer to head node */
 
  public:
   /**
    * Default constructor
    */
   HSHM_CROSS_FUN
-  slist() : size_(0), head_(OffsetPtr::GetNull()) {}
+  slist() : size_(0), head_(OffsetPtr<>::GetNull()) {}
 
   /**
    * Initialize the list
@@ -81,7 +81,7 @@ class slist {
   HSHM_CROSS_FUN
   void Init() {
     size_.store(0);
-    head_ = OffsetPtr::GetNull();
+    head_ = OffsetPtr<>::GetNull();
   }
 
   /**
@@ -118,7 +118,7 @@ class slist {
     }
 
     // Get the head node
-    auto head = FullPtr<slist_node>(alloc, head_);
+    auto head = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(head_.load()));
 
     // Update head to next node
     head_ = head.ptr_->next_;
@@ -155,7 +155,7 @@ class slist {
    * @return Offset pointer to the head node
    */
   HSHM_CROSS_FUN
-  OffsetPtr GetHead() const {
+  OffsetPtr<>GetHead() const {
     return head_;
   }
 
@@ -171,7 +171,7 @@ class slist {
     if (size_.load() == 0) {
       return FullPtr<slist_node>::GetNull();
     }
-    return FullPtr<slist_node>(alloc, head_);
+    return FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(head_.load()));
   }
 };
 

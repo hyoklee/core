@@ -107,10 +107,10 @@ class _ArenaAllocator : public Allocator {
    * @return Offset pointer to allocated memory
    */
   HSHM_CROSS_FUN
-  OffsetPtr AllocateOffset(const hipc::MemContext &ctx, size_t size, size_t alignment = 1) {
+  OffsetPtr<> AllocateOffset(const hipc::MemContext &ctx, size_t size, size_t alignment = 1) {
     size_t off = header_->heap_.Allocate(size, alignment);
     header_->AddSize(size);
-    return OffsetPtr(off);
+    return OffsetPtr<>(off);
   }
 
   /**
@@ -119,11 +119,11 @@ class _ArenaAllocator : public Allocator {
    * Arena allocators do not support reallocation.
    */
   HSHM_CROSS_FUN
-  OffsetPtr ReallocateOffsetNoNullCheck(const hipc::MemContext &ctx,
-                                            OffsetPtr p, size_t new_size) {
+  OffsetPtr<> ReallocateOffsetNoNullCheck(const hipc::MemContext &ctx,
+                                            OffsetPtr<> p, size_t new_size) {
     HSHM_THROW_ERROR(NOT_IMPLEMENTED,
                      "ArenaAllocator does not support reallocation");
-    return OffsetPtr(0);
+    return OffsetPtr<>(0);
   }
 
   /**
@@ -133,7 +133,7 @@ class _ArenaAllocator : public Allocator {
    * Memory is freed in bulk when the arena is reset or destroyed.
    */
   HSHM_CROSS_FUN
-  void FreeOffsetNoNullCheck(const hipc::MemContext &ctx, OffsetPtr p) {
+  void FreeOffsetNoNullCheck(const hipc::MemContext &ctx, OffsetPtr<> p) {
     // Arena allocator does not support individual frees
     // This is intentionally a no-op (not an error)
   }

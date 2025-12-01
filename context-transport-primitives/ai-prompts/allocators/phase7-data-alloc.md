@@ -1,5 +1,6 @@
-# Data Allocator
+# DMA Allocator
 
-This allocator focuses on optimizing 4KB aligned allocations.
+This allocator focuses on optimizing 4KB aligned allocations
+for DMA operations.
 
 A PageAllocator

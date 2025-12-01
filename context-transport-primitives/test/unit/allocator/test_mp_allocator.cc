@@ -66,7 +66,7 @@ TEST_CASE("MpAllocator: Simple Single-Thread Allocation", "[mp_allocator][single
   MpAllocatorTest test;
 
   // Allocate small memory
-  OffsetPtr ptr1 = test.alloc_.AllocateOffset(64);
+  OffsetPtr<> ptr1 = test.alloc_.AllocateOffset(64);
   REQUIRE(!ptr1.IsNull());
   {
     // Use direct pointer arithmetic (MultiProcessAllocator uses sub-allocators)
@@ -79,7 +79,7 @@ TEST_CASE("MpAllocator: Simple Single-Thread Allocation", "[mp_allocator][single
   }
 
   // Allocate medium memory
-  OffsetPtr ptr2 = test.alloc_.AllocateOffset(4096);
+  OffsetPtr<>ptr2 = test.alloc_.AllocateOffset(4096);
   REQUIRE(!ptr2.IsNull());
   {
     char *data_ptr = test.alloc_.backend_.data_ + ptr2.load();
@@ -91,7 +91,7 @@ TEST_CASE("MpAllocator: Simple Single-Thread Allocation", "[mp_allocator][single
   }
 
   // Allocate large memory
-  OffsetPtr ptr3 = test.alloc_.AllocateOffset(1024 * 1024);
+  OffsetPtr<>ptr3 = test.alloc_.AllocateOffset(1024 * 1024);
   REQUIRE(!ptr3.IsNull());
   {
     char *data_ptr = test.alloc_.backend_.data_ + ptr3.load();
@@ -121,12 +121,12 @@ TEST_CASE("MpAllocator: Simple Single-Thread Allocation", "[mp_allocator][single
 TEST_CASE("MpAllocator: Multiple Allocations", "[mp_allocator][multiple]") {
   MpAllocatorTest test;
 
-  std::vector<OffsetPtr> ptrs;
+  std::vector<OffsetPtr<>> ptrs;
 
   // Allocate 100 blocks of varying sizes and verify data writes
   for (size_t i = 0; i < 100; ++i) {
     size_t size = 32 * (i + 1);  // 32, 64, 96, ..., 3200 bytes
-    OffsetPtr ptr = test.alloc_.AllocateOffset(size);
+    OffsetPtr<>ptr = test.alloc_.AllocateOffset(size);
     REQUIRE(!ptr.IsNull());
 
     // Write unique pattern to each block
@@ -151,7 +151,7 @@ TEST_CASE("MpAllocator: Multiple Allocations", "[mp_allocator][multiple]") {
   // Allocate again to test reuse and verify data writes
   for (size_t i = 0; i < 100; ++i) {
     size_t size = 32 * (i + 1);
-    OffsetPtr ptr = test.alloc_.AllocateOffset(size);
+    OffsetPtr<>ptr = test.alloc_.AllocateOffset(size);
     REQUIRE(!ptr.IsNull());
 
     // Write different pattern and verify
@@ -177,7 +177,7 @@ TEST_CASE("MpAllocator: Reallocation", "[mp_allocator][realloc]") {
   MpAllocatorTest test;
 
   // Initial allocation with data
-  OffsetPtr ptr = test.alloc_.AllocateOffset(1024);
+  OffsetPtr<>ptr = test.alloc_.AllocateOffset(1024);
   REQUIRE(!ptr.IsNull());
   {
     unsigned char *data_ptr = reinterpret_cast<unsigned char*>(test.alloc_.backend_.data_ + ptr.load());
@@ -189,7 +189,7 @@ TEST_CASE("MpAllocator: Reallocation", "[mp_allocator][realloc]") {
   }
 
   // Reallocate to larger size - data should be preserved
-  OffsetPtr ptr2 = test.alloc_.ReallocateOffset(ptr, 4096);
+  OffsetPtr<>ptr2 = test.alloc_.ReallocateOffset(ptr, 4096);
   REQUIRE(!ptr2.IsNull());
   {
     unsigned char *data_ptr = reinterpret_cast<unsigned char*>(test.alloc_.backend_.data_ + ptr2.load());
@@ -205,7 +205,7 @@ TEST_CASE("MpAllocator: Reallocation", "[mp_allocator][realloc]") {
   }
 
   // Reallocate to smaller size - partial data should be preserved
-  OffsetPtr ptr3 = test.alloc_.ReallocateOffset(ptr2, 512);
+  OffsetPtr<>ptr3 = test.alloc_.ReallocateOffset(ptr2, 512);
   REQUIRE(!ptr3.IsNull());
   {
     unsigned char *data_ptr = reinterpret_cast<unsigned char*>(test.alloc_.backend_.data_ + ptr3.load());
@@ -237,12 +237,12 @@ TEST_CASE("MpAllocator: Multi-Threaded Allocations", "[mp_allocator][multithread
   // Launch threads
   for (size_t t = 0; t < kNumThreads; ++t) {
     threads.emplace_back([&test, &success_count, t]() {
-      std::vector<OffsetPtr> local_ptrs;
+      std::vector<OffsetPtr<>> local_ptrs;
 
       // Each thread performs allocations and verifies data writes
       for (size_t i = 0; i < kAllocsPerThread; ++i) {
         size_t size = 64 + (i % 10) * 32;  // Varying sizes
-        OffsetPtr ptr = test.alloc_.AllocateOffset(size);
+        OffsetPtr<>ptr = test.alloc_.AllocateOffset(size);
         if (!ptr.IsNull()) {
           // Verify we can write and read data
           unsigned char *data_ptr = reinterpret_cast<unsigned char*>(test.alloc_.backend_.data_ + ptr.load());
@@ -291,14 +291,14 @@ TEST_CASE("MpAllocator: TLS Isolation", "[mp_allocator][tls]") {
 
   const size_t kNumThreads = 4;
   std::vector<std::thread> threads;
-  std::vector<std::vector<OffsetPtr>> thread_ptrs(kNumThreads);
+  std::vector<std::vector<OffsetPtr<>>> thread_ptrs(kNumThreads);
 
   // Launch threads, each allocating different sizes
   for (size_t t = 0; t < kNumThreads; ++t) {
     threads.emplace_back([&test, &thread_ptrs, t]() {
       for (size_t i = 0; i < 50; ++i) {
         size_t size = (t + 1) * 128;  // Each thread uses different size
-        OffsetPtr ptr = test.alloc_.AllocateOffset(size);
+        OffsetPtr<>ptr = test.alloc_.AllocateOffset(size);
         REQUIRE(!ptr.IsNull());
         thread_ptrs[t].push_back(ptr);
       }
@@ -338,7 +338,7 @@ TEST_CASE("MpAllocator: Stress Test", "[mp_allocator][stress]") {
 
   for (size_t t = 0; t < kNumThreads; ++t) {
     threads.emplace_back([&test, &total_ops]() {
-      std::vector<OffsetPtr> ptrs;
+      std::vector<OffsetPtr<>> ptrs;
 
       for (size_t i = 0; i < kOperationsPerThread; ++i) {
         // Alternate between allocating and freeing
@@ -350,7 +350,7 @@ TEST_CASE("MpAllocator: Stress Test", "[mp_allocator][stress]") {
         } else {
           // Allocate new memory
           size_t size = 32 + (i % 100) * 16;
-          OffsetPtr ptr = test.alloc_.AllocateOffset(size);
+          OffsetPtr<>ptr = test.alloc_.AllocateOffset(size);
           if (!ptr.IsNull()) {
             ptrs.push_back(ptr);
             total_ops++;
@@ -385,10 +385,10 @@ TEST_CASE("MpAllocator: Large Allocations", "[mp_allocator][large]") {
 
   // Allocate large blocks (should go to global allocator)
   const size_t kLargeSize = 32 * 1024 * 1024;  // 32MB
-  std::vector<OffsetPtr> ptrs;
+  std::vector<OffsetPtr<>> ptrs;
 
   for (size_t i = 0; i < 5; ++i) {
-    OffsetPtr ptr = test.alloc_.AllocateOffset(kLargeSize);
+    OffsetPtr<>ptr = test.alloc_.AllocateOffset(kLargeSize);
     REQUIRE(!ptr.IsNull());
     ptrs.push_back(ptr);
   }
@@ -408,15 +408,15 @@ TEST_CASE("MpAllocator: Edge Cases", "[mp_allocator][edge]") {
   MpAllocatorTest test;
 
   // Freeing null pointer should not crash
-  REQUIRE_NOTHROW(test.alloc_.FreeOffset(OffsetPtr::GetNull()));
+  REQUIRE_NOTHROW(test.alloc_.FreeOffset(OffsetPtr<>::GetNull()));
 
   // Allocate minimum size
-  OffsetPtr ptr1 = test.alloc_.AllocateOffset(1);
+  OffsetPtr<>ptr1 = test.alloc_.AllocateOffset(1);
   REQUIRE(!ptr1.IsNull());
   test.alloc_.FreeOffset(ptr1);
 
   // Allocate exactly power of 2
-  OffsetPtr ptr2 = test.alloc_.AllocateOffset(4096);
+  OffsetPtr<>ptr2 = test.alloc_.AllocateOffset(4096);
   REQUIRE(!ptr2.IsNull());
   test.alloc_.FreeOffset(ptr2);
 }
@@ -429,14 +429,14 @@ TEST_CASE("MpAllocator: Edge Cases", "[mp_allocator][edge]") {
 TEST_CASE("MpAllocator: Mixed Workload", "[mp_allocator][mixed]") {
   MpAllocatorTest test;
 
-  std::vector<OffsetPtr> ptrs;
+  std::vector<OffsetPtr<>> ptrs;
 
   for (size_t i = 0; i < 200; ++i) {
     if (i % 5 == 0 && !ptrs.empty()) {
       // Realloc
       size_t idx = i % ptrs.size();
       size_t new_size = 128 + (i % 20) * 64;
-      OffsetPtr new_ptr = test.alloc_.ReallocateOffset(ptrs[idx], new_size);
+      OffsetPtr<>new_ptr = test.alloc_.ReallocateOffset(ptrs[idx], new_size);
       if (!new_ptr.IsNull()) {
         ptrs[idx] = new_ptr;
       }
@@ -448,7 +448,7 @@ TEST_CASE("MpAllocator: Mixed Workload", "[mp_allocator][mixed]") {
     } else {
       // Allocate
       size_t size = 64 + (i % 30) * 32;
-      OffsetPtr ptr = test.alloc_.AllocateOffset(size);
+      OffsetPtr<>ptr = test.alloc_.AllocateOffset(size);
       if (!ptr.IsNull()) {
         ptrs.push_back(ptr);
       }
@@ -470,14 +470,14 @@ TEST_CASE("MpAllocator: ThreadBlock Expansion", "[mp_allocator][expansion]") {
   MpAllocatorTest test;
 
   // Allocate many small blocks to exhaust initial ThreadBlock
-  std::vector<OffsetPtr> ptrs;
+  std::vector<OffsetPtr<>> ptrs;
   const size_t kSmallSize = 64;
 
   // Allocate enough to potentially exceed default thread unit (16MB)
   const size_t kNumAllocs = (16 * 1024 * 1024) / kSmallSize + 100;
 
   for (size_t i = 0; i < kNumAllocs; ++i) {
-    OffsetPtr ptr = test.alloc_.AllocateOffset(kSmallSize);
+    OffsetPtr<>ptr = test.alloc_.AllocateOffset(kSmallSize);
     if (!ptr.IsNull()) {
       ptrs.push_back(ptr);
     }
@@ -501,14 +501,14 @@ TEST_CASE("MpAllocator: ThreadBlock Expansion", "[mp_allocator][expansion]") {
 TEST_CASE("MpAllocator: Out of Memory", "[mp_allocator][oom]") {
   MpAllocatorTest test;
 
-  std::vector<OffsetPtr> ptrs;
+  std::vector<OffsetPtr<>> ptrs;
 
   // Try to allocate until we run out
   const size_t kAllocSize = 1024 * 1024;  // 1MB chunks
   size_t total_allocated = 0;
 
   while (total_allocated < MpAllocatorTest::kAllocSize) {
-    OffsetPtr ptr = test.alloc_.AllocateOffset(kAllocSize);
+    OffsetPtr<>ptr = test.alloc_.AllocateOffset(kAllocSize);
     if (ptr.IsNull()) {
       break;  // Expected: out of memory
     }
@@ -524,7 +524,7 @@ TEST_CASE("MpAllocator: Out of Memory", "[mp_allocator][oom]") {
   }
 
   // Should be able to allocate again after freeing
-  OffsetPtr ptr = test.alloc_.AllocateOffset(kAllocSize);
+  OffsetPtr<>ptr = test.alloc_.AllocateOffset(kAllocSize);
   REQUIRE(!ptr.IsNull());
   test.alloc_.FreeOffset(ptr);
 }

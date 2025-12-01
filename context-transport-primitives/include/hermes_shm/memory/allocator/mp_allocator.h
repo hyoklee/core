@@ -72,7 +72,7 @@ class ThreadBlock : public pre::slist_node {
    * @param size Size in bytes to allocate
    * @return Offset pointer to allocated memory, or null on failure
    */
-  OffsetPtr Allocate(size_t size) {
+  OffsetPtr<> Allocate(size_t size) {
     return alloc_.AllocateOffset(size);
   }
 
@@ -81,7 +81,7 @@ class ThreadBlock : public pre::slist_node {
    *
    * @param ptr Offset pointer to memory to free
    */
-  void Free(OffsetPtr ptr) {
+  void Free(OffsetPtr<> ptr) {
     alloc_.FreeOffset(ptr);
   }
 
@@ -92,12 +92,12 @@ class ThreadBlock : public pre::slist_node {
    * @param new_size New size in bytes
    * @return New offset pointer, or null on failure
    */
-  OffsetPtr Reallocate(OffsetPtr ptr, size_t new_size) {
+  OffsetPtr<> Reallocate(OffsetPtr<> ptr, size_t new_size) {
     // Simple implementation: allocate new, copy, free old
     // TODO: Optimize with in-place reallocation when possible
-    OffsetPtr new_ptr = Allocate(new_size);
+    OffsetPtr<> new_ptr = Allocate(new_size);
     if (new_ptr.IsNull()) {
-      return OffsetPtr::GetNull();
+      return OffsetPtr<>::GetNull();
     }
 
     // For now, just return the new pointer
@@ -168,7 +168,7 @@ class ProcessBlock : public pre::slist_node {
     lock_.Lock(0);
 
     // Allocate memory for ThreadBlock from our buddy allocator
-    OffsetPtr thread_offset = alloc_.AllocateOffset(region_size);
+    OffsetPtr<> thread_offset = alloc_.AllocateOffset(region_size);
     if (thread_offset.IsNull()) {
       lock_.Unlock();
       return FullPtr<ThreadBlock>::GetNull();
@@ -193,7 +193,7 @@ class ProcessBlock : public pre::slist_node {
     }
 
     // Add to thread list
-    ShmPtr thread_shm;
+    ShmPtr<> thread_shm;
     thread_shm.off_ = thread_offset;
     FullPtr<pre::slist_node> node_ptr(reinterpret_cast<pre::slist_node*>(tblock), thread_shm);
     threads_.emplace(&alloc_, node_ptr);
@@ -216,7 +216,7 @@ class ProcessBlock : public pre::slist_node {
    *
    * @param ptr Offset pointer to memory region to return
    */
-  void Expand(OffsetPtr ptr) {
+  void Expand(OffsetPtr<> ptr) {
     lock_.Lock(0);
     alloc_.FreeOffset(ptr);
     lock_.Unlock();
@@ -324,7 +324,7 @@ class MultiProcessAllocator {
     }
 
     // Allocate first ProcessBlock
-    OffsetPtr pblock_offset = alloc_.AllocateOffset(process_unit_);
+    OffsetPtr<> pblock_offset = alloc_.AllocateOffset(process_unit_);
     if (pblock_offset.IsNull()) {
       return false;
     }
@@ -341,9 +341,9 @@ class MultiProcessAllocator {
     }
 
     // Add to process list
-    ShmPtr pblock_shm;
+    ShmPtr<> pblock_shm;
     pblock_shm.off_ = pblock_offset;
-    FullPtr<pre::slist_node> pblock_node(&alloc_, pblock_shm);
+    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock), pblock_shm);
     header_->alloc_procs_.emplace(&alloc_, pblock_node);
     header_->pid_count_++;
 
@@ -414,7 +414,7 @@ class MultiProcessAllocator {
     FullPtr<ThreadBlock> tblock_ptr = pblock->AllocateThreadBlock(backend_, thread_unit_);
     if (tblock_ptr.IsNull()) {
       // Try expanding ProcessBlock
-      OffsetPtr expand_offset = alloc_.AllocateOffset(thread_unit_);
+      OffsetPtr<> expand_offset = alloc_.AllocateOffset(thread_unit_);
       if (!expand_offset.IsNull()) {
         pblock->Expand(expand_offset);
         tblock_ptr = pblock->AllocateThreadBlock(backend_, thread_unit_);
@@ -455,7 +455,7 @@ class MultiProcessAllocator {
     }
 
     // Allocate new ProcessBlock
-    OffsetPtr pblock_offset = alloc_.AllocateOffset(process_unit_);
+    OffsetPtr<> pblock_offset = alloc_.AllocateOffset(process_unit_);
     if (pblock_offset.IsNull()) {
       header_->lock_.Unlock();
       return nullptr;
@@ -473,9 +473,9 @@ class MultiProcessAllocator {
     }
 
     // Add to process list
-    ShmPtr pblock_shm;
+    ShmPtr<> pblock_shm;
     pblock_shm.off_ = pblock_offset;
-    FullPtr<pre::slist_node> pblock_node(&alloc_, pblock_shm);
+    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock), pblock_shm);
     header_->alloc_procs_.emplace(&alloc_, pblock_node);
     header_->pid_count_++;
 
@@ -489,11 +489,11 @@ class MultiProcessAllocator {
    * @param size Size in bytes to allocate
    * @return Offset pointer to allocated memory, or null on failure
    */
-  OffsetPtr AllocateOffset(size_t size) {
+  OffsetPtr<> AllocateOffset(size_t size) {
     // Tier 1: Fast path - try thread-local allocator (lock-free)
     ThreadBlock *tblock = EnsureTls();
     if (tblock != nullptr) {
-      OffsetPtr ptr = tblock->Allocate(size);
+      OffsetPtr<> ptr = tblock->Allocate(size);
       if (!ptr.IsNull()) {
         return ptr;
       }
@@ -503,11 +503,11 @@ class MultiProcessAllocator {
     void *pblock_data = HSHM_THREAD_MODEL->GetTls<void>(pblock_key_);
     ProcessBlock *pblock = reinterpret_cast<ProcessBlock*>(pblock_data);
     if (pblock != nullptr) {
-      OffsetPtr expand_offset = alloc_.AllocateOffset(size);
+      OffsetPtr<> expand_offset = alloc_.AllocateOffset(size);
       if (!expand_offset.IsNull()) {
         pblock->Expand(expand_offset);
         if (tblock != nullptr) {
-          OffsetPtr ptr = tblock->Allocate(size);
+          OffsetPtr<> ptr = tblock->Allocate(size);
           if (!ptr.IsNull()) {
             return ptr;
           }
@@ -517,7 +517,7 @@ class MultiProcessAllocator {
 
     // Tier 3: Slow path - allocate directly from global allocator
     header_->lock_.Lock(0);
-    OffsetPtr ptr = alloc_.AllocateOffset(size);
+    OffsetPtr<> ptr = alloc_.AllocateOffset(size);
     header_->lock_.Unlock();
     return ptr;
   }
@@ -529,13 +529,13 @@ class MultiProcessAllocator {
    * @param new_size New size in bytes
    * @return New offset pointer, or null on failure
    */
-  OffsetPtr ReallocateOffset(OffsetPtr offset, size_t new_size) {
+  OffsetPtr<> ReallocateOffset(OffsetPtr<> offset, size_t new_size) {
     if (offset.IsNull()) {
       return AllocateOffset(new_size);
     }
 
     // Allocate new memory
-    OffsetPtr new_offset = AllocateOffset(new_size);
+    OffsetPtr<> new_offset = AllocateOffset(new_size);
     if (new_offset.IsNull()) {
       return new_offset;
     }
@@ -559,7 +559,7 @@ class MultiProcessAllocator {
    *
    * @param offset Offset pointer to memory to free
    */
-  void FreeOffset(OffsetPtr offset) {
+  void FreeOffset(OffsetPtr<> offset) {
     if (offset.IsNull()) {
       return;
     }

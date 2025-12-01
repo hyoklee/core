@@ -140,3 +140,18 @@ For now do nothing.
 1. GetTls<ThreadBlock*>. If invalid, return.
 2. Call free from alloc_.Free
 
+
+@CLAUDE.md 
+
+Build a multi-process unit test for the mp allocator.
+
+# Unit Tests
+
+Make a multi-process unit test.
+Create a single test file. 
+The test takes as input rank, time, nthreads.
+The test should allocate, memset, free in a loop for a period of time.
+
+Create a bash script.
+Call the test with rank 0 to initialize the shared memory.
+Call the test with rank 1 to attach to the shared memory.

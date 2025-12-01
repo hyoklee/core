@@ -45,7 +45,7 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
     REQUIRE(offset.load() > 0);
 
     // Verify data can be written and read
-    FullPtr<char> full_ptr(&allocator, offset);
+    FullPtr<char> full_ptr(&allocator, OffsetPtr<char>(offset.load()));
     REQUIRE(full_ptr.ptr_ != nullptr);
     memset(full_ptr.ptr_, 0xAA, 64);
     for (size_t i = 0; i < 64; ++i) {
@@ -54,7 +54,7 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
   }
 
   SECTION("Multiple small allocations") {
-    std::vector<OffsetPtr> allocations;
+    std::vector<OffsetPtr<>> allocations;
 
     // Allocate 10 small blocks and verify data writes
     for (int i = 0; i < 10; ++i) {
@@ -62,7 +62,7 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
       REQUIRE_FALSE(offset.IsNull());
 
       // Write unique pattern to each allocation
-      FullPtr<unsigned char> full_ptr(&allocator, offset);
+      FullPtr<unsigned char> full_ptr(&allocator, OffsetPtr<unsigned char>(offset.load()));
       REQUIRE(full_ptr.ptr_ != nullptr);
       unsigned char pattern = static_cast<unsigned char>(i);
       memset(full_ptr.ptr_, pattern, 64);
@@ -72,7 +72,7 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
 
     // Verify all allocations are unique and contain correct data
     for (size_t i = 0; i < allocations.size(); ++i) {
-      FullPtr<unsigned char> full_ptr(&allocator, allocations[i]);
+      FullPtr<unsigned char> full_ptr(&allocator, OffsetPtr<unsigned char>(allocations[i].load()));
       unsigned char pattern = static_cast<unsigned char>(i);
       for (size_t j = 0; j < 64; ++j) {
         REQUIRE(full_ptr.ptr_[j] == pattern);
@@ -92,7 +92,7 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
       REQUIRE_FALSE(offset.IsNull());
 
       // Verify data writes for each size
-      FullPtr<unsigned char> full_ptr(&allocator, offset);
+      FullPtr<unsigned char> full_ptr(&allocator, OffsetPtr<unsigned char>(offset.load()));
       REQUIRE(full_ptr.ptr_ != nullptr);
       unsigned char pattern = static_cast<unsigned char>(size & 0xFF);
       memset(full_ptr.ptr_, pattern, size);
@@ -107,7 +107,7 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
     REQUIRE_FALSE(offset.IsNull());
 
     // Verify data write
-    FullPtr<char> full_ptr(&allocator, offset);
+    FullPtr<char> full_ptr(&allocator, OffsetPtr<char>(offset.load()));
     REQUIRE(full_ptr.ptr_ != nullptr);
     full_ptr.ptr_[0] = 'X';
     REQUIRE(full_ptr.ptr_[0] == 'X');
@@ -129,7 +129,7 @@ TEST_CASE("BuddyAllocator - Large Allocations", "[buddy_allocator]") {
     REQUIRE_FALSE(offset.IsNull());
 
     // Verify data can be written and read
-    FullPtr<char> full_ptr(&allocator, offset);
+    FullPtr<char> full_ptr(&allocator, OffsetPtr<char>(offset.load()));
     REQUIRE(full_ptr.ptr_ != nullptr);
     memset(full_ptr.ptr_, 0xBB, 32 * 1024);
     // Spot check first page and last page
@@ -142,7 +142,7 @@ TEST_CASE("BuddyAllocator - Large Allocations", "[buddy_allocator]") {
   }
 
   SECTION("Multiple large allocations") {
-    std::vector<OffsetPtr> allocations;
+    std::vector<OffsetPtr<>> allocations;
 
     // Allocate 5 large blocks and verify data writes
     for (int i = 0; i < 5; ++i) {
@@ -150,7 +150,7 @@ TEST_CASE("BuddyAllocator - Large Allocations", "[buddy_allocator]") {
       REQUIRE_FALSE(offset.IsNull());
 
       // Write unique pattern to each allocation
-      FullPtr<unsigned char> full_ptr(&allocator, offset);
+      FullPtr<unsigned char> full_ptr(&allocator, OffsetPtr<unsigned char>(offset.load()));
       REQUIRE(full_ptr.ptr_ != nullptr);
       unsigned char pattern = static_cast<unsigned char>(i + 10);
       memset(full_ptr.ptr_, pattern, 64 * 1024);
@@ -160,7 +160,7 @@ TEST_CASE("BuddyAllocator - Large Allocations", "[buddy_allocator]") {
 
     // Verify all allocations are unique and contain correct data
     for (size_t i = 0; i < allocations.size(); ++i) {
-      FullPtr<unsigned char> full_ptr(&allocator, allocations[i]);
+      FullPtr<unsigned char> full_ptr(&allocator, OffsetPtr<unsigned char>(allocations[i].load()));
       unsigned char pattern = static_cast<unsigned char>(i + 10);
       // Check first and last 4KB pages
       for (size_t j = 0; j < 4096; ++j) {
@@ -228,7 +228,7 @@ TEST_CASE("BuddyAllocator - Free and Reallocation", "[buddy_allocator]") {
   }
 
   SECTION("Multiple free and reallocate") {
-    std::vector<OffsetPtr> allocations;
+    std::vector<OffsetPtr<>> allocations;
 
     // Allocate 10 blocks
     for (int i = 0; i < 10; ++i) {
@@ -260,7 +260,7 @@ TEST_CASE("BuddyAllocator - Coalescing", "[buddy_allocator]") {
 
   SECTION("Coalesce adjacent small blocks") {
     // Allocate several small blocks
-    std::vector<OffsetPtr> allocations;
+    std::vector<OffsetPtr<>> allocations;
     for (int i = 0; i < 8; ++i) {
       auto offset = allocator.AllocateOffset(1024);
       REQUIRE_FALSE(offset.IsNull());
@@ -280,8 +280,8 @@ TEST_CASE("BuddyAllocator - Coalescing", "[buddy_allocator]") {
 
   SECTION("Fragmentation and coalescing") {
     // Create a fragmented heap
-    std::vector<OffsetPtr> keep;
-    std::vector<OffsetPtr> free_later;
+    std::vector<OffsetPtr<>> keep;
+    std::vector<OffsetPtr<>> free_later;
 
     // Allocate alternating blocks
     for (int i = 0; i < 16; ++i) {
@@ -320,7 +320,7 @@ TEST_CASE("BuddyAllocator - Mixed Small and Large", "[buddy_allocator]") {
   allocator.shm_init(backend);
 
   SECTION("Interleaved small and large allocations") {
-    std::vector<OffsetPtr> allocations;
+    std::vector<OffsetPtr<>> allocations;
 
     // Mix of small and large
     allocations.push_back(allocator.AllocateOffset(128));
@@ -353,7 +353,7 @@ TEST_CASE("BuddyAllocator - Stress Test", "[buddy_allocator]") {
   allocator.shm_init(backend);
 
   SECTION("Many allocations and frees") {
-    std::vector<OffsetPtr> active;
+    std::vector<OffsetPtr<>> active;
 
     // Allocate 100 blocks of varying sizes
     for (int i = 0; i < 100; ++i) {
@@ -402,7 +402,7 @@ TEST_CASE("BuddyAllocator - Out of Memory", "[buddy_allocator]") {
   allocator.shm_init(backend);
 
   SECTION("Exhaust heap") {
-    std::vector<OffsetPtr> allocations;
+    std::vector<OffsetPtr<>> allocations;
 
     // Keep allocating until we fail
     for (int i = 0; i < 1000; ++i) {
@@ -491,7 +491,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
   }
 
   SECTION("Reallocate null pointer") {
-    OffsetPtr null_offset = OffsetPtr::GetNull();
+    OffsetPtr<> null_offset = OffsetPtr<>::GetNull();
     auto new_offset = allocator.ReallocateOffset(null_offset, 1024);
     REQUIRE_FALSE(new_offset.IsNull());
 
