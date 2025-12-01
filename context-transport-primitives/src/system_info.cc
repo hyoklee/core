@@ -386,6 +386,46 @@ void *SystemInfo::MapSharedMemory(const File &fd, size_t size, i64 off) {
 #endif
 }
 
+void *SystemInfo::MapMixedMemory(const File &fd, size_t private_size,
+                                  size_t shared_size, i64 shared_offset) {
+#if HSHM_ENABLE_PROCFS_SYSINFO
+  // Calculate total size
+  size_t total_size = private_size + shared_size;
+
+  // Step 1: Reserve the entire contiguous address space
+  // Map the entire region as private/anonymous to reserve virtual addresses
+  void *ptr = mmap64(nullptr, total_size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if (ptr == MAP_FAILED) {
+    perror("MapMixedMemory: initial mmap failed");
+    return nullptr;
+  }
+
+  // Step 2: Remap the shared portion using MAP_FIXED
+  // This replaces the shared portion with actual shared memory from the fd
+  // The private portion remains as private/anonymous
+  char *shared_ptr = static_cast<char*>(ptr) + private_size;
+  void *result = mmap64(shared_ptr, shared_size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_FIXED, fd.posix_fd_, shared_offset);
+  if (result == MAP_FAILED || result != shared_ptr) {
+    perror("MapMixedMemory: MAP_FIXED mmap failed");
+    // Clean up: unmap the entire region
+    munmap(ptr, total_size);
+    return nullptr;
+  }
+
+  // Success: we now have [private_size bytes private | shared_size bytes shared]
+  return ptr;
+
+#elif HSHM_ENABLE_WINDOWS_SYSINFO
+  // Windows doesn't easily support MAP_FIXED-like behavior for mixed mappings
+  // Fall back to just returning the shared mapping
+  // The private region won't work as expected on Windows
+  (void)private_size;  // Unused on Windows
+  return MapSharedMemory(fd, shared_size, shared_offset);
+#endif
+}
+
 void SystemInfo::UnmapMemory(void *ptr, size_t size) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
   munmap(ptr, size);

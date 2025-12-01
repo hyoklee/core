@@ -153,5 +153,7 @@ The test takes as input rank, time, nthreads.
 The test should allocate, memset, free in a loop for a period of time.
 
 Create a bash script.
-Call the test with rank 0 to initialize the shared memory.
-Call the test with rank 1 to attach to the shared memory.
+Call the test with rank 0, 0 time, and 1 thread to initialize the shared memory.
+Call the test with rank 1, 5 time, and 2 threads to attach to the shared memory. Start in background.
+Call the test with rank 2, 5 time, and 2 threads to attach to the shared memory. Start in background.
+Wait for both tests to complete. Fail if either run into an issue.

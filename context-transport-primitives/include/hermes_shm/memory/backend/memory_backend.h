@@ -95,14 +95,20 @@ struct MemoryBackendHeader {
 
 class UrlMemoryBackend {};
 
+/**
+ * Global constant for private memory region size
+ * Each backend allocates this amount of process-local memory before the shared data region
+ */
+static constexpr size_t kBackendPrivate = 16 * 1024;  // 16KB
+
 class MemoryBackend {
  public:
   MemoryBackendHeader *header_;
   char *md_;       // Metadata for how processes (on CPU) connect to this backend. Not required for allocators.
   size_t md_size_; // Metadata size. Not required for allocators.
   bitfield64_t flags_;
-  char *data_;      // Data buffer for allocators
-  size_t data_size_;// Data buffer size for allocators
+  char *data_;      // Data buffer for allocators (points to the SHARED part of the region)
+  size_t data_size_;// Data buffer size for allocators (size of SHARED region only)
   int data_id_;     // Device ID for the data buffer (GPU ID, etc.)
   u64 data_offset_; // Offset from root backend (0 if this is root, non-zero for sub-allocators)
 
@@ -168,6 +174,32 @@ class MemoryBackend {
   void Shift(size_t offset) {
     data_size_ -= offset;
     data_offset_ += offset;
+  }
+
+  /**
+   * Get pointer to the private region (kBackendPrivate bytes before data_)
+   *
+   * This region is process-local and not shared between processes.
+   * Each process that attaches gets its own independent copy.
+   * Useful for thread-local storage and process-specific metadata.
+   *
+   * @return Pointer to the kBackendPrivate-byte private region, or nullptr if data_ is null
+   */
+  HSHM_CROSS_FUN
+  char *GetPrivateRegion() {
+    if (data_ == nullptr) {
+      return nullptr;
+    }
+    return data_ - kBackendPrivate;
+  }
+
+  /**
+   * Get size of the private region
+   * @return Size of private region (always kBackendPrivate = 16KB)
+   */
+  HSHM_CROSS_FUN
+  static constexpr size_t GetPrivateRegionSize() {
+    return kBackendPrivate;
   }
 
   HSHM_CROSS_FUN

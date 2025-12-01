@@ -6,6 +6,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 add_subdirectory(allocator)
 add_subdirectory(backend)
 add_subdirectory(data_structures)
+add_subdirectory(introspect)
 # Following test directories disabled - depend on deleted code:
 # add_subdirectory(types)
 add_subdirectory(thread)

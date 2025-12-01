@@ -38,6 +38,7 @@ namespace hshm::ipc {
 class PosixMmap : public MemoryBackend {
  private:
   size_t total_size_;
+  void *map_ptr_;  // Actual mapping start (includes private region)
 
  public:
   /** Constructor */
@@ -66,21 +67,27 @@ class PosixMmap : public MemoryBackend {
     SetInitialized();
     Own();
 
-    // Calculate sizes: header + md section + alignment + data section
+    // Calculate sizes: kBackendPrivate + header + md section + alignment + data section
     constexpr size_t kAlignment = 4096;  // 4KB alignment
     size_t header_size = sizeof(MemoryBackendHeader);
     size_t md_size = header_size;  // md section stores the header
     size_t aligned_md_size = ((md_size + kAlignment - 1) / kAlignment) * kAlignment;
-    total_size_ = aligned_md_size + size;
+
+    // Total layout: [kBackendPrivate private] [MemoryBackendHeader | padding to 4KB] [data]
+    total_size_ = kBackendPrivate + aligned_md_size + size;
 
     // Map memory
     char *ptr = _Map(total_size_);
     if (!ptr) {
       return false;
     }
+    map_ptr_ = ptr;  // Save mapping start for cleanup
 
-    // Layout: [MemoryBackendHeader | padding to 4KB] [data]
-    header_ = reinterpret_cast<MemoryBackendHeader *>(ptr);
+    // Skip past private region to shared region
+    char *shared_ptr = ptr + kBackendPrivate;
+
+    // Layout: [kBackendPrivate private] [MemoryBackendHeader | padding to 4KB] [data]
+    header_ = reinterpret_cast<MemoryBackendHeader *>(shared_ptr);
     header_->id_ = backend_id;
     header_->md_size_ = md_size;
     header_->data_size_ = size;
@@ -88,11 +95,11 @@ class PosixMmap : public MemoryBackend {
     header_->flags_.Clear();
 
     // md_ points to the header itself (metadata for process connection)
-    md_ = ptr;
+    md_ = shared_ptr;
     md_size_ = md_size;
 
-    // data_ starts at 4KB aligned boundary after md section
-    data_ = ptr + aligned_md_size;
+    // data_ starts at 4KB aligned boundary after md section (in shared region)
+    data_ = shared_ptr + aligned_md_size;
     data_size_ = size;
     data_id_ = -1;
     data_offset_ = 0;
@@ -130,7 +137,10 @@ class PosixMmap : public MemoryBackend {
     if (!IsInitialized()) {
       return;
     }
-    SystemInfo::UnmapMemory(reinterpret_cast<void *>(header_), total_size_);
+    if (map_ptr_) {
+      SystemInfo::UnmapMemory(map_ptr_, total_size_);  // Unmap from mapping start (includes private region)
+      map_ptr_ = nullptr;
+    }
     UnsetInitialized();
   }
 

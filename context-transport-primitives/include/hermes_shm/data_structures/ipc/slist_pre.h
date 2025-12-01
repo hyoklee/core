@@ -66,7 +66,7 @@ template<bool ATOMIC = false>
 class slist {
  private:
   opt_atomic<size_t, ATOMIC> size_;  /**< Number of elements in the list */
-  OffsetPtr<>head_;               /**< Offset pointer to head node */
+  OffsetPtr<> head_;               /**< Offset pointer to head node */
 
  public:
   /**

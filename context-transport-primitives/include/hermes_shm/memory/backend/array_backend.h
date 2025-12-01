@@ -40,6 +40,19 @@ class ArrayBackend : public MemoryBackend {
     }
   }
 
+  /**
+   * Initialize ArrayBackend with external array
+   *
+   * @param backend_id Backend identifier
+   * @param size Size of the data region (EXCLUDING kBackendPrivate)
+   * @param region Pointer to the SHARED part of the array (after kBackendPrivate offset)
+   * @param offset Offset within the array
+   * @return true on success
+   *
+   * NOTE: The caller is responsible for allocating kBackendPrivate bytes BEFORE the region pointer.
+   *       The full allocation should be: [kBackendPrivate private] [size bytes shared]
+   *       And region should point to the start of the shared portion.
+   */
   HSHM_CROSS_FUN
   bool shm_init(const MemoryBackendId &backend_id, size_t size, char *region, u64 offset = 0) {
     SetInitialized();
@@ -58,9 +71,9 @@ class ArrayBackend : public MemoryBackend {
     header_->data_id_ = -1;
     header_->flags_.Clear();
 
-    // Data segment from region
+    // Data segment from region (caller ensures kBackendPrivate bytes exist before this pointer)
     data_size_ = size;
-    data_ = region;
+    data_ = region;  // Points to SHARED region (after kBackendPrivate offset)
     data_id_ = -1;
     data_offset_ = offset;
 

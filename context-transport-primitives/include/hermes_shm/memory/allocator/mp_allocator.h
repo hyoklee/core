@@ -250,6 +250,13 @@ class MultiProcessAllocatorHeader {
     alloc_procs_.Init();
     free_procs_.Init();
   }
+
+  /**
+   * Check if header is initialized (has at least one process)
+   */
+  bool IsInitialized() const {
+    return pid_count_ > 0;
+  }
 };
 
 /**
@@ -347,32 +354,113 @@ class MultiProcessAllocator {
     header_->alloc_procs_.emplace(&alloc_, pblock_node);
     header_->pid_count_++;
 
-    // Call shm_attach to set up TLS
-    return shm_attach(process_unit_, thread_unit_);
+    // Set up TLS
+    return SetupTls();
   }
 
   /**
-   * Attach to an existing allocator and set up TLS
+   * Attach to an existing allocator (for multi-process scenarios)
    *
-   * @param process_unit Default size for ProcessBlocks (default: 1GB)
-   * @param thread_unit Default size for ThreadBlocks (default: 16MB)
+   * This method allows a process to attach to shared memory that was
+   * initialized by another process. It reconstructs the allocator state
+   * from the shared memory and sets up process-local state (TLS, ProcessBlock).
+   *
+   * @param backend Memory backend that was initialized by the creator process
+   * @param process_unit Default size for ProcessBlocks (default: determined by memory size)
+   * @param thread_unit Default size for ThreadBlocks (default: determined by memory size)
    * @return true on success, false on failure
    */
-  bool shm_attach(size_t process_unit = 1ULL * 1024 * 1024 * 1024,
-                  size_t thread_unit = 16ULL * 1024 * 1024) {
-    process_unit_ = process_unit;
-    thread_unit_ = thread_unit;
+  bool shm_attach(const MemoryBackend &backend,
+                  size_t process_unit = 0,
+                  size_t thread_unit = 0) {
+    backend_ = backend;
 
-    // Create TLS keys
-    void *null_ptr = nullptr;
-    if (!HSHM_THREAD_MODEL->CreateTls<void>(tblock_key_, null_ptr)) {
+    // Attach to existing header (don't reinitialize!)
+    header_ = reinterpret_cast<MultiProcessAllocatorHeader*>(backend_.data_);
+
+    // Verify header was initialized
+    if (!header_->IsInitialized()) {
       return false;
     }
-    if (!HSHM_THREAD_MODEL->CreateTls<void>(pblock_key_, null_ptr)) {
+
+    // Create a shifted backend for the global allocator
+    MemoryBackend alloc_backend = backend_;
+    alloc_backend.Shift(sizeof(MultiProcessAllocatorHeader));
+
+    // Attach to the buddy allocator (don't reinitialize!)
+    // Reconstruct pointers to the free lists that are already in shared memory
+    alloc_.backend_ = alloc_backend;
+    alloc_.backend_.SetInitialized();
+
+    // Calculate aligned metadata size (must match what shm_init did)
+    // Use the same constants as BuddyAllocator::shm_init
+    constexpr size_t kNumRoundUpLists = 10;  // 5 to 14 = 10 lists (from BuddyAllocator)
+    constexpr size_t kNumRoundDownLists = 6;  // 15 to 20 = 6 lists (from BuddyAllocator)
+    constexpr size_t kNumFreeLists = kNumRoundUpLists + kNumRoundDownLists;
+    size_t metadata_size = kNumFreeLists * sizeof(pre::slist<false>);
+    size_t aligned_metadata = ((metadata_size + 63) / 64) * 64;
+
+    // Reconstruct pointers to existing free lists
+    char *region_start = alloc_backend.data_ + alloc_backend.data_offset_;
+    alloc_.round_up_lists_ = reinterpret_cast<pre::slist<false>*>(region_start);
+    alloc_.round_down_lists_ = alloc_.round_up_lists_ + kNumRoundUpLists;
+
+    // Reconstruct heap boundaries (these should match what was initialized)
+    alloc_.heap_begin_ = alloc_backend.data_offset_ + aligned_metadata;
+    alloc_.heap_current_ = alloc_.heap_begin_;  // Note: This is approximate, actual value may be higher
+    alloc_.heap_end_ = alloc_backend.data_offset_ + alloc_backend.data_size_;
+
+    // Set default sizes from backend size if not specified
+    size_t size = backend_.data_size_;
+    if (process_unit == 0) {
+      if (size < 1ULL * 1024 * 1024 * 1024) {
+        process_unit_ = size / 4;
+      } else {
+        process_unit_ = 1ULL * 1024 * 1024 * 1024;
+      }
+    } else {
+      process_unit_ = process_unit;
+    }
+
+    if (thread_unit == 0) {
+      if (size < 1ULL * 1024 * 1024 * 1024) {
+        thread_unit_ = 4ULL * 1024 * 1024;
+      } else {
+        thread_unit_ = 16ULL * 1024 * 1024;
+      }
+    } else {
+      thread_unit_ = thread_unit;
+    }
+
+    // Allocate a ProcessBlock for this process
+    OffsetPtr<> pblock_offset = alloc_.AllocateOffset(process_unit_);
+    if (pblock_offset.IsNull()) {
       return false;
     }
 
-    return true;
+    // Initialize ProcessBlock
+    char *pblock_ptr = backend_.data_ + pblock_offset.load();
+    ProcessBlock *pblock = reinterpret_cast<ProcessBlock*>(pblock_ptr);
+    new (pblock) ProcessBlock();
+
+    if (!pblock->shm_init(backend_, pblock_ptr, process_unit_, getpid())) {
+      alloc_.FreeOffset(pblock_offset);
+      return false;
+    }
+
+    // Add to process list (with locking since other processes may be modifying)
+    ShmPtr<> pblock_shm;
+    pblock_shm.off_ = pblock_offset;
+    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock), pblock_shm);
+
+    // Lock while modifying shared header
+    header_->lock_.Lock(getpid());
+    header_->alloc_procs_.emplace(&alloc_, pblock_node);
+    header_->pid_count_++;
+    header_->lock_.Unlock();
+
+    // Set up TLS
+    return SetupTls();
   }
 
   /**
@@ -381,6 +469,24 @@ class MultiProcessAllocator {
   void shm_detach() {
     // TLS cleanup is handled automatically by pthread_key_create destructor
   }
+
+ private:
+  /**
+   * Set up thread-local storage keys
+   * @return true on success, false on failure
+   */
+  bool SetupTls() {
+    void *null_ptr = nullptr;
+    if (!HSHM_THREAD_MODEL->CreateTls<void>(tblock_key_, null_ptr)) {
+      return false;
+    }
+    if (!HSHM_THREAD_MODEL->CreateTls<void>(pblock_key_, null_ptr)) {
+      return false;
+    }
+    return true;
+  }
+
+ public:
 
   /**
    * Ensure thread-local storage is set up for the current thread

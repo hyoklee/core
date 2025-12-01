@@ -1368,16 +1368,20 @@ class BaseAllocator : public CoreAllocT {
                                                                    u64 sub_id,
                                                                    size_t size,
                                                                    Args&& ...args) {
-    // Allocate region for the sub-allocator
-    FullPtr<char> region = Allocate<char>(ctx, size);
+    // Allocate region for the sub-allocator (include kBackendPrivate for private region)
+    size_t total_size = hipc::kBackendPrivate + size;
+    FullPtr<char> region = Allocate<char>(ctx, total_size);
 
     // Get the backend ID from this allocator through the core allocator type
     CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
     MemoryBackendId backend_id = core_this->backend_.GetId();
 
     // Create ArrayBackend for the sub-allocator
+    // Pass pointer to SHARED region (after kBackendPrivate offset)
     hipc::ArrayBackend backend;
-    backend.shm_init(backend_id, size, region.ptr_, region.shm_.off_.load());
+    char *shared_ptr = region.ptr_ + hipc::kBackendPrivate;
+    u64 shared_offset = region.shm_.off_.load() + hipc::kBackendPrivate;
+    backend.shm_init(backend_id, size, shared_ptr, shared_offset);
 
     // Create allocator ID for sub-allocator
     AllocatorId sub_alloc_id(backend_id, sub_id);

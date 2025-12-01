@@ -93,6 +93,9 @@ class BuddyAllocator {
   pre::slist<false> *round_up_lists_;    /**< Free lists for sizes 32B - 16KB (round up) */
   pre::slist<false> *round_down_lists_;  /**< Free lists for sizes 16KB - 1MB (round down) */
 
+  // MultiProcessAllocator needs access to reconstruct pointers when attaching
+  friend class MultiProcessAllocator;
+
  public:
   MemoryBackend backend_;       /**< Memory backend for compatibility with FullPtr */
 
