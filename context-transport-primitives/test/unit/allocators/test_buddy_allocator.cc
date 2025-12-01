@@ -360,3 +360,128 @@ TEST_CASE("BuddyAllocator - Out of Memory", "[buddy_allocator]") {
 
   backend.shm_destroy();
 }
+
+TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
+  MallocBackend backend;
+  size_t heap_size = 5 * 1024 * 1024;  // 5MB
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
+
+  BuddyAllocator allocator;
+  allocator.shm_init(backend.data_, heap_size);
+
+  SECTION("Reallocate to smaller size - no reallocation") {
+    auto offset = allocator.AllocateOffset(1024);
+    REQUIRE_FALSE(offset.IsNull());
+
+    // Fill with pattern
+    char *data = backend.data_ + offset.load();
+    for (size_t i = 0; i < 1024; ++i) {
+      data[i] = static_cast<char>(i % 256);
+    }
+
+    // Reallocate to smaller size - should return same offset
+    auto new_offset = allocator.ReallocateOffset(offset, 512);
+    REQUIRE(new_offset.load() == offset.load());
+
+    // Verify data is intact
+    char *new_data = backend.data_ + new_offset.load();
+    for (size_t i = 0; i < 512; ++i) {
+      REQUIRE(new_data[i] == static_cast<char>(i % 256));
+    }
+
+    allocator.FreeOffset(new_offset);
+  }
+
+  SECTION("Reallocate to same size - no reallocation") {
+    auto offset = allocator.AllocateOffset(2048);
+    REQUIRE_FALSE(offset.IsNull());
+
+    auto new_offset = allocator.ReallocateOffset(offset, 2048);
+    REQUIRE(new_offset.load() == offset.load());
+
+    allocator.FreeOffset(new_offset);
+  }
+
+  SECTION("Reallocate to larger size - data copied") {
+    auto offset = allocator.AllocateOffset(512);
+    REQUIRE_FALSE(offset.IsNull());
+
+    // Fill with pattern
+    char *data = backend.data_ + offset.load();
+    for (size_t i = 0; i < 512; ++i) {
+      data[i] = static_cast<char>(i % 256);
+    }
+
+    // Reallocate to larger size
+    auto new_offset = allocator.ReallocateOffset(offset, 2048);
+    REQUIRE_FALSE(new_offset.IsNull());
+
+    // Verify old data is copied
+    char *new_data = backend.data_ + new_offset.load();
+    for (size_t i = 0; i < 512; ++i) {
+      REQUIRE(new_data[i] == static_cast<char>(i % 256));
+    }
+
+    allocator.FreeOffset(new_offset);
+  }
+
+  SECTION("Reallocate null pointer") {
+    OffsetPtr null_offset = OffsetPtr::GetNull();
+    auto new_offset = allocator.ReallocateOffset(null_offset, 1024);
+    REQUIRE_FALSE(new_offset.IsNull());
+
+    allocator.FreeOffset(new_offset);
+  }
+
+  SECTION("Multiple reallocations") {
+    auto offset = allocator.AllocateOffset(128);
+    REQUIRE_FALSE(offset.IsNull());
+
+    // Fill initial data
+    char *data = backend.data_ + offset.load();
+    for (size_t i = 0; i < 128; ++i) {
+      data[i] = static_cast<char>(i);
+    }
+
+    // Grow progressively
+    offset = allocator.ReallocateOffset(offset, 256);
+    REQUIRE_FALSE(offset.IsNull());
+
+    offset = allocator.ReallocateOffset(offset, 512);
+    REQUIRE_FALSE(offset.IsNull());
+
+    offset = allocator.ReallocateOffset(offset, 1024);
+    REQUIRE_FALSE(offset.IsNull());
+
+    // Verify original data still intact
+    data = backend.data_ + offset.load();
+    for (size_t i = 0; i < 128; ++i) {
+      REQUIRE(data[i] == static_cast<char>(i));
+    }
+
+    allocator.FreeOffset(offset);
+  }
+
+  SECTION("Reallocate with data preservation") {
+    auto offset = allocator.AllocateOffset(100);
+    REQUIRE_FALSE(offset.IsNull());
+
+    // Write specific pattern
+    char *data = backend.data_ + offset.load();
+    const char *pattern = "Hello, World! This is test data.";
+    size_t pattern_len = strlen(pattern) + 1;  // Include null terminator
+    memcpy(data, pattern, pattern_len);
+
+    // Reallocate to much larger size
+    auto new_offset = allocator.ReallocateOffset(offset, 4096);
+    REQUIRE_FALSE(new_offset.IsNull());
+
+    // Verify pattern is preserved
+    char *new_data = backend.data_ + new_offset.load();
+    REQUIRE(strcmp(new_data, pattern) == 0);
+
+    allocator.FreeOffset(new_offset);
+  }
+
+  backend.shm_destroy();
+}

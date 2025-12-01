@@ -90,3 +90,16 @@ Then descend and continue merging. Eventually all nodes should be touched and th
 Rebuild the free list by iterating over the RB tree
 1. Pop the head of the tree and cache the page size. Cast to FreeBuddyPage and set size again. Add to the free list most appropriate for that size.
 2. Continue until rb tree is completely free.
+
+@CLAUDE.md 
+
+Update BuddyAllocator.
+
+## ReallocateOffset
+
+Takes as input the original OffsetPtr and new size.
+Get the BuddyPage for the OffsetPtr. The input is the Page + sizeof(BuddyPage), so you will have to subtract sizeof(BuddyPage) first to get the page size.
+Check to see if the new size is less than or equal to the new size. If it is, then do not reallocate and just return.
+Otherwise, we will need to AllocateOffset, get the FullPtr from the offset, and then copy from the old offset into the new one. Call FreeOffset afterwards.
+Ensure that the size stored in the BuddyPage is the size of the page without the BuddyPage metadata header. Verify that in AllocateOffset.
+

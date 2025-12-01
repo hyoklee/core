@@ -112,9 +112,6 @@ Shift takes as input:
 1. OffsetPointer shift (the offset from the beginning of data)
 This will change both the size and offset.
 
-FullPtr(CtxAllocator ctx_alloc, OffsetPointer ptr) and similar constructors should be updated to do:
-ptr_ = ctx_alloc.backend.data_ + ctx_alloc.backend.offset_ + ptr;
-
 Verify that unit tests still pass after this change.
 
 Let's also make the following changes:
