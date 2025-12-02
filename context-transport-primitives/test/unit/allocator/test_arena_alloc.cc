@@ -20,33 +20,30 @@ using hshm::testing::AllocatorTest;
 TEST_CASE("ArenaAllocator - Basic Allocation", "[ArenaAllocator]") {
   hipc::MallocBackend backend;
   size_t arena_size = 1024 * 1024;  // 1 MB
-  backend.shm_init(hipc::MemoryBackendId(0, 0), arena_size);
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<false>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<false> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<false>>();
 
   SECTION("Single allocation") {
-    
-
+    size_t alloc_header_size = sizeof(hipc::ArenaAllocator<false>);
     auto ptr = alloc->AllocateOffset( 100);
     REQUIRE_FALSE(ptr.IsNull());
-    REQUIRE(ptr.off_.load() == 0);  // First allocation at offset 0
-    REQUIRE(alloc->GetHeapOffset() == 100);
+    REQUIRE(ptr.off_.load() == alloc_header_size);  // First allocation after allocator header
+    REQUIRE(alloc->GetHeapOffset() == alloc_header_size + 100);
   }
 
   SECTION("Multiple allocations") {
-    
-
+    size_t alloc_header_size = sizeof(hipc::ArenaAllocator<false>);
     auto ptr1 = alloc->AllocateOffset( 100);
     auto ptr2 = alloc->AllocateOffset( 200);
     auto ptr3 = alloc->AllocateOffset( 300);
 
-    REQUIRE(ptr1.off_.load() == 0);
-    REQUIRE(ptr2.off_.load() == 100);
-    REQUIRE(ptr3.off_.load() == 300);
-    REQUIRE(alloc->GetHeapOffset() == 600);
+    REQUIRE(ptr1.off_.load() == alloc_header_size);
+    REQUIRE(ptr2.off_.load() == alloc_header_size + 100);
+    REQUIRE(ptr3.off_.load() == alloc_header_size + 300);
+    REQUIRE(alloc->GetHeapOffset() == alloc_header_size + 600);
   }
 
   // Note: Allocation tracking requires HSHM_ALLOC_TRACK_SIZE to be defined
@@ -57,12 +54,11 @@ TEST_CASE("ArenaAllocator - Basic Allocation", "[ArenaAllocator]") {
 TEST_CASE("ArenaAllocator - Aligned Allocation", "[ArenaAllocator]") {
   hipc::MallocBackend backend;
   size_t arena_size = 1024 * 1024;
-  backend.shm_init(hipc::MemoryBackendId(0, 0), arena_size);
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<false>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<false> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<false>>();
 
   SECTION("Aligned allocations") {
     
@@ -77,13 +73,15 @@ TEST_CASE("ArenaAllocator - Aligned Allocation", "[ArenaAllocator]") {
   }
 
   SECTION("Mixed alignment") {
-    
-
+    size_t alloc_header_size = sizeof(hipc::ArenaAllocator<false>);
     auto ptr1 = alloc->AllocateOffset( 1);  // 1 byte
     auto ptr2 = alloc->AllocateOffset( 1, 64);  // Align to 64
 
-    REQUIRE(ptr1.off_.load() == 0);
-    REQUIRE(ptr2.off_.load() == 64);  // Should skip to next 64-byte boundary
+    REQUIRE(ptr1.off_.load() == alloc_header_size);
+    // After 1 byte at alloc_header_size, next 64-byte boundary depends on header size
+    // If header is 120 bytes (multiple of 8), next allocation at 120+1=121, then align to next 64-byte boundary
+    size_t expected_aligned = ((alloc_header_size + 1 + 63) / 64) * 64;
+    REQUIRE(ptr2.off_.load() == expected_aligned);
   }
 
   backend.shm_destroy();
@@ -92,56 +90,55 @@ TEST_CASE("ArenaAllocator - Aligned Allocation", "[ArenaAllocator]") {
 TEST_CASE("ArenaAllocator - Reset", "[ArenaAllocator]") {
   hipc::MallocBackend backend;
   size_t arena_size = 1024 * 1024;
-  backend.shm_init(hipc::MemoryBackendId(0, 0), arena_size);
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<false>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<false> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<false>>();
 
-  
+  size_t alloc_header_size = sizeof(hipc::ArenaAllocator<false>);
 
   // Allocate some memory
   alloc->AllocateOffset( 100);
   alloc->AllocateOffset( 200);
   alloc->AllocateOffset( 300);
 
-  REQUIRE(alloc->GetHeapOffset() == 600);
+  REQUIRE(alloc->GetHeapOffset() == alloc_header_size + 600);
 
   // Reset the arena
   alloc->Reset();
 
-  REQUIRE(alloc->GetHeapOffset() == 0);
+  REQUIRE(alloc->GetHeapOffset() == alloc_header_size);
 
-  // Allocate again - should start from offset 0
+  // Allocate again - should start from after header
   auto ptr = alloc->AllocateOffset( 50);
-  REQUIRE(ptr.off_.load() == 0);
-  REQUIRE(alloc->GetHeapOffset() == 50);
+  REQUIRE(ptr.off_.load() == alloc_header_size);
+  REQUIRE(alloc->GetHeapOffset() == alloc_header_size + 50);
 
   backend.shm_destroy();
 }
 
 TEST_CASE("ArenaAllocator - Out of Memory", "[ArenaAllocator]") {
   hipc::MallocBackend backend;
-  size_t arena_size = 1024;  // Small arena - 1 KB
-  backend.shm_init(hipc::MemoryBackendId(0, 0), arena_size);
+  // Use 2MB to avoid MallocBackend's 1MB minimum
+  size_t arena_size = 2 * 1024 * 1024;
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<false>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<false> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<false>>();
 
-  
+  // Get the actual remaining size
+  size_t remaining = alloc->GetRemainingSize();
 
-  // Allocate most of the arena
-  alloc->AllocateOffset( 512);
-  alloc->AllocateOffset( 256);
+  // Allocate almost all available space
+  alloc->AllocateOffset(remaining - 200);
 
-  // This allocation should succeed (768 + 200 = 968 < 1024)
-  REQUIRE_NOTHROW(alloc->AllocateOffset( 200));
+  // This allocation should succeed
+  REQUIRE_NOTHROW(alloc->AllocateOffset(100));
 
-  // This allocation should fail (968 + 100 = 1068 > 1024)
-  REQUIRE_THROWS(alloc->AllocateOffset( 100));
+  // This allocation should fail - not enough space left
+  REQUIRE_THROWS(alloc->AllocateOffset(200));
 
   backend.shm_destroy();
 }
@@ -149,12 +146,11 @@ TEST_CASE("ArenaAllocator - Out of Memory", "[ArenaAllocator]") {
 TEST_CASE("ArenaAllocator - Free is No-op", "[ArenaAllocator]") {
   hipc::MallocBackend backend;
   size_t arena_size = 1024 * 1024;
-  backend.shm_init(hipc::MemoryBackendId(0, 0), arena_size);
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<false>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<false> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<false>>();
 
   
 
@@ -175,26 +171,26 @@ TEST_CASE("ArenaAllocator - Free is No-op", "[ArenaAllocator]") {
 
 TEST_CASE("ArenaAllocator - Remaining Space", "[ArenaAllocator]") {
   hipc::MallocBackend backend;
-  size_t test_arena_size = 1000;
-  backend.shm_init(hipc::MemoryBackendId(0, 0), test_arena_size);
+  // Use 2MB to avoid MallocBackend's 1MB minimum affecting the test
+  size_t test_arena_size = 2 * 1024 * 1024;
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<false>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + test_arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<false> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, test_arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<false>>();
 
-  
-
-  REQUIRE(alloc->GetRemainingSize() == test_arena_size);
+  // GetRemainingSize returns the size of the managed heap region (after allocator header)
+  size_t initial_remaining = alloc->GetRemainingSize();
+  REQUIRE(initial_remaining >= test_arena_size);  // May be rounded up by backend
 
   alloc->AllocateOffset( 300);
-  REQUIRE(alloc->GetRemainingSize() == 700);
+  REQUIRE(alloc->GetRemainingSize() == initial_remaining - 300);
 
   alloc->AllocateOffset( 200);
-  REQUIRE(alloc->GetRemainingSize() == 500);
+  REQUIRE(alloc->GetRemainingSize() == initial_remaining - 500);
 
   alloc->Reset();
-  REQUIRE(alloc->GetRemainingSize() == test_arena_size);
+  REQUIRE(alloc->GetRemainingSize() == initial_remaining);
 
   backend.shm_destroy();
 }
@@ -202,32 +198,29 @@ TEST_CASE("ArenaAllocator - Remaining Space", "[ArenaAllocator]") {
 TEST_CASE("ArenaAllocator - Atomic Version", "[ArenaAllocator][atomic]") {
   hipc::MallocBackend backend;
   size_t arena_size = 1024 * 1024;
-  backend.shm_init(hipc::MemoryBackendId(0, 0), arena_size);
+  size_t alloc_size = sizeof(hipc::ArenaAllocator<true>);
+  backend.shm_init(hipc::MemoryBackendId(0, 0), alloc_size + arena_size);
 
-  // ArenaAllocator allocates its header with malloc, not in the backend
-  hipc::ArenaAllocator<true> alloc_obj;
-  auto *alloc = &alloc_obj;
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, arena_size, backend);
+  // MakeAlloc constructs the allocator in the backend and initializes it
+  auto *alloc = backend.MakeAlloc<hipc::ArenaAllocator<true>>();
 
   SECTION("Basic atomic allocations") {
-    
-
+    size_t alloc_header_size = sizeof(hipc::ArenaAllocator<true>);
     auto ptr1 = alloc->AllocateOffset( 100);
     auto ptr2 = alloc->AllocateOffset( 200);
 
-    REQUIRE(ptr1.off_.load() == 0);
-    REQUIRE(ptr2.off_.load() == 100);
-    REQUIRE(alloc->GetHeapOffset() == 300);
+    REQUIRE(ptr1.off_.load() == alloc_header_size);
+    REQUIRE(ptr2.off_.load() == alloc_header_size + 100);
+    REQUIRE(alloc->GetHeapOffset() == alloc_header_size + 300);
   }
 
   SECTION("Atomic reset") {
-    
-
+    size_t alloc_header_size = sizeof(hipc::ArenaAllocator<true>);
     alloc->AllocateOffset( 500);
-    REQUIRE(alloc->GetHeapOffset() == 500);
+    REQUIRE(alloc->GetHeapOffset() == alloc_header_size + 500);
 
     alloc->Reset();
-    REQUIRE(alloc->GetHeapOffset() == 0);
+    REQUIRE(alloc->GetHeapOffset() == alloc_header_size);
   }
 
   backend.shm_destroy();

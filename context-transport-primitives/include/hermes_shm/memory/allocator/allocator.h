@@ -32,76 +32,10 @@
 namespace hshm::ipc {
 
 /**
- * The identifier for an allocator
+ * AllocatorId is now just an alias for MemoryBackendId
+ * Kept for backward compatibility
  * */
-struct AllocatorId {
-  MemoryBackendId backend_id_;  // The backend this allocator is attached to
-  u32 sub_id_;                  // The unique ID of allocator on this backend (0 for main allocator)
-
-  HSHM_INLINE_CROSS_FUN AllocatorId() : backend_id_(), sub_id_(0) {}
-
-  /**
-   * Constructor which sets backend_id and sub_id
-   * */
-  HSHM_INLINE_CROSS_FUN explicit AllocatorId(MemoryBackendId backend_id, u32 sub_id = 0)
-    : backend_id_(backend_id), sub_id_(sub_id) {}
-
-  /**
-   * Legacy constructor which sets major & minor (treats as backend_id with sub_id=0)
-   * */
-  HSHM_INLINE_CROSS_FUN explicit AllocatorId(i32 major, i32 minor)
-    : backend_id_(major, minor), sub_id_(0) {}
-
-  /**
-   * Set this allocator to null
-   * */
-  HSHM_INLINE_CROSS_FUN void SetNull() { (*this) = GetNull(); }
-
-  /**
-   * Check if this is the null allocator
-   * */
-  HSHM_INLINE_CROSS_FUN bool IsNull() const { return (*this) == GetNull(); }
-
-  /** Equality check */
-  HSHM_INLINE_CROSS_FUN bool operator==(const AllocatorId &other) const {
-    return backend_id_ == other.backend_id_ && sub_id_ == other.sub_id_;
-  }
-
-  /** Inequality check */
-  HSHM_INLINE_CROSS_FUN bool operator!=(const AllocatorId &other) const {
-    return backend_id_ != other.backend_id_ || sub_id_ != other.sub_id_;
-  }
-
-  /** Get the null allocator */
-  HSHM_INLINE_CROSS_FUN static AllocatorId GetNull() {
-    return AllocatorId(MemoryBackendId(UINT32_MAX, UINT32_MAX), UINT32_MAX);
-  }
-
-  /** To index */
-  HSHM_INLINE_CROSS_FUN uint32_t ToIndex() const {
-    return backend_id_.major_ * 2 + backend_id_.minor_;
-  }
-
-  /** Serialize an hipc::allocator_id */
-  template <typename Ar>
-  HSHM_INLINE_CROSS_FUN void serialize(Ar &ar) {
-    ar & backend_id_.major_;
-    ar & backend_id_.minor_;
-    ar & sub_id_;
-  }
-
-  /** Print */
-  HSHM_CROSS_FUN
-  void Print() const {
-    printf("(%s) Allocator ID: (%u,%u).%u\n", kCurrentDevice,
-           backend_id_.major_, backend_id_.minor_, sub_id_);
-  }
-
-  friend std::ostream &operator<<(std::ostream &os, const AllocatorId &id) {
-    os << "(" << id.backend_id_.major_ << "," << id.backend_id_.minor_ << ")." << id.sub_id_;
-    return os;
-  }
-};
+using AllocatorId = MemoryBackendId;
 
 class Allocator;
 
@@ -120,7 +54,6 @@ struct ShmPtrBase;
  * Allocators inherit from this.
  * */
 struct AllocatorHeader {
-  AllocatorId alloc_id_;
   size_t custom_header_size_;
   hipc::atomic<hshm::size_t> total_alloc_;
 
@@ -128,8 +61,7 @@ struct AllocatorHeader {
   AllocatorHeader() = default;
 
   HSHM_CROSS_FUN
-  void Configure(AllocatorId allocator_id, size_t custom_header_size) {
-    alloc_id_ = allocator_id;
+  void Configure(size_t custom_header_size) {
     custom_header_size_ = custom_header_size;
     total_alloc_ = 0;
   }
@@ -155,7 +87,6 @@ struct AllocatorHeader {
 /** The allocator information struct */
 class Allocator {
  public:
-  AllocatorId id_;
   size_t alloc_header_size_;  /**< Size of the allocator object (sizeof derived class) */
   size_t custom_header_size_;  /**< Size of custom header after allocator object */
 
@@ -167,13 +98,13 @@ class Allocator {
   HSHM_INLINE_CROSS_FUN
   Allocator() : alloc_header_size_(0), custom_header_size_(0) {}
 
-  /** Get the allocator identifier */
+  /** Get the allocator identifier from backend */
   HSHM_INLINE_CROSS_FUN
-  AllocatorId &GetId() { return id_; }
+  MemoryBackendId GetId() const { return backend_.GetId(); }
 
-  /** Get the allocator identifier (const) */
+  /** Get the allocator identifier (non-const version) */
   HSHM_INLINE_CROSS_FUN
-  const AllocatorId &GetId() const { return id_; }
+  MemoryBackendId GetId() { return backend_.GetId(); }
 
   /**
    * Get backend data pointer (reconstructs from allocator position)
@@ -181,6 +112,15 @@ class Allocator {
   HSHM_INLINE_CROSS_FUN
   char* GetBackendData() const {
     return reinterpret_cast<char*>(const_cast<Allocator*>(this)) - backend_.data_offset_;
+  }
+
+  /**
+   * Get backend shift (data_offset_)
+   * @return The offset from backend data pointer to the allocator's region
+   */
+  HSHM_INLINE_CROSS_FUN
+  size_t GetBackendShift() const {
+    return backend_.data_offset_;
   }
 
   /**
@@ -201,6 +141,20 @@ class Allocator {
   MemoryBackend GetBackend() const {
     MemoryBackend backend = backend_;
     backend.data_ = GetBackendData();
+    return backend;
+  }
+
+  /**
+   * Get a shifted backend where data_ points to data_ + data_offset_
+   * This is useful for sub-allocators that need to operate on a region
+   * within the parent allocator's space.
+   *
+   * @return Backend with data_ = GetBackendData() + data_offset_
+   */
+  HSHM_INLINE_CROSS_FUN
+  MemoryBackend GetShiftedBackend() const {
+    MemoryBackend backend = backend_;
+    backend.data_ = GetBackendData() + backend_.data_offset_;
     return backend;
   }
 
@@ -235,6 +189,50 @@ class Allocator {
   }
 
   /**
+   * Get the size of the backend data region
+   * This is the total size available to the allocator
+   *
+   * @return Size of backend data region in bytes
+   */
+  HSHM_INLINE_CROSS_FUN
+  size_t GetBackendDataSize() const {
+    return backend_.data_size_;
+  }
+
+  /**
+   * Get the start of the allocator's data region (after allocator object and custom header)
+   * This is where the allocator's managed heap begins
+   *
+   * @return Pointer to the start of allocator data
+   */
+  HSHM_INLINE_CROSS_FUN
+  char* GetAllocatorDataStart() const {
+    return const_cast<char*>(GetCustomHeader<char>() + custom_header_size_);
+  }
+
+  /**
+   * Get the offset of the allocator's data region (relative to backend data_)
+   * This is the offset where the allocator's managed heap begins
+   *
+   * @return Offset from backend data_ to allocator data start
+   */
+  HSHM_INLINE_CROSS_FUN
+  size_t GetAllocatorDataOff() const {
+    return GetAllocatorDataStart() - GetBackendData();
+  }
+
+  /**
+   * Get the size of the allocator's data region (excluding allocator object and custom header)
+   * This is the size available for the allocator's managed heap
+   *
+   * @return Size of allocator data region in bytes
+   */
+  HSHM_INLINE_CROSS_FUN
+  size_t GetAllocatorDataSize() const {
+    return GetBackendDataSize() - (GetAllocatorDataStart() - reinterpret_cast<const char*>(this));
+  }
+
+  /**
    * Determine whether or not this allocator contains a process-specific
    * pointer
    *
@@ -245,7 +243,7 @@ class Allocator {
   HSHM_INLINE_CROSS_FUN bool ContainsPtr(const T *ptr) const {
     MemoryBackend backend = GetBackend();
     size_t offset = reinterpret_cast<const char*>(ptr) - backend.data_;
-    return offset < backend.data_size_;
+    return offset >= backend.data_offset_ && offset < (backend.data_offset_ + backend.data_size_);
   }
 
   /**
@@ -254,7 +252,8 @@ class Allocator {
   template<typename T, bool ATOMIC>
   HSHM_INLINE_CROSS_FUN bool ContainsPtr(const OffsetPtrBase<T, ATOMIC> &ptr) const {
     MemoryBackend backend = GetBackend();
-    return ptr.off_.load() < backend.data_size_;
+    size_t off = ptr.off_.load();
+    return off >= backend.data_offset_ && off < (backend.data_offset_ + backend.data_size_);
   }
 
   /**
@@ -263,16 +262,17 @@ class Allocator {
   template<typename T, bool ATOMIC>
   HSHM_INLINE_CROSS_FUN bool ContainsPtr(const ShmPtrBase<T, ATOMIC> &ptr) const {
     MemoryBackend backend = GetBackend();
-    return ptr.off_.load() < backend.data_size_;
+    size_t off = ptr.off_.load();
+    return off >= backend.data_offset_ && off < (backend.data_offset_ + backend.data_size_);
   }
 
   /** Print */
   HSHM_CROSS_FUN
   void Print() {
     MemoryBackend backend = GetBackend();
-    printf("(%s) Allocator: id: (%u,%u).%u, size: %lu\n",
-           kCurrentDevice, GetId().backend_id_.major_,
-           GetId().backend_id_.minor_, GetId().sub_id_, (unsigned long)backend.data_size_);
+    printf("(%s) Allocator: id: (%u,%u), size: %lu\n",
+           kCurrentDevice, GetId().major_,
+           GetId().minor_, (unsigned long)backend.data_size_);
   }
 
  protected:
@@ -786,8 +786,8 @@ struct FullPtr : public ShmPointer {
   template<typename AllocT>
   HSHM_INLINE_CROSS_FUN explicit FullPtr(AllocT *alloc, const T *ptr) {
     if (alloc->ContainsPtr(ptr)) {
-      shm_.off_ = (size_t)(reinterpret_cast<const char*>(ptr) - reinterpret_cast<const char*>(alloc));
-      shm_.alloc_id_ = alloc->id_;
+      shm_.off_ = (size_t)(reinterpret_cast<const char*>(ptr) - alloc->GetBackendData());
+      shm_.alloc_id_ = alloc->GetId();
       ptr_ = const_cast<T*>(ptr);
     } else {
         HSHM_THROW_ERROR(INVALID_FREE);
@@ -801,8 +801,8 @@ struct FullPtr : public ShmPointer {
                                          const OffsetPtrBase<T, ATOMIC> &shm) {
     if (alloc->ContainsPtr(shm)) {
       shm_.off_ = shm.load();
-      shm_.alloc_id_ = alloc->id_;
-      ptr_ = reinterpret_cast<T*>(reinterpret_cast<char*>(alloc) + shm.load());
+      shm_.alloc_id_ = alloc->GetId();
+      ptr_ = reinterpret_cast<T*>(alloc->GetBackendData() + shm.load());
     } else {
         HSHM_THROW_ERROR(INVALID_FREE);
     }
@@ -816,7 +816,7 @@ struct FullPtr : public ShmPointer {
     if (alloc->ContainsPtr(shm)) {
       shm_.off_ = shm.off_.load();
       shm_.alloc_id_ = shm.alloc_id_;
-      ptr_ = reinterpret_cast<T*>(reinterpret_cast<char*>(alloc) + shm.off_.load());
+      ptr_ = reinterpret_cast<T*>(alloc->GetBackendData() + shm.off_.load());
     } else{
         HSHM_THROW_ERROR(INVALID_FREE);
     }
@@ -989,12 +989,11 @@ class BaseAllocator : public CoreAllocT {
    * the particular slot of a memory backend.
    *
    * The shm_init function is required, but cannot be marked virtual as
-   * each allocator has its own arguments to this method. Though each
-   * allocator must have "id" as its first argument.
+   * each allocator has its own arguments to this method.
    * */
   template <typename... Args>
-  HSHM_CROSS_FUN void shm_init(AllocatorId id, Args... args) {
-    CoreAllocT::shm_init(id, std::forward<Args>(args)...);
+  HSHM_CROSS_FUN void shm_init(Args... args) {
+    CoreAllocT::shm_init(std::forward<Args>(args)...);
   }
 
   /**
@@ -1059,11 +1058,11 @@ class BaseAllocator : public CoreAllocT {
 
   /** Get the allocator identifier */
   HSHM_INLINE_CROSS_FUN
-  AllocatorId &GetId() { return CoreAllocT::GetId(); }
+  AllocatorId GetId() { return CoreAllocT::GetId(); }
 
   /** Get the allocator identifier (const) */
   HSHM_INLINE_CROSS_FUN
-  const AllocatorId &GetId() const { return CoreAllocT::GetId(); }
+  AllocatorId GetId() const { return CoreAllocT::GetId(); }
 
   /**
    * Check if pointer is contained in this allocator
@@ -1115,23 +1114,9 @@ class BaseAllocator : public CoreAllocT {
   }
 
   /**
-   * Allocate a region of memory to a specific pointer type
-   * */
-  template <typename T = void, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AlignedAllocate(size_t size,
-                                                 size_t alignment) {
-    FullPtr<T, PointerT> result;
-    CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
-    result.shm_ = PointerT(GetId(),
-                    CoreAllocT::AllocateOffset(size, alignment).load());
-    result.ptr_ = reinterpret_cast<T*>(reinterpret_cast<char*>(core_this) + result.shm_.off_.load());
-    return result;
-  }
-
-  /**
    * Allocate a region of \a size size and \a alignment
    * alignment. Will fall back to regular Allocate if
-   * alignmnet is 0.
+   * alignment is 0.
    * */
   template <typename T = void, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Allocate(size_t size,
@@ -1139,7 +1124,12 @@ class BaseAllocator : public CoreAllocT {
     if (alignment == 0) {
       return Allocate<T, PointerT>(size);
     } else {
-      return AlignedAllocate<T, PointerT>(size, alignment);
+      FullPtr<T, PointerT> result;
+      CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
+      result.shm_ = PointerT(GetId(),
+                      CoreAllocT::AllocateOffset(size, alignment).load());
+      result.ptr_ = reinterpret_cast<T*>(reinterpret_cast<char*>(core_this) + result.shm_.off_.load());
+      return result;
     }
   }
 
@@ -1340,45 +1330,53 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Create a sub-allocator within this allocator
    *
-   * @tparam AllocT The sub-allocator type to create
-   * @param sub_id The unique sub-allocator ID
+   * @tparam SubAllocCoreT The sub-allocator core type to create
+   * @param sub_id The unique sub-allocator ID (deprecated, not used)
    * @param size Size of the region for the sub-allocator
    * @param args Additional arguments for the sub-allocator initialization
-   * @return ShmPtr to the created sub-allocator
+   * @return Pointer to the created sub-allocator
    */
   template<typename SubAllocCoreT, typename ...Args>
   HSHM_CROSS_FUN BaseAllocator<SubAllocCoreT> *CreateSubAllocator(u64 sub_id,
                                                                    size_t size,
                                                                    Args&& ...args) {
-    // Allocate region for the sub-allocator (include kBackendPrivate for private region)
-    size_t total_size = hipc::kBackendPrivate + size;
-    FullPtr<char> region = Allocate<char>(total_size);
+    (void)sub_id;  // Unused parameter
 
-    // Get the backend ID from this allocator through the core allocator type
+    // Calculate total size needed:
+    // - kBackendPrivate for private region
+    // - sizeof(SubAllocCoreT) for the allocator object itself
+    // - size for the allocator's managed region
+    using SubAllocT = BaseAllocator<SubAllocCoreT>;
+    size_t alloc_size = sizeof(SubAllocCoreT);
+    size_t total_size = hipc::kBackendPrivate + alloc_size + size;
+
+    // Allocate region from this allocator
+    FullPtr<char> region = Allocate<char>(total_size);
+    if (region.IsNull()) {
+      return nullptr;
+    }
+
+    // Get the backend ID from this allocator
     CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
-    MemoryBackendId backend_id = core_this->backend_.GetId();
+    MemoryBackendId backend_id = core_this->GetId();
 
     // Create ArrayBackend for the sub-allocator
-    // Pass pointer to SHARED region (after kBackendPrivate offset)
+    // The ArrayBackend points to: [kBackendPrivate][SubAllocCoreT object][managed region]
     hipc::ArrayBackend backend;
     char *shared_ptr = region.ptr_ + hipc::kBackendPrivate;
     u64 shared_offset = region.shm_.off_.load() + hipc::kBackendPrivate;
-    backend.shm_init(backend_id, size, shared_ptr, shared_offset);
+    backend.shm_init(backend_id, alloc_size + size, shared_ptr, shared_offset);
 
-    // Create allocator ID for sub-allocator
-    AllocatorId sub_alloc_id(backend_id, sub_id);
+    // Use MakeAlloc to construct and initialize the sub-allocator
+    // MakeAlloc automatically passes backend as first parameter to shm_init
+    // The allocator's shm_init will use GetAllocatorDataOff() to handle offset calculations
+    SubAllocCoreT *sub_alloc_core = backend.MakeAlloc<SubAllocCoreT>(std::forward<Args>(args)...);
 
-    // Allocate and initialize the sub-allocator (wrapped type)
-    using SubAllocT = BaseAllocator<SubAllocCoreT>;
-    SubAllocT *sub_alloc = reinterpret_cast<SubAllocT*>(malloc(sizeof(SubAllocT)));
-    new (sub_alloc) SubAllocT();
-    sub_alloc->shm_init(sub_alloc_id, std::forward<Args>(args)..., backend);
-
-    // Disown the local backend so its destructor doesn't free the header
-    // The sub-allocator now owns the backend
+    // Disown the local backend so its destructor doesn't free the region
     backend.Disown();
 
-    return sub_alloc;
+    // Return as wrapped type
+    return reinterpret_cast<SubAllocT*>(sub_alloc_core);
   }
 
   /**
@@ -1395,7 +1393,7 @@ class BaseAllocator : public CoreAllocT {
 
     // Get the offset of the sub-allocator's data region
     CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
-    OffsetPtr<> offset_ptr(reinterpret_cast<char*>(sub_alloc) - reinterpret_cast<char*>(core_this));
+    OffsetPtr<> offset_ptr(reinterpret_cast<char*>(sub_alloc) - core_this->GetBackendData());
 
     // Free the data region
     FreeOffsetNoNullCheck(offset_ptr);
@@ -1454,14 +1452,11 @@ class MemoryAlignment {
 
 namespace std {
 
-/** Allocator ID hash */
+/** Memory Backend ID hash (AllocatorId is now an alias) */
 template <>
-struct hash<hshm::ipc::AllocatorId> {
-  std::size_t operator()(const hshm::ipc::AllocatorId &key) const {
-    // Combine backend_id and sub_id into a single hash
-    size_t h1 = hshm::hash<uint64_t>{}((uint64_t)key.backend_id_.major_ << 32 | key.backend_id_.minor_);
-    size_t h2 = hshm::hash<uint32_t>{}(key.sub_id_);
-    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+struct hash<hshm::ipc::MemoryBackendId> {
+  std::size_t operator()(const hshm::ipc::MemoryBackendId &key) const {
+    return hshm::hash<uint64_t>{}((uint64_t)key.major_ << 32 | key.minor_);
   }
 };
 
@@ -1469,15 +1464,12 @@ struct hash<hshm::ipc::AllocatorId> {
 
 namespace hshm {
 
-/** Allocator ID hash */
+/** Memory Backend ID hash (AllocatorId is now an alias) */
 template <>
-struct hash<hshm::ipc::AllocatorId> {
+struct hash<hshm::ipc::MemoryBackendId> {
   HSHM_INLINE_CROSS_FUN std::size_t operator()(
-      const hshm::ipc::AllocatorId &key) const {
-    // Combine backend_id and sub_id into a single hash
-    size_t h1 = hshm::hash<uint64_t>{}((uint64_t)key.backend_id_.major_ << 32 | key.backend_id_.minor_);
-    size_t h2 = hshm::hash<uint32_t>{}(key.sub_id_);
-    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+      const hshm::ipc::MemoryBackendId &key) const {
+    return hshm::hash<uint64_t>{}((uint64_t)key.major_ << 32 | key.minor_);
   }
 };
 

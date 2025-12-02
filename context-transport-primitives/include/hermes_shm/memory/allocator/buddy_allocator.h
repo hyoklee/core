@@ -14,6 +14,7 @@
 #define HSHM_MEMORY_ALLOCATOR_BUDDY_ALLOCATOR_H_
 
 #include "hermes_shm/memory/allocator/allocator.h"
+#include "hermes_shm/memory/allocator/heap.h"
 #include "hermes_shm/data_structures/ipc/slist_pre.h"
 #include "hermes_shm/data_structures/ipc/rb_tree_pre.h"
 #include <cmath>
@@ -86,12 +87,10 @@ class _BuddyAllocator : public Allocator {
   static constexpr size_t kNumRoundDownLists = kMaxLog2 - kSmallLog2;    /**< 15 to 20 = 6 lists */
   static constexpr size_t kNumFreeLists = kNumRoundUpLists + kNumRoundDownLists;  /**< Total: 16 lists */
 
-  size_t heap_begin_;           /**< Offset to heap beginning */
-  size_t heap_current_;         /**< Current heap offset */
-  size_t heap_end_;             /**< End of heap */
+  Heap<false> heap_;            /**< Heap for bump-pointer allocation */
 
-  pre::slist<false> *round_up_lists_;    /**< Free lists for sizes 32B - 16KB (round up) */
-  pre::slist<false> *round_down_lists_;  /**< Free lists for sizes 16KB - 1MB (round down) */
+  pre::slist<false> round_up_lists_[kNumRoundUpLists];      /**< Free lists for sizes 32B - 16KB (round up) */
+  pre::slist<false> round_down_lists_[kNumRoundDownLists];  /**< Free lists for sizes 16KB - 1MB (round down) */
 
   // _MultiProcessAllocator needs access to reconstruct pointers when attaching
   friend class _MultiProcessAllocator;
@@ -100,32 +99,21 @@ class _BuddyAllocator : public Allocator {
   /**
    * Initialize the buddy allocator
    *
-   * @param id Allocator ID
    * @param backend Memory backend (may be a sub-allocator with data_offset_ > 0)
+   * @param custom_header_size Size of custom header (default: 0)
    * @return true on success, false on failure
    */
-  bool shm_init(AllocatorId id, const MemoryBackend &backend) {
+  bool shm_init(const MemoryBackend &backend, size_t custom_header_size = 0) {
     // Store backend
     SetBackend(backend);
-    id_ = id;
     alloc_header_size_ = sizeof(_BuddyAllocator);
-    custom_header_size_ = 0;
+    custom_header_size_ = custom_header_size;
 
-    // Calculate space needed for free list metadata
-    size_t metadata_size = kNumFreeLists * sizeof(pre::slist<false>);
-    size_t aligned_metadata = ((metadata_size + 63) / 64) * 64;  // 64-byte align
-
-    if (backend.data_size_ < aligned_metadata + kMinSize) {
+    if (backend.data_size_ < kMinSize) {
       return false;  // Not enough space
     }
 
-    // Allocate free lists from beginning of this allocator's region
-    // Use backend.data_ + backend.data_offset_ for actual pointer
-    char *region_start = backend.data_ + backend.data_offset_;
-    round_up_lists_ = reinterpret_cast<pre::slist<false>*>(region_start);
-    round_down_lists_ = round_up_lists_ + kNumRoundUpLists;
-
-    // Initialize all free lists
+    // Initialize all free lists (they're now inline members, not pointers)
     for (size_t i = 0; i < kNumRoundUpLists; ++i) {
       round_up_lists_[i].Init();
     }
@@ -133,10 +121,12 @@ class _BuddyAllocator : public Allocator {
       round_down_lists_[i].Init();
     }
 
-    // Set heap boundaries (offsets relative to root data_)
-    heap_begin_ = backend.data_offset_ + aligned_metadata;
-    heap_current_ = heap_begin_;
-    heap_end_ = backend.data_offset_ + backend.data_size_;
+    // Initialize heap using helper functions
+    // GetAllocatorDataOff() returns the offset where managed heap begins
+    // GetAllocatorDataSize() returns the size available for the managed heap
+    size_t heap_begin = GetAllocatorDataOff();
+    size_t heap_max_offset = GetAllocatorDataOff() + GetAllocatorDataSize();
+    heap_.Init(heap_begin, heap_max_offset);
 
     return true;
   }
@@ -209,6 +199,35 @@ class _BuddyAllocator : public Allocator {
       return;
     }
 
+    // Get the actual page start (before BuddyPage header)
+    size_t page_offset = offset.load() - sizeof(BuddyPage);
+    BuddyPage *page = reinterpret_cast<BuddyPage*>(GetBackendData() + page_offset);
+    size_t usable_size = page->size_;  // Usable size without header
+    size_t total_page_size = usable_size + sizeof(BuddyPage);  // Total size for buddy system
+
+    // Convert to FreeBuddyPage and store total size
+    FreeBuddyPage *free_page = reinterpret_cast<FreeBuddyPage*>(page);
+    free_page->size_ = total_page_size;
+
+    // Add to appropriate free list
+    size_t list_idx = GetFreeListIndex(total_page_size);
+    ShmPtr<pre::slist_node> shm_ptr;
+    shm_ptr.off_ = page_offset;
+    if (list_idx < kNumRoundUpLists) {
+      FullPtr<pre::slist_node> node_ptr(this, shm_ptr);
+      round_up_lists_[list_idx].emplace(this, node_ptr);
+    } else {
+      FullPtr<pre::slist_node> node_ptr(this, shm_ptr);
+      round_down_lists_[list_idx - kNumRoundUpLists].emplace(this, node_ptr);
+    }
+  }
+
+  /**
+   * Free previously allocated memory (without null check)
+   *
+   * @param offset Offset pointer to memory (after BuddyPage header) - must not be null
+   */
+  void FreeOffsetNoNullCheck(OffsetPtr<> offset) {
     // Get the actual page start (before BuddyPage header)
     size_t page_offset = offset.load() - sizeof(BuddyPage);
     BuddyPage *page = reinterpret_cast<BuddyPage*>(GetBackendData() + page_offset);
@@ -466,16 +485,14 @@ class _BuddyAllocator : public Allocator {
   }
 
   /**
-   * Allocate from heap
+   * Allocate from heap using Heap data structure
    */
   OffsetPtr<> AllocateFromHeap(size_t size) {
-    if (heap_current_ + size > heap_end_) {
+    size_t alloc_offset = heap_.Allocate(size);
+    if (alloc_offset == 0) {
+      // Out of memory
       return OffsetPtr<>::GetNull();
     }
-
-    size_t alloc_offset = heap_current_;
-    heap_current_ += size;
-
     return FinalizeAllocation(alloc_offset, size);
   }
 

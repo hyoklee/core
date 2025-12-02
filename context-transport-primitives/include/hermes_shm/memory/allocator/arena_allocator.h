@@ -32,23 +32,6 @@ template<bool ATOMIC = false>
 using ArenaAllocator = BaseAllocator<_ArenaAllocator<ATOMIC>>;
 
 /**
- * Arena allocator header stored in shared memory
- */
-template<bool ATOMIC>
-struct _ArenaAllocatorHeader : public AllocatorHeader {
-  Heap<ATOMIC> heap_;  /// Heap for bump-pointer allocation
-
-  HSHM_CROSS_FUN
-  _ArenaAllocatorHeader() = default;
-
-  HSHM_CROSS_FUN
-  void Configure(AllocatorId alloc_id, size_t custom_header_size, size_t arena_size) {
-    AllocatorHeader::Configure(alloc_id, custom_header_size);
-    heap_.Init(0, arena_size);
-  }
-};
-
-/**
  * Arena allocator implementation
  *
  * Simple bump-pointer allocator that grows upwards. Does not support
@@ -58,49 +41,40 @@ struct _ArenaAllocatorHeader : public AllocatorHeader {
  */
 template<bool ATOMIC>
 class _ArenaAllocator : public Allocator {
- public:
-  MemoryBackend backend_;  /**< Memory backend for allocator */
-
  private:
-  _ArenaAllocatorHeader<ATOMIC> *header_;
-  int accel_id_;  /**< Accelerator ID */
-  char *custom_header_;  /**< Custom header pointer */
+  Heap<ATOMIC> heap_;  /**< Heap for bump-pointer allocation */
+  hipc::atomic<hshm::size_t> total_alloc_;  /**< Total allocated size tracking */
+  size_t heap_begin_;  /**< Initial heap offset (for reset) */
+  size_t heap_max_;    /**< Maximum heap size (for reset) */
 
  public:
   /**
    * Allocator constructor
    */
   HSHM_CROSS_FUN
-  _ArenaAllocator() : header_(nullptr), accel_id_(-1), custom_header_(nullptr) {}
+  _ArenaAllocator() : total_alloc_(0), heap_begin_(0), heap_max_(0) {}
 
   /**
    * Initialize the allocator in shared memory
    *
-   * @param id Allocator ID
-   * @param custom_header_size Size of custom header extension
-   * @param arena_size Maximum size of the arena
-   * @param backend Memory backend
-   * @param shift Offset shift indicating where the allocator is positioned in the memory segment (default: 0)
+   * @param backend Memory backend (first parameter as per standard)
+   * @param custom_header_size Size of custom header (default: 0)
    */
   HSHM_CROSS_FUN
-  void shm_init(AllocatorId id, size_t custom_header_size, size_t arena_size,
-                MemoryBackend backend, size_t shift = 0) {
-    id_ = id;
+  void shm_init(const MemoryBackend &backend, size_t custom_header_size = 0) {
     SetBackend(backend);
-    accel_id_ = backend.data_id_;
     alloc_header_size_ = sizeof(_ArenaAllocator<ATOMIC>);
     custom_header_size_ = custom_header_size;
+    total_alloc_ = 0;
 
-    // Store shift in backend's data_offset (arena uses it for offset calculations)
-    MemoryBackend modified_backend = backend;
-    modified_backend.data_offset_ = shift;
-    SetBackend(modified_backend);
+    // Store initial heap parameters for reset using helper functions
+    heap_begin_ = GetAllocatorDataOff();
+    heap_max_ = GetAllocatorDataOff() + GetAllocatorDataSize();
 
-    // Allocate and construct header
-    header_ = ConstructHeader<_ArenaAllocatorHeader<ATOMIC>>(
-        malloc(sizeof(_ArenaAllocatorHeader<ATOMIC>) + custom_header_size));
-    custom_header_ = reinterpret_cast<char *>(header_ + 1);
-    header_->Configure(id, custom_header_size, arena_size);
+    // Initialize heap using helper functions
+    // GetAllocatorDataOff() returns the offset where managed heap begins
+    // GetAllocatorDataSize() returns the size available for the managed heap
+    heap_.Init(heap_begin_, heap_max_);
   }
 
   /**
@@ -117,12 +91,24 @@ class _ArenaAllocator : public Allocator {
    * @param size Size to allocate
    * @param alignment Optional alignment (default: 1)
    * @return Offset pointer to allocated memory
+   * @throws OUT_OF_MEMORY if allocation fails
    */
   HSHM_CROSS_FUN
   OffsetPtr<> AllocateOffset(size_t size, size_t alignment = 1) {
-    size_t off = header_->heap_.Allocate(size, alignment);
-    header_->AddSize(size);
-    return OffsetPtr<>(GetBackend().data_offset_ + off);
+    // Check if we have enough remaining space (including alignment padding)
+    size_t max_padding = alignment - 1;
+    size_t required = size + max_padding;
+    if (heap_.GetRemainingSize() < required) {
+      HSHM_THROW_ERROR(OUT_OF_MEMORY);
+    }
+
+    size_t off = heap_.Allocate(size, alignment);
+    // At this point, off should be valid (non-failure)
+    // Note: off might be 0 if heap starts at offset 0, which is valid
+#ifdef HSHM_ALLOC_TRACK_SIZE
+    total_alloc_ += size;
+#endif
+    return OffsetPtr<>(off);
   }
 
   /**
@@ -159,7 +145,7 @@ class _ArenaAllocator : public Allocator {
    */
   HSHM_CROSS_FUN
   size_t GetCurrentlyAllocatedSize() {
-    return (size_t)header_->GetCurrentlyAllocatedSize();
+    return (size_t)total_alloc_.load();
   }
 
   /**
@@ -185,13 +171,14 @@ class _ArenaAllocator : public Allocator {
   /**
    * Reset the arena to empty state
    *
-   * Resets the heap offset to 0, effectively freeing all allocations.
+   * Resets the heap offset to the initial position, effectively freeing all allocations.
    */
   HSHM_CROSS_FUN
   void Reset() {
-    size_t current_size = header_->GetCurrentlyAllocatedSize();
-    header_->SubSize(current_size);
-    header_->heap_.Init(0, header_->heap_.GetMaxSize());
+#ifdef HSHM_ALLOC_TRACK_SIZE
+    total_alloc_ = 0;
+#endif
+    heap_.Init(heap_begin_, heap_max_);
   }
 
   /**
@@ -201,7 +188,7 @@ class _ArenaAllocator : public Allocator {
    */
   HSHM_CROSS_FUN
   size_t GetHeapOffset() const {
-    return header_->heap_.GetOffset();
+    return heap_.GetOffset();
   }
 
   /**
@@ -211,17 +198,7 @@ class _ArenaAllocator : public Allocator {
    */
   HSHM_CROSS_FUN
   size_t GetRemainingSize() const {
-    return header_->heap_.GetRemainingSize();
-  }
-
-  /**
-   * Get the custom header of the shared-memory allocator
-   *
-   * @return Custom header pointer
-   */
-  template <typename HEADER_T>
-  HSHM_INLINE_CROSS_FUN HEADER_T *GetCustomHeader() {
-    return reinterpret_cast<HEADER_T*>(custom_header_);
+    return heap_.GetRemainingSize();
   }
 };
 

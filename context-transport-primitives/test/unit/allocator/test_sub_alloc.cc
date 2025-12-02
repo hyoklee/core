@@ -37,7 +37,7 @@ hipc::ArenaAllocator<false>* CreateArenaAllocator(hipc::MallocBackend &backend) 
   heap_backend.data_size_ = heap_size;
 
   // Initialize allocator with heap backend
-  alloc->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), 0, heap_size, heap_backend);
+  alloc->shm_init(heap_backend, 0);
 
   return alloc;
 }
@@ -50,11 +50,10 @@ TEST_CASE("SubAllocator - Basic Creation and Destruction", "[SubAllocator]") {
     // Create a sub-allocator with 64 MB
     size_t sub_alloc_size = 64 * 1024 * 1024;
     auto *sub_alloc = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-        1, sub_alloc_size, 0, sub_alloc_size);
+        sub_alloc_size, 0);
 
     REQUIRE(sub_alloc != nullptr);
-    REQUIRE(sub_alloc->GetId().backend_id_ == parent_alloc->GetId().backend_id_);
-    REQUIRE(sub_alloc->GetId().sub_id_ == 1);
+    REQUIRE(sub_alloc->GetId() == parent_alloc->GetId());
 
     // Free the sub-allocator
     parent_alloc->FreeSubAllocator( sub_alloc);
@@ -64,19 +63,16 @@ TEST_CASE("SubAllocator - Basic Creation and Destruction", "[SubAllocator]") {
     size_t sub_alloc_size = 32 * 1024 * 1024;
 
     auto *sub_alloc1 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-        1, sub_alloc_size, 0, sub_alloc_size);
+        sub_alloc_size, 0);
     auto *sub_alloc2 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-        2, sub_alloc_size, 0, sub_alloc_size);
+        sub_alloc_size, 0);
     auto *sub_alloc3 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-        3, sub_alloc_size, 0, sub_alloc_size);
+        sub_alloc_size, 0);
 
     REQUIRE(sub_alloc1 != nullptr);
     REQUIRE(sub_alloc2 != nullptr);
     REQUIRE(sub_alloc3 != nullptr);
 
-    REQUIRE(sub_alloc1->GetId().sub_id_ == 1);
-    REQUIRE(sub_alloc2->GetId().sub_id_ == 2);
-    REQUIRE(sub_alloc3->GetId().sub_id_ == 3);
 
     // Free all sub-allocators
     parent_alloc->FreeSubAllocator( sub_alloc1);
@@ -94,7 +90,7 @@ TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
   // Create a sub-allocator with 64 MB
   size_t sub_alloc_size = 64 * 1024 * 1024;
   auto *sub_alloc = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      1, sub_alloc_size, 0, sub_alloc_size);
+      sub_alloc_size, 0);
 
   REQUIRE(sub_alloc != nullptr);
 
@@ -102,7 +98,7 @@ TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
     
 
     for (size_t i = 0; i < 1000; ++i) {
-      auto ptr = sub_alloc->template AlignedAllocate<void>( 1024, 64);
+      auto ptr = sub_alloc->template Allocate<void>( 1024, 64);
       REQUIRE_FALSE(ptr.IsNull());
       sub_alloc->Free( ptr);
     }
@@ -114,7 +110,7 @@ TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
 
     // Allocate batch
     for (size_t i = 0; i < 100; ++i) {
-      auto ptr = sub_alloc->template AlignedAllocate<void>( 4096, 64);
+      auto ptr = sub_alloc->template Allocate<void>( 4096, 64);
       REQUIRE_FALSE(ptr.IsNull());
       ptrs.push_back(ptr);
     }
@@ -138,7 +134,7 @@ TEST_CASE("SubAllocator - Random Allocation Test", "[SubAllocator]") {
   // Create a sub-allocator with 64 MB
   size_t sub_alloc_size = 64 * 1024 * 1024;
   auto *sub_alloc = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      1, sub_alloc_size, 0, sub_alloc_size);
+      sub_alloc_size, 0);
 
   REQUIRE(sub_alloc != nullptr);
 
@@ -166,11 +162,11 @@ TEST_CASE("SubAllocator - Multiple SubAllocators with Random Tests", "[SubAlloca
   // Create 3 sub-allocators, each with 32 MB
   size_t sub_alloc_size = 32 * 1024 * 1024;
   auto *sub_alloc1 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      1, sub_alloc_size, 0, sub_alloc_size);
+      sub_alloc_size, 0);
   auto *sub_alloc2 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      2, sub_alloc_size, 0, sub_alloc_size);
+      sub_alloc_size, 0);
   auto *sub_alloc3 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      3, sub_alloc_size, 0, sub_alloc_size);
+      sub_alloc_size, 0);
 
   REQUIRE(sub_alloc1 != nullptr);
   REQUIRE(sub_alloc2 != nullptr);
@@ -201,17 +197,16 @@ TEST_CASE("SubAllocator - Nested SubAllocators", "[SubAllocator][nested]") {
   // Create a sub-allocator from parent (64 MB)
   size_t sub_alloc1_size = 64 * 1024 * 1024;
   auto *sub_alloc1 = parent_alloc->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      1, sub_alloc1_size, 0, sub_alloc1_size);
+      sub_alloc1_size, 0);
 
   REQUIRE(sub_alloc1 != nullptr);
 
   // Create a nested sub-allocator from the first sub-allocator (16 MB)
   size_t sub_alloc2_size = 16 * 1024 * 1024;
   auto *sub_alloc2 = sub_alloc1->CreateSubAllocator<hipc::_ArenaAllocator<false>>(
-      2, sub_alloc2_size, 0, sub_alloc2_size);
+      sub_alloc2_size, 0);
 
   REQUIRE(sub_alloc2 != nullptr);
-  REQUIRE(sub_alloc2->GetId().sub_id_ == 2);
 
   // Test allocations in the nested sub-allocator
   AllocatorTest<hipc::ArenaAllocator<false>> tester(sub_alloc2);

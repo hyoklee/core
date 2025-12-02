@@ -31,35 +31,35 @@ template<bool ATOMIC>
 class Heap {
  private:
   hipc::opt_atomic<size_t, ATOMIC> heap_;  /// Current heap offset
-  size_t max_size_;                        /// Maximum heap size
+  size_t max_offset_;                      /// Maximum heap offset (initial_offset + max_size)
 
  public:
   /**
    * Default constructor
    */
   HSHM_CROSS_FUN
-  Heap() : heap_(0), max_size_(0) {}
+  Heap() : heap_(0), max_offset_(0) {}
 
   /**
-   * Constructor with initial offset and max size
+   * Constructor with initial offset and max offset
    *
    * @param initial_offset Initial heap offset
-   * @param max_size Maximum size the heap can grow to
+   * @param max_offset Maximum offset the heap can reach (initial_offset + max_size)
    */
   HSHM_CROSS_FUN
-  Heap(size_t initial_offset, size_t max_size)
-      : heap_(initial_offset), max_size_(max_size) {}
+  Heap(size_t initial_offset, size_t max_offset)
+      : heap_(initial_offset), max_offset_(max_offset) {}
 
   /**
    * Initialize the heap
    *
    * @param initial_offset Initial heap offset
-   * @param max_size Maximum size the heap can grow to
+   * @param max_offset Maximum offset the heap can reach (initial_offset + max_size)
    */
   HSHM_CROSS_FUN
-  void Init(size_t initial_offset, size_t max_size) {
+  void Init(size_t initial_offset, size_t max_offset) {
     heap_.store(initial_offset);
-    max_size_ = max_size;
+    max_offset_ = max_offset;
   }
 
   /**
@@ -67,37 +67,32 @@ class Heap {
    *
    * @param size Number of bytes to allocate
    * @param align Alignment requirement (must be power of 2)
-   * @return Offset of the allocated region
-   * @throws OUT_OF_MEMORY if allocation would exceed max_size
+   * @return Offset of the allocated region, or 0 on failure (out of memory)
    */
   HSHM_CROSS_FUN
   size_t Allocate(size_t size, size_t align = 8) {
-    size_t off;
-    size_t aligned_off;
-    size_t end_off;
+    // Calculate maximum padding needed for alignment
+    // Worst case: we're 1 byte past alignment boundary, need (align-1) bytes padding
+    size_t max_padding = align - 1;
 
-    do {
-      // Get current heap offset
-      off = heap_.load();
+    // Reserve space: size + max possible padding
+    size_t reserve_size = size + max_padding;
 
-      // Align the offset to the specified alignment
-      aligned_off = AlignSize(off, align);
+    // Atomically fetch current offset and advance heap by reserve_size
+    size_t off = heap_.fetch_add(reserve_size);
 
-      // Calculate end offset after this allocation
-      end_off = aligned_off + size;
+    // Calculate the aligned offset from what we got
+    size_t aligned_off = AlignSize(off, align);
 
-      // Check if allocation would exceed maximum size
-      if (end_off > max_size_) {
-        HSHM_THROW_ERROR(OUT_OF_MEMORY,
-                         "Heap allocation exceeded max size: " +
-                         std::to_string(end_off) + " > " +
-                         std::to_string(max_size_));
-      }
+    // Calculate actual end offset after this allocation
+    size_t end_off = aligned_off + size;
 
-      // Try to atomically update heap pointer
-      // If another thread modified heap_ between load() and compare_exchange,
-      // this will fail and we'll retry
-    } while (!heap_.compare_exchange_weak(off, end_off));
+    // Check if allocation would exceed maximum offset
+    // Note: Once fetch_add completes, the space is consumed even if we fail
+    // This is acceptable as we've run out of memory anyway
+    if (end_off > max_offset_) {
+      return 0;  // Return 0 to indicate failure
+    }
 
     return aligned_off;
   }
@@ -113,13 +108,23 @@ class Heap {
   }
 
   /**
-   * Get the maximum heap size
+   * Get the maximum heap offset
+   *
+   * @return Maximum offset the heap can reach
+   */
+  HSHM_CROSS_FUN
+  size_t GetMaxOffset() const {
+    return max_offset_;
+  }
+
+  /**
+   * Get the maximum heap size (for backward compatibility)
    *
    * @return Maximum size the heap can grow to
    */
   HSHM_CROSS_FUN
   size_t GetMaxSize() const {
-    return max_size_;
+    return max_offset_;
   }
 
   /**
@@ -130,7 +135,7 @@ class Heap {
   HSHM_CROSS_FUN
   size_t GetRemainingSize() const {
     size_t current = heap_.load();
-    return (current < max_size_) ? (max_size_ - current) : 0;
+    return (current < max_offset_) ? (max_offset_ - current) : 0;
   }
 
  private:

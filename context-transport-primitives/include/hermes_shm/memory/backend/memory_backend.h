@@ -14,8 +14,10 @@
 #define HSHM_MEMORY_H
 
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "hermes_shm/constants/macros.h"
@@ -23,6 +25,10 @@
 #include "hermes_shm/memory/allocator/allocator.h"
 
 namespace hshm::ipc {
+
+/** Forward declaration for FullPtr (defined in allocator.h after this header) */
+template<typename T, typename PointerT>
+struct FullPtr;
 
 /** ID for memory backend */
 class MemoryBackendId {
@@ -70,6 +76,44 @@ class MemoryBackendId {
   HSHM_CROSS_FUN
   bool operator!=(const MemoryBackendId &other) const {
     return major_ != other.major_ || minor_ != other.minor_;
+  }
+
+  /** Get the null backend ID */
+  HSHM_CROSS_FUN
+  static MemoryBackendId GetNull() {
+    return MemoryBackendId(UINT32_MAX, UINT32_MAX);
+  }
+
+  /** Set this backend ID to null */
+  HSHM_CROSS_FUN
+  void SetNull() { *this = GetNull(); }
+
+  /** Check if this is the null backend ID */
+  HSHM_CROSS_FUN
+  bool IsNull() const { return *this == GetNull(); }
+
+  /** To index */
+  HSHM_CROSS_FUN
+  uint32_t ToIndex() const {
+    return major_ * 2 + minor_;
+  }
+
+  /** Serialize */
+  template <typename Ar>
+  HSHM_CROSS_FUN void serialize(Ar &ar) {
+    ar & major_;
+    ar & minor_;
+  }
+
+  /** Print */
+  HSHM_CROSS_FUN
+  void Print() const {
+    printf("(%s) Memory Backend ID: (%u,%u)\n", kCurrentDevice, major_, minor_);
+  }
+
+  friend std::ostream &operator<<(std::ostream &os, const MemoryBackendId &id) {
+    os << "(" << id.major_ << "," << id.minor_ << ")";
+    return os;
   }
 };
 typedef MemoryBackendId memory_backend_id_t;
@@ -165,19 +209,47 @@ class MemoryBackend {
 
   /**
    * Create a shifted copy of this memory backend
-   * Updates data_size_ and data_offset_ fields in the returned copy
-   * DOES NOT modify data_ pointer - all sub-allocators share the same root data_ pointer
+   * Updates data_, data_size_, and data_offset_ fields in the returned copy
    *
-   * @param offset The amount to shift the data offset
-   * @return A new MemoryBackend with shifted offset
+   * @param offset The amount to shift the data pointer
+   * @return A new MemoryBackend with shifted data pointer and updated offset
    */
   HSHM_CROSS_FUN
   MemoryBackend Shift(size_t offset) const {
     MemoryBackend shifted = *this;
+    shifted.data_ = data_ + offset;
     shifted.data_size_ -= offset;
     shifted.data_offset_ += offset;
     return shifted;
   }
+
+  /**
+   * Create a shifted backend positioned at a specific offset
+   *
+   * @param off The offset to shift to
+   * @return A new MemoryBackend positioned at the offset
+   */
+  HSHM_CROSS_FUN
+  MemoryBackend ShiftTo(size_t off) const {
+    MemoryBackend shifted = *this;
+    size_t shift_amount = off - data_offset_;
+    shifted.data_size_ -= shift_amount;
+    shifted.data_offset_ = off;
+    return shifted;
+  }
+
+  /**
+   * Create a shifted backend positioned at a specific FullPtr location
+   *
+   * @tparam T The type pointed to by the FullPtr
+   * @tparam PointerT The pointer type used in FullPtr
+   * @param ptr The FullPtr indicating where to position the backend
+   * @param size The size of the new backend region
+   * @return A new MemoryBackend positioned at ptr's offset with the given size
+   */
+  template<typename T, typename PointerT>
+  HSHM_CROSS_FUN
+  MemoryBackend ShiftTo(FullPtr<T, PointerT> ptr, size_t size) const;
 
   /**
    * Get pointer to the private region (kBackendPrivate bytes before data_)
@@ -210,6 +282,8 @@ class MemoryBackend {
    *
    * This allows treating the backend's data region as an allocator.
    * The allocator should be initialized in-place at the start of data_.
+   * Note: data_offset_ indicates where the allocator's MANAGED region starts,
+   * not where the allocator object itself is located.
    *
    * @return Pointer to allocator at the start of data_
    */
@@ -228,6 +302,44 @@ class MemoryBackend {
     return reinterpret_cast<const AllocT*>(data_);
   }
 
+  /**
+   * Create and initialize an allocator in one line
+   *
+   * This method casts the data_ pointer to the allocator type,
+   * constructs the allocator using placement new, and calls shm_init
+   * with this backend as the first argument, followed by any additional arguments.
+   *
+   * @tparam AllocT The allocator type to create
+   * @tparam Args Variadic template for additional shm_init arguments (after backend)
+   * @param args Additional arguments to pass to shm_init (after the backend parameter)
+   * @return Pointer to the constructed and initialized allocator
+   */
+  template<typename AllocT, typename... Args>
+  HSHM_CROSS_FUN
+  AllocT* MakeAlloc(Args&&... args) {
+    AllocT* alloc = Cast<AllocT>();
+    new (alloc) AllocT();
+    alloc->shm_init(*this, std::forward<Args>(args)...);
+    return alloc;
+  }
+
+  /**
+   * Attach to an existing allocator in one line
+   *
+   * This method casts the data_ pointer to the allocator type and
+   * calls shm_attach to connect to the existing shared memory allocator.
+   *
+   * @tparam AllocT The allocator type to attach to
+   * @return Pointer to the attached allocator
+   */
+  template<typename AllocT>
+  HSHM_CROSS_FUN
+  AllocT* AttachAlloc() {
+    AllocT* alloc = Cast<AllocT>();
+    alloc->shm_attach(*this);
+    return alloc;
+  }
+
   HSHM_CROSS_FUN
   void Print() const {
     header_->Print();
@@ -241,6 +353,18 @@ class MemoryBackend {
   // virtual void shm_detach() = 0;
   // virtual void shm_destroy() = 0;
 };
+
+// Implementation of ShiftTo template method (defined after FullPtr is fully declared in allocator.h)
+template<typename T, typename PointerT>
+HSHM_CROSS_FUN
+MemoryBackend MemoryBackend::ShiftTo(FullPtr<T, PointerT> ptr, size_t size) const {
+  MemoryBackend shifted = *this;
+  shifted.data_offset_ = ptr.shm_.off_.load();
+  shifted.data_size_ = size;
+  // NOTE: Do NOT update data_ - it must remain pointing to the root backend data
+  // The allocator may be located at a different address than data_ + data_offset_
+  return shifted;
+}
 
 }  // namespace hshm::ipc
 

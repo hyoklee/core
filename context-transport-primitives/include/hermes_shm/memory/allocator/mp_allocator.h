@@ -54,62 +54,32 @@ class ThreadBlock : public pre::slist_node {
   /**
    * Initialize the thread block with a memory region
    *
-   * @param backend Memory backend containing the region for this thread
-   * @param size Size of the memory region in bytes
+   * @param backend Memory backend from the allocator
+   * @param region FullPtr to the memory region for this thread
+   * @param region_size Size of the memory region in bytes
    * @param tid Thread ID for this block
    * @return true on success, false on failure
    */
-  bool shm_init(const MemoryBackend &backend, size_t size, int tid) {
+  bool shm_init(const MemoryBackend &backend, FullPtr<void> region, size_t region_size, int tid) {
     tid_ = tid;
 
-    // Create a shifted backend that starts after the ThreadBlock header
-    size_t header_size = sizeof(ThreadBlock);
-    MemoryBackend thread_backend = backend.Shift(header_size);
+    // The region already excludes the ThreadBlock header, so just use ShiftTo
+    MemoryBackend thread_backend = backend.ShiftTo(region, region_size);
 
     // Initialize the buddy allocator with the shifted backend
-    alloc_.shm_init(AllocatorId(backend.GetId(), tid_), thread_backend);
+    alloc_.shm_init(thread_backend);
     return true;
   }
 
   /**
-   * Allocate memory from this thread block
+   * Expand this ThreadBlock by freeing a region back to it
    *
-   * @param size Size in bytes to allocate
-   * @return Offset pointer to allocated memory, or null on failure
-   */
-  OffsetPtr<> Allocate(size_t size) {
-    return alloc_.AllocateOffset(size);
-  }
-
-  /**
-   * Free memory back to this thread block
+   * This is called when memory is returned to the ThreadBlock allocator,
+   * typically when a ThreadBlock is freed or when coalescing occurs.
    *
-   * @param ptr Offset pointer to memory to free
+   * @param ptr Offset pointer to memory region to return
    */
-  void Free(OffsetPtr<> ptr) {
-    alloc_.FreeOffset(ptr);
-  }
-
-  /**
-   * Reallocate memory within this thread block
-   *
-   * @param ptr Original offset pointer
-   * @param new_size New size in bytes
-   * @return New offset pointer, or null on failure
-   */
-  OffsetPtr<> Reallocate(OffsetPtr<> ptr, size_t new_size) {
-    // Simple implementation: allocate new, copy, free old
-    // TODO: Optimize with in-place reallocation when possible
-    OffsetPtr<> new_ptr = Allocate(new_size);
-    if (new_ptr.IsNull()) {
-      return OffsetPtr<>::GetNull();
-    }
-
-    // For now, just return the new pointer
-    // In a complete implementation, we would copy data and free old pointer
-    Free(ptr);
-    return new_ptr;
-  }
+  void Expand(OffsetPtr<> ptr) { alloc_.FreeOffset(ptr); }
 };
 
 /**
@@ -154,82 +124,30 @@ class ProcessBlock : public pre::slist_node {
   /**
    * Initialize the process block with a memory region
    *
-   * @param backend Memory backend for this process
-   * @param region Start of the memory region
-   * @param size Size of the memory region in bytes
+   * @param backend Memory backend from the allocator
+   * @param region FullPtr to the memory region for this process
+   * @param region_size Size of the memory region in bytes
    * @param pid Process ID
    * @return true on success, false on failure
    */
-  bool shm_init(const MemoryBackend &backend, char *region, size_t size, int pid) {
+  bool shm_init(const MemoryBackend &backend, FullPtr<void> region, size_t region_size, int pid) {
     pid_ = pid;
     tid_count_ = 0;
     lock_.Init();
     threads_.Init();
 
-    // Calculate space for ProcessBlock header and thread list
-    size_t header_size = sizeof(ProcessBlock);
-
-    // Create a shifted backend for the buddy allocator
-    // Calculate offset from root to this region, then shift past header
-    size_t region_offset = region - backend.data_;
-    MemoryBackend process_backend = backend.Shift(region_offset + header_size);
-    process_backend.data_size_ = size - header_size;
+    // The region already excludes the ProcessBlock header, so just use ShiftTo
+    MemoryBackend process_backend = backend.ShiftTo(region, region_size);
 
     // Initialize buddy allocator for managing thread blocks
-    alloc_.shm_init(AllocatorId(backend.GetId(), pid_), process_backend);
+    alloc_.shm_init(process_backend);
+
+    // Set up TLS for this process block
+    if (!SetupTls()) {
+      return false;
+    }
+
     return true;
-  }
-
-  /**
-   * Allocate a new ThreadBlock from this ProcessBlock
-   *
-   * @param backend Root memory backend (for FullPtr construction)
-   * @param region_size Size of region to allocate for the ThreadBlock
-   * @return FullPtr to the newly allocated ThreadBlock, or null on failure
-   */
-  FullPtr<ThreadBlock> AllocateThreadBlock(const MemoryBackend &backend, size_t region_size) {
-    // Lock to protect thread list
-    lock_.Lock(0);
-
-    // Allocate memory for ThreadBlock from our buddy allocator
-    OffsetPtr<> thread_offset = alloc_.AllocateOffset(region_size);
-    if (thread_offset.IsNull()) {
-      lock_.Unlock();
-      return FullPtr<ThreadBlock>::GetNull();
-    }
-
-    // Convert offset to pointer
-    char *thread_ptr = alloc_.GetBackend().data_ + thread_offset.load();
-    ThreadBlock *tblock = reinterpret_cast<ThreadBlock*>(thread_ptr);
-
-    // Initialize ThreadBlock in-place
-    new (tblock) ThreadBlock();
-
-    // Create backend for this ThreadBlock (keep root data_, set offset)
-    MemoryBackend thread_backend = backend;
-    thread_backend.data_offset_ = thread_offset.load();
-    thread_backend.data_size_ = region_size;
-
-    if (!tblock->shm_init(thread_backend, region_size, tid_count_++)) {
-      alloc_.FreeOffset(thread_offset);
-      lock_.Unlock();
-      return FullPtr<ThreadBlock>::GetNull();
-    }
-
-    // Add to thread list
-    ShmPtr<> thread_shm;
-    thread_shm.off_ = thread_offset;
-    FullPtr<pre::slist_node> node_ptr(reinterpret_cast<pre::slist_node*>(tblock), thread_shm);
-    threads_.emplace(&alloc_, node_ptr);
-
-    lock_.Unlock();
-
-    // Return FullPtr to the ThreadBlock
-    FullPtr<ThreadBlock> result;
-    result.ptr_ = tblock;
-    result.shm_.off_ = thread_offset;
-    result.shm_.alloc_id_ = AllocatorId(backend.GetId(), 0);
-    return result;
   }
 
   /**
@@ -241,9 +159,7 @@ class ProcessBlock : public pre::slist_node {
    * @param ptr Offset pointer to memory region to return
    */
   void Expand(OffsetPtr<> ptr) {
-    lock_.Lock(0);
     alloc_.FreeOffset(ptr);
-    lock_.Unlock();
   }
 };
 
@@ -318,16 +234,15 @@ class _MultiProcessAllocator : public Allocator {
   /**
    * Initialize the allocator with a new memory region
    *
-   * @param id Allocator ID
    * @param backend Memory backend to use (allocator will be placed at backend.data_)
-   * @param size Total size of the memory region
+   * @param custom_header_size Size of custom header (default: 0)
+   * @param size Total size of the memory region (optional, defaults to backend.data_size_)
    * @return true on success, false on failure
    */
-  bool shm_init(AllocatorId id, const MemoryBackend &backend, size_t size) {
-    id_ = id;
+  bool shm_init(const MemoryBackend &backend, size_t custom_header_size = 0) {
     SetBackend(backend);
     alloc_header_size_ = sizeof(_MultiProcessAllocator);
-    custom_header_size_ = 0;  // No custom header for MultiProcessAllocator
+    custom_header_size_ = custom_header_size;
 
     // Initialize header fields directly (we are the header!)
     pid_count_ = 0;
@@ -337,54 +252,28 @@ class _MultiProcessAllocator : public Allocator {
 
     // Create a shifted backend for the global allocator
     // It starts after this allocator object
-    MemoryBackend alloc_backend = backend.Shift(sizeof(_MultiProcessAllocator));
+    MemoryBackend alloc_backend = backend.ShiftTo(GetAllocatorDataOff());
 
     // Initialize global buddy allocator with shifted backend
-    alloc_.shm_init(AllocatorId(backend.GetId(), 0), alloc_backend);
+    alloc_.shm_init(alloc_backend);
 
     // Set default sizes based on available memory
     // For testing with smaller memory regions, use smaller defaults
-    if (size < 1ULL * 1024 * 1024 * 1024) {
+    size_t available_size = backend.data_size_;
+    if (available_size < 1ULL * 1024 * 1024 * 1024) {
       // For regions < 1GB, use smaller units
-      process_unit_ = size / 4;                  // Use 1/4 of available space
+      process_unit_ = available_size / 4;        // Use 1/4 of available space
       thread_unit_ = 4ULL * 1024 * 1024;         // 4MB
     } else {
       process_unit_ = 1ULL * 1024 * 1024 * 1024;  // 1GB
       thread_unit_ = 16ULL * 1024 * 1024;         // 16MB
     }
 
-    // Allocate first ProcessBlock
-    OffsetPtr<> pblock_offset = alloc_.AllocateOffset(process_unit_);
-    if (pblock_offset.IsNull()) {
+    // Allocate first ProcessBlock using AllocateProcessBlock()
+    FullPtr<ProcessBlock> pblock_ptr = AllocateProcessBlock();
+    if (pblock_ptr.IsNull()) {
       return false;
     }
-
-    // Initialize ProcessBlock
-    MemoryBackend root_backend = GetBackend();
-    char *pblock_ptr = root_backend.data_ + pblock_offset.load();
-    ProcessBlock *pblock = reinterpret_cast<ProcessBlock*>(pblock_ptr);
-    new (pblock) ProcessBlock();
-
-    // The pblock_offset is already relative to root_backend.data_, so pblock_ptr is correct
-    if (!pblock->shm_init(root_backend, pblock_ptr, process_unit_, getpid())) {
-      alloc_.FreeOffset(pblock_offset);
-      return false;
-    }
-
-    // Set up TLS for this process block
-    if (!pblock->SetupTls()) {
-      return false;
-    }
-
-    // Store process block pointer in private header
-    SetProcessBlock(pblock);
-
-    // Add to process list
-    ShmPtr<> pblock_shm;
-    pblock_shm.off_ = pblock_offset;
-    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock), pblock_shm);
-    alloc_procs_.emplace(&alloc_, pblock_node);
-    pid_count_++;
 
     return true;
   }
@@ -393,105 +282,18 @@ class _MultiProcessAllocator : public Allocator {
    * Attach to an existing allocator (for multi-process scenarios)
    *
    * This method allows a process to attach to shared memory that was
-   * initialized by another process. It reconstructs the allocator state
-   * from the shared memory and sets up process-local state (TLS, ProcessBlock).
+   * initialized by another process. It assumes shm_init was previously called
+   * by another process. It only allocates a ProcessBlock and sets up the
+   * private header for this process.
    *
-   * @param backend Memory backend that was initialized by the creator process
-   * @param process_unit Default size for ProcessBlocks (default: determined by memory size)
-   * @param thread_unit Default size for ThreadBlocks (default: determined by memory size)
    * @return true on success, false on failure
    */
-  bool shm_attach(const MemoryBackend &backend,
-                  size_t process_unit = 0,
-                  size_t thread_unit = 0) {
-    // Verify allocator was initialized
-    if (pid_count_ == 0) {
+  bool shm_attach() {
+    // Allocate a ProcessBlock for this process using AllocateProcessBlock()
+    FullPtr<ProcessBlock> pblock_ptr = AllocateProcessBlock();
+    if (pblock_ptr.IsNull()) {
       return false;
     }
-
-    // Create a shifted backend for the global allocator
-    MemoryBackend alloc_backend = backend.Shift(sizeof(_MultiProcessAllocator));
-
-    // Attach to the buddy allocator (don't reinitialize!)
-    // Reconstruct pointers to the free lists that are already in shared memory
-    alloc_.GetBackend() = alloc_backend;
-    alloc_.GetBackend().SetInitialized();
-
-    // Calculate aligned metadata size (must match what shm_init did)
-    // Use the same constants as BuddyAllocator::shm_init
-    constexpr size_t kNumRoundUpLists = 10;  // 5 to 14 = 10 lists (from BuddyAllocator)
-    constexpr size_t kNumRoundDownLists = 6;  // 15 to 20 = 6 lists (from BuddyAllocator)
-    constexpr size_t kNumFreeLists = kNumRoundUpLists + kNumRoundDownLists;
-    size_t metadata_size = kNumFreeLists * sizeof(pre::slist<false>);
-    size_t aligned_metadata = ((metadata_size + 63) / 64) * 64;
-
-    // Reconstruct pointers to existing free lists
-    char *region_start = alloc_backend.data_ + alloc_backend.data_offset_;
-    alloc_.round_up_lists_ = reinterpret_cast<pre::slist<false>*>(region_start);
-    alloc_.round_down_lists_ = alloc_.round_up_lists_ + kNumRoundUpLists;
-
-    // Reconstruct heap boundaries (these should match what was initialized)
-    alloc_.heap_begin_ = alloc_backend.data_offset_ + aligned_metadata;
-    alloc_.heap_current_ = alloc_.heap_begin_;  // Note: This is approximate, actual value may be higher
-    alloc_.heap_end_ = alloc_backend.data_offset_ + alloc_backend.data_size_;
-
-    // Set default sizes from backend size if not specified
-    size_t size = backend.data_size_;
-    if (process_unit == 0) {
-      if (size < 1ULL * 1024 * 1024 * 1024) {
-        process_unit_ = size / 4;
-      } else {
-        process_unit_ = 1ULL * 1024 * 1024 * 1024;
-      }
-    } else {
-      process_unit_ = process_unit;
-    }
-
-    if (thread_unit == 0) {
-      if (size < 1ULL * 1024 * 1024 * 1024) {
-        thread_unit_ = 4ULL * 1024 * 1024;
-      } else {
-        thread_unit_ = 16ULL * 1024 * 1024;
-      }
-    } else {
-      thread_unit_ = thread_unit;
-    }
-
-    // Allocate a ProcessBlock for this process
-    OffsetPtr<> pblock_offset = alloc_.AllocateOffset(process_unit_);
-    if (pblock_offset.IsNull()) {
-      return false;
-    }
-
-    // Initialize ProcessBlock
-    MemoryBackend root_backend = GetBackend();
-    char *pblock_ptr = root_backend.data_ + pblock_offset.load();
-    ProcessBlock *pblock = reinterpret_cast<ProcessBlock*>(pblock_ptr);
-    new (pblock) ProcessBlock();
-
-    if (!pblock->shm_init(root_backend, pblock_ptr, process_unit_, getpid())) {
-      alloc_.FreeOffset(pblock_offset);
-      return false;
-    }
-
-    // Set up TLS for this process block
-    if (!pblock->SetupTls()) {
-      return false;
-    }
-
-    // Store process block pointer in private header
-    SetProcessBlock(pblock);
-
-    // Add to process list (with locking since other processes may be modifying)
-    ShmPtr<> pblock_shm;
-    pblock_shm.off_ = pblock_offset;
-    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock), pblock_shm);
-
-    // Lock while modifying shared header
-    lock_.Lock(getpid());
-    alloc_procs_.emplace(&alloc_, pblock_node);
-    pid_count_++;
-    lock_.Unlock();
 
     return true;
   }
@@ -504,26 +306,20 @@ class _MultiProcessAllocator : public Allocator {
   }
 
  public:
-
   /**
    * Ensure thread-local storage is set up for the current thread
    *
    * This is the critical function for lock-free fast path allocation.
    * It checks TLS for a ThreadBlock, and if not found, allocates one
-   * from the ProcessBlock (creating a ProcessBlock if needed).
+   * from the ProcessBlock (assumes ProcessBlock already exists).
    *
    * @return Pointer to the thread's ThreadBlock, or nullptr on failure
    */
   ThreadBlock* EnsureTls() {
-    // Get or create ProcessBlock from private header
+    // Get ProcessBlock (should already exist from shm_init or shm_attach)
     ProcessBlock *pblock = GetProcessBlock();
     if (pblock == nullptr) {
-      // First time - allocate ProcessBlock
-      pblock = AllocateProcessBlock();
-      if (pblock == nullptr) {
-        return nullptr;
-      }
-      SetProcessBlock(pblock);
+      return nullptr;
     }
 
     // Check if we already have a ThreadBlock in TLS
@@ -532,83 +328,138 @@ class _MultiProcessAllocator : public Allocator {
       return reinterpret_cast<ThreadBlock*>(tblock_data);
     }
 
-    // Allocate ThreadBlock from ProcessBlock
-    FullPtr<ThreadBlock> tblock_ptr = pblock->AllocateThreadBlock(GetBackend(), thread_unit_);
-    if (tblock_ptr.IsNull()) {
-      // Try expanding ProcessBlock
-      OffsetPtr<> expand_offset = alloc_.AllocateOffset(thread_unit_);
-      if (!expand_offset.IsNull()) {
-        pblock->Expand(expand_offset);
-        tblock_ptr = pblock->AllocateThreadBlock(GetBackend(), thread_unit_);
-      }
-    }
-
+    // Allocate ThreadBlock + region from ProcessBlock or global allocator
+    FullPtr<ThreadBlock> tblock_ptr =
+        AllocateFromProcessOrGlobal<ThreadBlock>(sizeof(ThreadBlock));
     if (tblock_ptr.IsNull()) {
       return nullptr;
     }
+    FullPtr<void> region = AllocateFromProcessOrGlobal<void>(thread_unit_);
+    if (region.IsNull()) {
+      return nullptr;
+    }
 
-    // Store in TLS
-    ThreadBlock *tblock = tblock_ptr.ptr_;
-    HSHM_THREAD_MODEL->SetTls<void>(pblock->tblock_key_, reinterpret_cast<void*>(tblock));
-    return tblock;
+    // Initialize ThreadBlock and store in TLS
+    tblock_ptr->shm_init(GetBackend(), region, thread_unit_, pblock->tid_count_++);
+    HSHM_THREAD_MODEL->SetTls<void>(pblock->tblock_key_, reinterpret_cast<void*>(tblock_ptr.ptr_));
+    return tblock_ptr.ptr_;
+  }
+
+  /**
+   * Allocate memory from ProcessBlock or fallback to expanding from global allocator
+   *
+   * This is a helper function used by EnsureTls to allocate ThreadBlock objects
+   * and their data regions. It implements a 2-tier strategy:
+   * 1. Try allocating from ProcessBlock (with lock)
+   * 2. If that fails, expand ProcessBlock from global allocator and retry
+   *
+   * @tparam T The type to allocate
+   * @param size Size in bytes to allocate
+   * @return FullPtr to allocated memory, or null on failure
+   */
+  template <typename T>
+  FullPtr<T> AllocateFromProcessOrGlobal(size_t size) {
+    ProcessBlock *pblock = GetProcessBlock();
+    if (pblock == nullptr) {
+      return FullPtr<T>::GetNull();
+    }
+
+    // Tier 1: Try allocating from ProcessBlock (requires lock)
+    {
+      ScopedMutex scoped_lock(pblock->lock_, 0);
+      FullPtr<T> ptr = pblock->alloc_.Allocate<T>(size);
+      if (!ptr.IsNull()) {
+        return ptr;
+      }
+    }
+
+    // Tier 2: Expand ProcessBlock from global allocator and retry
+    {
+      // First acquire global lock to allocate expansion memory
+      ScopedMutex global_lock(lock_, 0);
+      OffsetPtr<> expand_ptr = alloc_.AllocateOffset(process_unit_);
+      if (expand_ptr.IsNull()) {
+        return FullPtr<T>::GetNull();
+      }
+
+      // Now acquire ProcessBlock lock to expand and retry allocation
+      ScopedMutex pblock_lock(pblock->lock_, 0);
+      pblock->Expand(expand_ptr);
+
+      // Retry allocation from expanded ProcessBlock
+      FullPtr<T> ptr = pblock->alloc_.Allocate<T>(size);
+      return ptr;  // May still be null if expansion wasn't enough
+    }
   }
 
   /**
    * Allocate a ProcessBlock for the current process
    *
-   * @return Pointer to ProcessBlock, or nullptr on failure
+   * This function implements the following logic:
+   * 1. Check if there are any free process blocks in the free_procs_ list
+   * 2. If found, pop the first one and get the pid from that block
+   * 3. Otherwise, allocate a new one:
+   *    a. Create a pid using pid_count_++
+   *    b. Allocate a region of process_unit_ size
+   *    c. Use AllocateObj<ProcessBlock> to allocate the ProcessBlock object itself
+   *    d. Call shm_init on the ProcessBlock, passing the region FullPtr and region_size
+   * 4. Add the ProcessBlock to the alloc_procs_ list
+   * 5. Call SetProcessBlock(pblock)
+   * 6. Return the ProcessBlock pointer
+   *
+   * @return FullPtr to ProcessBlock, or null FullPtr on failure
    */
-  ProcessBlock* AllocateProcessBlock() {
+  FullPtr<ProcessBlock> AllocateProcessBlock() {
     // Lock the global process list
-    lock_.Lock(0);
+    ScopedMutex scoped_lock(lock_, 0);
 
-    ProcessBlock *pblock = nullptr;
-    OffsetPtr<> pblock_offset;
+    FullPtr<ProcessBlock> pblock_ptr = FullPtr<ProcessBlock>::GetNull();
     int pid;
-    bool reused = false;
 
-    // Try to pop from free_procs_ first
+    // Step 1-2: Try to pop from free_procs_ first
     if (!free_procs_.empty()) {
       auto node = free_procs_.pop(&alloc_);
       if (!node.IsNull()) {
-        pblock = reinterpret_cast<ProcessBlock*>(node.ptr_);
-        pblock_offset = OffsetPtr<>(node.shm_.off_.load());
-        pid = pblock->pid_;  // Reuse existing PID
-        reused = true;
+        pblock_ptr = FullPtr<ProcessBlock>(reinterpret_cast<ProcessBlock*>(node.ptr_), node.shm_);
+        pid = pblock_ptr.ptr_->pid_;  // Get the pid from the existing block
       }
     }
 
-    // If not reused, allocate new ProcessBlock
-    if (!reused) {
-      pblock_offset = alloc_.AllocateOffset(process_unit_);
-      if (pblock_offset.IsNull()) {
-        lock_.Unlock();
-        return nullptr;
-      }
-
-      // Initialize ProcessBlock
-      char *pblock_ptr = alloc_.GetBackend().data_ + pblock_offset.load();
-      pblock = reinterpret_cast<ProcessBlock*>(pblock_ptr);
-      new (pblock) ProcessBlock();
-
-      // Allocate new PID using pid_count_
+    // Step 3: If not reused, allocate new ProcessBlock
+    if (pblock_ptr.IsNull()) {
+      // Step 3a: Create a pid using pid_count_
       pid = pid_count_++;
 
-      if (!pblock->shm_init(GetBackend(), pblock_ptr, process_unit_, pid)) {
-        alloc_.FreeOffset(pblock_offset);
-        lock_.Unlock();
-        return nullptr;
+      // Step 3b: Allocate a region of process_unit_ size
+      FullPtr<void> region = alloc_.Allocate<void>(process_unit_);
+      if (region.IsNull()) {
+        return FullPtr<ProcessBlock>::GetNull();
+      }
+
+      // Step 3c: Use AllocateObjs<ProcessBlock> to allocate the ProcessBlock object itself
+      pblock_ptr = alloc_.AllocateObjs<ProcessBlock>(1);
+      if (pblock_ptr.IsNull()) {
+        alloc_.Free(region);
+        return FullPtr<ProcessBlock>::GetNull();
+      }
+
+      // Step 3d: Call shm_init on the ProcessBlock (which calls SetupTls internally)
+      if (!pblock_ptr.ptr_->shm_init(GetBackend(), region, process_unit_, pid)) {
+        alloc_.Free(pblock_ptr);
+        alloc_.Free(region);
+        return FullPtr<ProcessBlock>::GetNull();
       }
     }
 
-    // Add to allocated process list
-    ShmPtr<> pblock_shm;
-    pblock_shm.off_ = pblock_offset;
-    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock), pblock_shm);
+    // Step 4: Add to allocated process list
+    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock_ptr.ptr_), pblock_ptr.shm_);
     alloc_procs_.emplace(&alloc_, pblock_node);
 
-    lock_.Unlock();
-    return pblock;
+    // Step 5: Call SetProcessBlock(pblock)
+    SetProcessBlock(pblock_ptr.ptr_);
+
+    // Step 6: Return the ProcessBlock FullPtr
+    return pblock_ptr;
   }
 
   /**
@@ -618,35 +469,106 @@ class _MultiProcessAllocator : public Allocator {
    * @return Offset pointer to allocated memory, or null on failure
    */
   OffsetPtr<> AllocateOffset(size_t size) {
-    // Tier 1: Fast path - try thread-local allocator (lock-free)
+    OffsetPtr<> ptr = AllocateOffsetFromTblock(size);
+    if (!ptr.IsNull()) {
+      return ptr;
+    }
+    ptr = AllocateOffsetFromPblock(size);
+    if (!ptr.IsNull()) {
+      return ptr;
+    }
+    ptr = AllocateOffsetFromGlobal(size);
+    if (!ptr.IsNull()) {
+      return ptr;
+    }
+    return ptr;
+  }
+
+  /**
+   * Tier 1: Allocate from thread-local ThreadBlock allocator (lock-free fast path)
+   *
+   * This is the fastest allocation path with no locking required.
+   * Attempts to allocate from the current thread's ThreadBlock allocator.
+   *
+   * @param size Size in bytes to allocate
+   * @return Offset pointer to allocated memory, or null if ThreadBlock exhausted
+   */
+  OffsetPtr<> AllocateOffsetFromTblock(size_t size) {
     ThreadBlock *tblock = EnsureTls();
     if (tblock != nullptr) {
-      OffsetPtr<> ptr = tblock->Allocate(size);
+      return tblock->alloc_.AllocateOffset(size);
+    }
+    return OffsetPtr<>::GetNull();
+  }
+
+  /**
+   * Tier 2: Allocate from ProcessBlock and expand ThreadBlock (medium path)
+   *
+   * When ThreadBlock is exhausted, this allocates thread_unit_ bytes from
+   * the ProcessBlock allocator, expands the ThreadBlock with this memory,
+   * and retries the allocation from the expanded ThreadBlock.
+   *
+   * Requires ProcessBlock lock.
+   *
+   * @param size Size in bytes to allocate
+   * @return Offset pointer to allocated memory, or null if ProcessBlock exhausted
+   */
+  OffsetPtr<> AllocateOffsetFromPblock(size_t size) {
+    ProcessBlock *pblock = GetProcessBlock();
+    ThreadBlock *tblock = EnsureTls();
+    if (pblock == nullptr || tblock == nullptr) {
+      return OffsetPtr<>::GetNull();
+    }
+
+    ScopedMutex scoped_lock(pblock->lock_, 0);
+    OffsetPtr<> expand_offset = pblock->alloc_.AllocateOffset(thread_unit_);
+    if (!expand_offset.IsNull()) {
+      // Expand the thread block and try reallocating
+      tblock->Expand(expand_offset);
+      OffsetPtr<> ptr = tblock->alloc_.AllocateOffset(size);
       if (!ptr.IsNull()) {
         return ptr;
       }
     }
+    return OffsetPtr<>::GetNull();
+  }
 
-    // Tier 2: Medium path - try expanding ThreadBlock from ProcessBlock
+  /**
+   * Tier 3: Allocate from global allocator and expand ProcessBlock (slow path)
+   *
+   * When ProcessBlock is exhausted, this allocates process_unit_ bytes from
+   * the global allocator, expands the ProcessBlock with this memory, and
+   * then retries allocation through the ProcessBlock tier.
+   *
+   * Requires both global and ProcessBlock locks (acquired sequentially).
+   *
+   * @param size Size in bytes to allocate
+   * @return Offset pointer to allocated memory, or null if global allocator exhausted
+   */
+  OffsetPtr<> AllocateOffsetFromGlobal(size_t size) {
     ProcessBlock *pblock = GetProcessBlock();
-    if (pblock != nullptr) {
-      OffsetPtr<> expand_offset = alloc_.AllocateOffset(size);
-      if (!expand_offset.IsNull()) {
-        pblock->Expand(expand_offset);
-        if (tblock != nullptr) {
-          OffsetPtr<> ptr = tblock->Allocate(size);
-          if (!ptr.IsNull()) {
-            return ptr;
-          }
-        }
+    if (pblock == nullptr) {
+      return OffsetPtr<>::GetNull();
+    }
+
+    // Acquire global lock to allocate expansion memory
+    OffsetPtr<> expand_ptr;
+    {
+      ScopedMutex global_lock(lock_, 0);
+      expand_ptr = alloc_.AllocateOffset(process_unit_);
+      if (expand_ptr.IsNull()) {
+        return OffsetPtr<>::GetNull();
       }
     }
 
-    // Tier 3: Slow path - allocate directly from global allocator
-    lock_.Lock(0);
-    OffsetPtr<> ptr = alloc_.AllocateOffset(size);
-    lock_.Unlock();
-    return ptr;
+    // Acquire ProcessBlock lock to expand
+    {
+      ScopedMutex pblock_lock(pblock->lock_, 0);
+      pblock->Expand(expand_ptr);
+    }
+
+    // Retry through ProcessBlock tier (which will expand ThreadBlock if needed)
+    return AllocateOffsetFromPblock(size);
   }
 
   /**
@@ -661,19 +583,30 @@ class _MultiProcessAllocator : public Allocator {
       return AllocateOffset(new_size);
     }
 
+    // Try to reallocate from the tblock.
+    ThreadBlock *tblock = EnsureTls();
+    OffsetPtr<> new_offset = tblock->alloc_.ReallocateOffset(offset, new_size);
+    if (!new_offset.IsNull()) {
+      return new_offset;
+    }
+
     // Allocate new memory
-    OffsetPtr<> new_offset = AllocateOffset(new_size);
+    new_offset = AllocateOffset(new_size);
     if (new_offset.IsNull()) {
       return new_offset;
     }
 
-    // Copy old data to new location
-    // We need to determine the size of the old allocation
-    // For now, copy up to new_size (assuming old is at least as large)
-    // TODO: Store allocation sizes to copy exact old size
-    char *old_data = GetBackend().data_ + offset.load();
-    char *new_data = GetBackend().data_ + new_offset.load();
-    memcpy(new_data, old_data, new_size);
+    // Get old allocation size by reading the BuddyPage header
+    // The page header is located just before the user data
+    size_t page_offset = offset.load() - sizeof(BuddyPage);
+    BuddyPage *page = reinterpret_cast<BuddyPage*>(GetBackendData() + page_offset);
+    size_t old_size = page->size_;
+
+    // Copy old data to new location (copy the minimum of old and new sizes)
+    char *old_data = GetBackendData() + offset.load();
+    char *new_data = GetBackendData() + new_offset.load();
+    size_t copy_size = (old_size < new_size) ? old_size : new_size;
+    memcpy(new_data, old_data, copy_size);
 
     // Free old allocation
     FreeOffset(offset);
@@ -700,15 +633,14 @@ class _MultiProcessAllocator : public Allocator {
       if (tblock != nullptr) {
         // Check if offset is within thread block range
         // For now, just try to free it
-        tblock->Free(offset);
+        tblock->alloc_.FreeOffset(offset);
         return;
       }
     }
 
     // Fall back to global allocator
-    lock_.Lock(0);
+    ScopedMutex scoped_lock(lock_, 0);
     alloc_.FreeOffset(offset);
-    lock_.Unlock();
   }
 
   /**

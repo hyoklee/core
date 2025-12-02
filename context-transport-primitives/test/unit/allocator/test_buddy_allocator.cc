@@ -24,17 +24,9 @@ TEST_CASE("BuddyAllocator - Initialization", "[buddy_allocator]") {
   size_t alloc_size = sizeof(BuddyAllocator);
   backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
-
-  
+  // MakeAlloc automatically passes backend as first parameter to shm_init
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
+  REQUIRE(allocator != nullptr);
 
   backend.shm_destroy();
 }
@@ -45,15 +37,8 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
   size_t alloc_size = sizeof(BuddyAllocator);
   backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // MakeAlloc automatically passes backend as first parameter to shm_init
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Single small allocation") {
     auto offset = allocator->AllocateOffset(64);
@@ -135,18 +120,11 @@ TEST_CASE("BuddyAllocator - Small Allocations", "[buddy_allocator]") {
 TEST_CASE("BuddyAllocator - Large Allocations", "[buddy_allocator]") {
   MallocBackend backend;
   size_t heap_size = 10 * 1024 * 1024;  // 10MB
-  size_t alloc_size = sizeof(BuddyAllocator);
-  backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // The backend describes the full heap region
+  // BuddyAllocator struct (with inline free lists) is placed at backend.data_
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Single large allocation") {
     auto offset = allocator->AllocateOffset(32 * 1024);  // 32KB
@@ -225,15 +203,10 @@ TEST_CASE("BuddyAllocator - Free and Reallocation", "[buddy_allocator]") {
   size_t alloc_size = sizeof(BuddyAllocator);
   backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // BuddyAllocator struct is placed at backend.data_
+  // Heap region starts after the struct
+  MemoryBackend heap_backend = backend.Shift(alloc_size);
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Free and reallocate small") {
     auto offset1 = allocator->AllocateOffset(128);
@@ -285,18 +258,11 @@ TEST_CASE("BuddyAllocator - Free and Reallocation", "[buddy_allocator]") {
 TEST_CASE("BuddyAllocator - Coalescing", "[buddy_allocator]") {
   MallocBackend backend;
   size_t heap_size = 2 * 1024 * 1024;  // 2MB
-  size_t alloc_size = sizeof(BuddyAllocator);
-  backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // The backend describes the full heap region
+  // BuddyAllocator struct (with inline free lists) is placed at backend.data_
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Coalesce adjacent small blocks") {
     // Allocate several small blocks
@@ -354,18 +320,11 @@ TEST_CASE("BuddyAllocator - Coalescing", "[buddy_allocator]") {
 TEST_CASE("BuddyAllocator - Mixed Small and Large", "[buddy_allocator]") {
   MallocBackend backend;
   size_t heap_size = 5 * 1024 * 1024;  // 5MB
-  size_t alloc_size = sizeof(BuddyAllocator);
-  backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // The backend describes the full heap region
+  // BuddyAllocator struct (with inline free lists) is placed at backend.data_
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Interleaved small and large allocations") {
     std::vector<OffsetPtr<>> allocations;
@@ -395,18 +354,11 @@ TEST_CASE("BuddyAllocator - Mixed Small and Large", "[buddy_allocator]") {
 TEST_CASE("BuddyAllocator - Stress Test", "[buddy_allocator]") {
   MallocBackend backend;
   size_t heap_size = 10 * 1024 * 1024;  // 10MB
-  size_t alloc_size = sizeof(BuddyAllocator);
-  backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // The backend describes the full heap region
+  // BuddyAllocator struct (with inline free lists) is placed at backend.data_
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Many allocations and frees") {
     std::vector<OffsetPtr<>> active;
@@ -452,18 +404,11 @@ TEST_CASE("BuddyAllocator - Stress Test", "[buddy_allocator]") {
 TEST_CASE("BuddyAllocator - Out of Memory", "[buddy_allocator]") {
   MallocBackend backend;
   size_t heap_size = 64 * 1024;  // Small 64KB heap
-  size_t alloc_size = sizeof(BuddyAllocator);
-  backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // The backend describes the full heap region
+  // BuddyAllocator struct (with inline free lists) is placed at backend.data_
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Exhaust heap") {
     std::vector<OffsetPtr<>> allocations;
@@ -493,25 +438,18 @@ TEST_CASE("BuddyAllocator - Out of Memory", "[buddy_allocator]") {
 TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
   MallocBackend backend;
   size_t heap_size = 5 * 1024 * 1024;  // 5MB
-  size_t alloc_size = sizeof(BuddyAllocator);
-  backend.shm_init(MemoryBackendId(0, 0), alloc_size + heap_size);
+  backend.shm_init(MemoryBackendId(0, 0), heap_size);
 
-  auto *allocator = backend.Cast<BuddyAllocator>();
-  new (allocator) BuddyAllocator();
-
-  // Create a backend view for the heap (starts after allocator object)
-  MemoryBackend heap_backend = backend;
-  heap_backend.data_offset_ = alloc_size;
-  heap_backend.data_size_ = heap_size;
-
-  allocator->shm_init(hipc::AllocatorId(hipc::MemoryBackendId(0, 0), 0), heap_backend);
+  // The backend describes the full heap region
+  // BuddyAllocator struct (with inline free lists) is placed at backend.data_
+  auto *allocator = backend.MakeAlloc<BuddyAllocator>();
 
   SECTION("Reallocate to smaller size - no reallocation") {
     auto offset = allocator->AllocateOffset(1024);
     REQUIRE_FALSE(offset.IsNull());
 
     // Fill with pattern
-    char *data = heap_backend.data_ + offset.load();
+    char *data = backend.data_ + offset.load();
     for (size_t i = 0; i < 1024; ++i) {
       data[i] = static_cast<char>(i % 256);
     }
@@ -521,7 +459,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE(new_offset.load() == offset.load());
 
     // Verify data is intact
-    char *new_data = heap_backend.data_ + new_offset.load();
+    char *new_data = backend.data_ + new_offset.load();
     for (size_t i = 0; i < 512; ++i) {
       REQUIRE(new_data[i] == static_cast<char>(i % 256));
     }
@@ -544,7 +482,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE_FALSE(offset.IsNull());
 
     // Fill with pattern
-    char *data = heap_backend.data_ + offset.load();
+    char *data = backend.data_ + offset.load();
     for (size_t i = 0; i < 512; ++i) {
       data[i] = static_cast<char>(i % 256);
     }
@@ -554,7 +492,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE_FALSE(new_offset.IsNull());
 
     // Verify old data is copied
-    char *new_data = heap_backend.data_ + new_offset.load();
+    char *new_data = backend.data_ + new_offset.load();
     for (size_t i = 0; i < 512; ++i) {
       REQUIRE(new_data[i] == static_cast<char>(i % 256));
     }
@@ -575,7 +513,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE_FALSE(offset.IsNull());
 
     // Fill initial data
-    char *data = heap_backend.data_ + offset.load();
+    char *data = backend.data_ + offset.load();
     for (size_t i = 0; i < 128; ++i) {
       data[i] = static_cast<char>(i);
     }
@@ -591,7 +529,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE_FALSE(offset.IsNull());
 
     // Verify original data still intact
-    data = heap_backend.data_ + offset.load();
+    data = backend.data_ + offset.load();
     for (size_t i = 0; i < 128; ++i) {
       REQUIRE(data[i] == static_cast<char>(i));
     }
@@ -604,7 +542,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE_FALSE(offset.IsNull());
 
     // Write specific pattern
-    char *data = heap_backend.data_ + offset.load();
+    char *data = backend.data_ + offset.load();
     const char *pattern = "Hello, World! This is test data.";
     size_t pattern_len = strlen(pattern) + 1;  // Include null terminator
     memcpy(data, pattern, pattern_len);
@@ -614,7 +552,7 @@ TEST_CASE("BuddyAllocator - ReallocateOffset", "[buddy_allocator]") {
     REQUIRE_FALSE(new_offset.IsNull());
 
     // Verify pattern is preserved
-    char *new_data = heap_backend.data_ + new_offset.load();
+    char *new_data = backend.data_ + new_offset.load();
     REQUIRE(strcmp(new_data, pattern) == 0);
 
     allocator->FreeOffset(new_offset);

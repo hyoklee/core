@@ -33,18 +33,13 @@ class MpAllocatorTest {
     backend_.shm_init(MemoryBackendId(0, 0), kAllocSize);
     std::cout << "Backend initialized at: " << (void*)backend_.data_ << std::endl;
 
-    // Place allocator at the beginning of shared memory
+    // Place allocator at the beginning of shared memory using MakeAlloc
+    // MakeAlloc automatically passes backend as first parameter to shm_init
     std::cout << "sizeof(MultiProcessAllocator) = " << sizeof(MultiProcessAllocator) << std::endl;
     std::cout << "sizeof(_MultiProcessAllocator) = " << sizeof(_MultiProcessAllocator) << std::endl;
-    alloc_ = backend_.Cast<MultiProcessAllocator>();
+    alloc_ = backend_.MakeAlloc<MultiProcessAllocator>(kAllocSize);
     std::cout << "Allocator placed at: " << (void*)alloc_ << std::endl;
-    new (alloc_) MultiProcessAllocator();
-    std::cout << "Allocator constructed" << std::endl;
     std::cout << "Accessing pid_count_: " << alloc_->pid_count_ << std::endl;
-
-    // Initialize allocator with AllocatorId
-    alloc_->shm_init(AllocatorId(MemoryBackendId(0, 0), 0), backend_, kAllocSize);
-    std::cout << "Allocator shm_init completed" << std::endl;
     std::cout << "Allocator pointer: " << (void*)alloc_ << std::endl;
     std::cout << "Allocator initialized successfully" << std::endl;
     // TODO: Fix id_ access issue
@@ -66,8 +61,8 @@ TEST_CASE("MpAllocator: Basic Initialization", "[mp_allocator][init]") {
   MpAllocatorTest test;
 
   // Verify allocator is initialized
-  REQUIRE(test.alloc_->GetId().backend_id_.major_ == 0);
-  REQUIRE(test.alloc_->GetId().backend_id_.minor_ == 0);
+  REQUIRE(test.alloc_->GetId().major_ == 0);
+  REQUIRE(test.alloc_->GetId().minor_ == 0);
 }
 
 /**

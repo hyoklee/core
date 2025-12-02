@@ -47,7 +47,7 @@ class AllocatorTest {
    */
   void TestAllocFreeImmediate(size_t iterations, size_t alloc_size) {
     for (size_t i = 0; i < iterations; ++i) {
-      auto ptr = alloc_->template AlignedAllocate<void>(alloc_size, 64);
+      auto ptr = alloc_->template Allocate<void>(alloc_size, 64);
       if (ptr.IsNull()) {
         throw std::runtime_error("Allocation failed in TestAllocFreeImmediate");
       }
@@ -70,7 +70,7 @@ class AllocatorTest {
     for (size_t iter = 0; iter < iterations; ++iter) {
       // Allocate batch
       for (size_t i = 0; i < batch_size; ++i) {
-        auto ptr = alloc_->template AlignedAllocate<void>(alloc_size, 64);
+        auto ptr = alloc_->template Allocate<void>(alloc_size, 64);
         if (ptr.IsNull()) {
           // Clean up already allocated pointers
           for (auto &p : ptrs) {
@@ -118,7 +118,7 @@ class AllocatorTest {
           break;
         }
 
-        auto ptr = alloc_->template AlignedAllocate<void>(alloc_size, 64);
+        auto ptr = alloc_->template Allocate<void>(alloc_size, 64);
         if (ptr.IsNull()) {
           // Allocation failed - clean up and break
           break;
