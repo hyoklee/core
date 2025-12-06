@@ -41,11 +41,7 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
 
   /** Destructor */
   HSHM_CROSS_FUN
-  ~PosixShmMmap() {
-#if HSHM_IS_HOST
-    _Detach();
-#endif
-  }
+  ~PosixShmMmap() = default;
 
   /**
    * Initialize backend with mixed private/shared mapping

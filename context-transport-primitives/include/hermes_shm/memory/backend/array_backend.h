@@ -32,13 +32,7 @@ class ArrayBackend : public MemoryBackend {
   HSHM_CROSS_FUN
   ArrayBackend() = default;
 
-  ~ArrayBackend() {
-    if (header_ != nullptr) {
-      header_->~MemoryBackendHeader();
-      free(header_);
-      header_ = nullptr;
-    }
-  }
+  ~ArrayBackend() = default;
 
   /**
    * Initialize ArrayBackend with external array

@@ -46,9 +46,7 @@ class PosixMmap : public MemoryBackend {
   PosixMmap() = default;
 
   /** Destructor */
-  ~PosixMmap() {
-    _Detach();
-  }
+  ~PosixMmap() = default;
 
   /** Initialize backend */
   bool shm_init(const MemoryBackendId &backend_id, size_t size) {
