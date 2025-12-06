@@ -204,10 +204,6 @@ class _MultiProcessAllocator : public Allocator {
   size_t thread_unit_;           /**< Default ThreadBlock size (16MB) */
   BuddyAllocator alloc_;         /**< Global buddy allocator */
 
- private:
-  // Process-local storage (NOT in shared memory)
-  static thread_local ProcessBlock *process_block_;  /**< Thread-local process block pointer */
-
  public:
   /**
    * Default constructor
@@ -216,16 +212,32 @@ class _MultiProcessAllocator : public Allocator {
 
   /**
    * Set the process block for this process
+   *
+   * Stores the ProcessBlock pointer in the private header region
+   * allocated by GetPrivateHeader().
+   *
+   * @param pblock Pointer to ProcessBlock for current process
    */
   void SetProcessBlock(ProcessBlock *pblock) {
-    process_block_ = pblock;
+    auto *header = GetPrivateHeader<MultiProcessAllocatorPrivateHeader>();
+    if (header != nullptr) {
+      header->process_block_ = pblock;
+    }
   }
 
   /**
    * Get the process block for this process
+   *
+   * Retrieves the ProcessBlock pointer from the private header region.
+   *
+   * @return Pointer to ProcessBlock for current process, or nullptr if not set
    */
   ProcessBlock* GetProcessBlock() const {
-    return process_block_;
+    auto *header = GetPrivateHeader<MultiProcessAllocatorPrivateHeader>();
+    if (header != nullptr) {
+      return header->process_block_;
+    }
+    return nullptr;
   }
 
 
@@ -314,6 +326,8 @@ class _MultiProcessAllocator : public Allocator {
    * It checks TLS for a ThreadBlock, and if not found, allocates one
    * from the ProcessBlock (assumes ProcessBlock already exists).
    *
+   * Uses SINGLE allocation for both ThreadBlock object and managed region.
+   *
    * @return Pointer to the thread's ThreadBlock, or nullptr on failure
    */
   ThreadBlock* EnsureTls() {
@@ -332,24 +346,25 @@ class _MultiProcessAllocator : public Allocator {
       return reinterpret_cast<ThreadBlock*>(tblock_data);
     }
 
-    printf("[EnsureTls] Allocating new ThreadBlock\n");
-    // Allocate ThreadBlock + region from ProcessBlock or global allocator
-    FullPtr<ThreadBlock> tblock_ptr =
-        AllocateFromProcessOrGlobal<ThreadBlock>(sizeof(ThreadBlock));
+    printf("[EnsureTls] Allocating new ThreadBlock with SINGLE allocation\n");
+    // Allocate SINGLE region for both ThreadBlock object and managed region
+    FullPtr<ThreadBlock> tblock_ptr = AllocateFromProcessOrGlobal<ThreadBlock>(
+        sizeof(ThreadBlock) + thread_unit_);
     if (tblock_ptr.IsNull()) {
-      printf("[EnsureTls] Failed to allocate ThreadBlock\n");
-      return nullptr;
-    }
-    printf("[EnsureTls] Allocated ThreadBlock, allocating region\n");
-    FullPtr<void> region = AllocateFromProcessOrGlobal<void>(thread_unit_);
-    if (region.IsNull()) {
-      printf("[EnsureTls] Failed to allocate region\n");
+      printf("[EnsureTls] Failed to allocate ThreadBlock region\n");
       return nullptr;
     }
 
+    // Construct ThreadBlock object at the region start
+    new (tblock_ptr.ptr_) ThreadBlock();
+
+    // Create managed_region starting AFTER the ThreadBlock object
+    OffsetPtr<> shifted_off(tblock_ptr.shm_.off_.load() + sizeof(ThreadBlock));
+    FullPtr<void> managed_region(this, shifted_off);
+
     printf("[EnsureTls] Initializing ThreadBlock\n");
-    // Initialize ThreadBlock and store in TLS
-    tblock_ptr->shm_init(GetBackend(), region, thread_unit_, pblock->tid_count_++);
+    // Initialize ThreadBlock with the managed_region and store in TLS
+    tblock_ptr.ptr_->shm_init(GetBackend(), managed_region, thread_unit_, pblock->tid_count_++);
     HSHM_THREAD_MODEL->SetTls<void>(pblock->tblock_key_, reinterpret_cast<void*>(tblock_ptr.ptr_));
     printf("[EnsureTls] ThreadBlock initialized and stored in TLS\n");
     return tblock_ptr.ptr_;
@@ -418,11 +433,12 @@ class _MultiProcessAllocator : public Allocator {
    * This function implements the following logic:
    * 1. Check if there are any free process blocks in the free_procs_ list
    * 2. If found, pop the first one and get the pid from that block
-   * 3. Otherwise, allocate a new one:
+   * 3. Otherwise, allocate a new one with SINGLE allocation:
    *    a. Create a pid using pid_count_++
-   *    b. Allocate a region of process_unit_ size
-   *    c. Use AllocateObj<ProcessBlock> to allocate the ProcessBlock object itself
-   *    d. Call shm_init on the ProcessBlock, passing the region FullPtr and region_size
+   *    b. Allocate SINGLE region of (sizeof(ProcessBlock) + process_unit_) size
+   *    c. Cast the region start to ProcessBlock*
+   *    d. Create managed_region starting after ProcessBlock object
+   *    e. Call shm_init on the ProcessBlock, passing the managed_region
    * 4. Add the ProcessBlock to the alloc_procs_ list
    * 5. Call SetProcessBlock(pblock)
    * 6. Return the ProcessBlock pointer
@@ -442,7 +458,7 @@ class _MultiProcessAllocator : public Allocator {
     if (!free_procs_.empty()) {
       auto node = free_procs_.pop(&alloc_);
       if (!node.IsNull()) {
-        pblock_ptr = FullPtr<ProcessBlock>(reinterpret_cast<ProcessBlock*>(node.ptr_), node.shm_);
+        pblock_ptr = node.Cast<ProcessBlock>();
         pid = pblock_ptr.ptr_->pid_;  // Get the pid from the existing block
       }
     }
@@ -452,29 +468,25 @@ class _MultiProcessAllocator : public Allocator {
       // Step 3a: Create a pid using pid_count_
       pid = pid_count_++;
 
-      // Step 3b: Allocate a region of process_unit_ size
-      FullPtr<void> region = alloc_.Allocate<void>(process_unit_);
-      if (region.IsNull()) {
-        return FullPtr<ProcessBlock>::GetNull();
-      }
-
-      // Step 3c: Use AllocateObjs<ProcessBlock> to allocate the ProcessBlock object itself
-      pblock_ptr = alloc_.AllocateObjs<ProcessBlock>(1);
+      // Step 3b: Allocate SINGLE region for both ProcessBlock object and managed region
+      pblock_ptr = alloc_.AllocateRegion<ProcessBlock>(process_unit_);
       if (pblock_ptr.IsNull()) {
-        alloc_.Free(region);
         return FullPtr<ProcessBlock>::GetNull();
       }
 
-      // Step 3d: Call shm_init on the ProcessBlock (which calls SetupTls internally)
-      if (!pblock_ptr.ptr_->shm_init(GetBackend(), region, process_unit_, pid)) {
-        alloc_.Free(pblock_ptr);
-        alloc_.Free(region);
+      // Step 3c: Create managed_region starting AFTER the ProcessBlock object
+      OffsetPtr<> shifted_off(pblock_ptr.shm_.off_.load() + sizeof(ProcessBlock));
+      FullPtr<void> managed_region(this, shifted_off);
+
+      // Step 3d: Call shm_init on the ProcessBlock with the managed_region
+      if (!pblock_ptr.ptr_->shm_init(GetBackend(), managed_region, process_unit_, pid)) {
+        alloc_.Free(pblock_ptr);  // Free the SINGLE allocation on error
         return FullPtr<ProcessBlock>::GetNull();
       }
     }
 
     // Step 4: Add to allocated process list
-    FullPtr<pre::slist_node> pblock_node(reinterpret_cast<pre::slist_node*>(pblock_ptr.ptr_), pblock_ptr.shm_);
+    FullPtr<pre::slist_node> pblock_node = pblock_ptr.Cast<pre::slist_node>();
     alloc_procs_.emplace(&alloc_, pblock_node);
 
     // Step 5: Call SetProcessBlock(pblock)
@@ -512,19 +524,14 @@ class _MultiProcessAllocator : public Allocator {
   }
 
   /**
-   * Allocate memory from the multi-process allocator with alignment
-   *
-   * Note: Alignment is not guaranteed in this implementation, as the
-   * multi-process allocator delegates to BuddyAllocator which doesn't
-   * support alignment. This method accepts the alignment parameter for
-   * API compatibility but ignores it.
+   * Allocate offset with alignment (alignment parameter ignored)
    *
    * @param size Size in bytes to allocate
-   * @param alignment Desired alignment (currently unused)
-   * @return Offset pointer to allocated memory, or null on failure
+   * @param alignment Alignment (ignored - no alignment support)
+   * @return OffsetPtr to allocated memory, or null on failure
    */
   OffsetPtr<> AllocateOffset(size_t size, size_t alignment) {
-    (void)alignment;  // Alignment not supported in multi-process allocator
+    (void)alignment;  // Alignment not supported
     return AllocateOffset(size);
   }
 
@@ -767,9 +774,6 @@ class _MultiProcessAllocator : public Allocator {
     return nullptr;
   }
 };
-
-// Define static thread_local member
-thread_local ProcessBlock* _MultiProcessAllocator::process_block_ = nullptr;
 
 }  // namespace hshm::ipc
 

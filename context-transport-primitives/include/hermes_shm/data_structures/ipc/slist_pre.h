@@ -64,6 +64,136 @@ class slist_node {
  */
 template<bool ATOMIC = false>
 class slist {
+ public:
+  /**
+   * Iterator for traversing slist_pre nodes
+   *
+   * This iterator maintains the current node position and the previous node
+   * for efficient removal via PopAt. The iterator is forward-only and supports
+   * dereferencing, incrementing, and comparison operations.
+   *
+   * The iterator stores an allocator pointer to enable self-contained
+   * navigation without requiring the parent list object.
+   */
+  class Iterator {
+   private:
+    OffsetPtr<> current_;  /**< Current node offset */
+    OffsetPtr<> prev_;     /**< Previous node offset (for PopAt functionality) */
+    void *alloc_;          /**< Allocator pointer for node traversal */
+
+   public:
+    /**
+     * Construct a null iterator
+     */
+    HSHM_CROSS_FUN
+    Iterator() : current_(OffsetPtr<>::GetNull()), prev_(OffsetPtr<>::GetNull()), alloc_(nullptr) {}
+
+    /**
+     * Construct an iterator at a specific position
+     *
+     * @param current Offset pointer to current node
+     * @param prev Offset pointer to previous node (or null for head)
+     * @param alloc Allocator pointer for node traversal
+     */
+    HSHM_CROSS_FUN
+    Iterator(const OffsetPtr<> &current, const OffsetPtr<> &prev, void *alloc = nullptr)
+        : current_(current), prev_(prev), alloc_(alloc) {}
+
+    /**
+     * Get current node offset
+     *
+     * @return OffsetPtr to current node
+     */
+    HSHM_CROSS_FUN
+    OffsetPtr<> GetCurrent() const {
+      return current_;
+    }
+
+    /**
+     * Get previous node offset
+     *
+     * @return OffsetPtr to previous node (or null if at head)
+     */
+    HSHM_CROSS_FUN
+    OffsetPtr<> GetPrev() const {
+      return prev_;
+    }
+
+    /**
+     * Check if iterator is at head
+     *
+     * @return true if previous node is null
+     */
+    HSHM_CROSS_FUN
+    bool IsAtHead() const {
+      return prev_.IsNull();
+    }
+
+    /**
+     * Check if iterator is null (not pointing to any node)
+     *
+     * @return true if current is null
+     */
+    HSHM_CROSS_FUN
+    bool IsNull() const {
+      return current_.IsNull();
+    }
+
+    /**
+     * Equality comparison
+     *
+     * @param other Iterator to compare with
+     * @return true if both point to the same node
+     */
+    HSHM_CROSS_FUN
+    bool operator==(const Iterator &other) const {
+      return current_.load() == other.current_.load();
+    }
+
+    /**
+     * Inequality comparison
+     *
+     * @param other Iterator to compare with
+     * @return true if they point to different nodes
+     */
+    HSHM_CROSS_FUN
+    bool operator!=(const Iterator &other) const {
+      return current_.load() != other.current_.load();
+    }
+
+    /**
+     * Prefix increment operator for forward iteration
+     *
+     * Advances the iterator to the next node in the list.
+     * This operator is self-contained and does not require the parent list.
+     *
+     * @return Iterator pointing to the next node, or null iterator if at end
+     */
+    HSHM_CROSS_FUN
+    Iterator operator++() {
+      if (IsNull() || alloc_ == nullptr) {
+        return Iterator();
+      }
+
+      // Get the next pointer from current node
+      auto current = FullPtr<slist_node>(static_cast<hipc::Allocator*>(alloc_),
+                                         OffsetPtr<slist_node>(current_.load()));
+      OffsetPtr<> next_off = current.ptr_->next_;
+
+      if (next_off.IsNull()) {
+        // Update to null iterator for end
+        current_ = OffsetPtr<>::GetNull();
+        prev_ = OffsetPtr<>::GetNull();
+        return *this;
+      }
+
+      // Update previous to current, and advance current to next
+      prev_ = current_;
+      current_ = next_off;
+      return *this;
+    }
+  };
+
  private:
   opt_atomic<size_t, ATOMIC> size_;  /**< Number of elements in the list */
   OffsetPtr<> head_;               /**< Offset pointer to head node */
@@ -172,6 +302,69 @@ class slist {
       return FullPtr<slist_node>::GetNull();
     }
     return FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(head_.load()));
+  }
+
+  /**
+   * Get iterator to the beginning of the list
+   *
+   * @param alloc Allocator pointer for iterator traversal
+   * @return Iterator pointing to the head node, or null iterator if list is empty
+   */
+  template<typename AllocT>
+  HSHM_CROSS_FUN
+  Iterator begin(AllocT *alloc) {
+    return Iterator(head_, OffsetPtr<>::GetNull(), alloc);
+  }
+
+  /**
+   * Get a null iterator (end marker)
+   *
+   * @return Null iterator
+   */
+  HSHM_CROSS_FUN
+  Iterator end() const {
+    return Iterator();
+  }
+
+  /**
+   * Remove node at iterator position and return it
+   *
+   * Removes the node pointed to by the iterator from the list. The node
+   * is not deallocated - the caller is responsible for managing its memory.
+   *
+   * @param alloc Allocator used for address translation
+   * @param it Iterator pointing to the node to remove
+   * @return FullPtr to the removed node, or null if iterator is invalid
+   */
+  template<typename AllocT>
+  HSHM_CROSS_FUN
+  FullPtr<slist_node> PopAt(AllocT *alloc, const Iterator &it) {
+    // Check if iterator is valid
+    if (it.IsNull()) {
+      return FullPtr<slist_node>::GetNull();
+    }
+
+    // Check if list is empty
+    if (size_.load() == 0) {
+      return FullPtr<slist_node>::GetNull();
+    }
+
+    // Get the current node
+    auto current = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(it.GetCurrent().load()));
+
+    if (it.IsAtHead()) {
+      // Removing head node - update head_ directly
+      head_ = current.ptr_->next_;
+    } else {
+      // Removing middle node - update prev's next pointer
+      auto prev = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(it.GetPrev().load()));
+      prev.ptr_->next_ = current.ptr_->next_;
+    }
+
+    // Decrement size
+    size_.store(size_.load() - 1);
+
+    return current;
   }
 };
 

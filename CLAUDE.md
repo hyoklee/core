@@ -12,6 +12,8 @@ NEVER EVER EVER.
 
 ## Code Style
 
+Keeep code simple. Do not allow functions to be more than 100 lines of code. Make helper functions logically.
+
 Use the Google C++ style guide for C++.
 
 You should store the pointer returned by the singleton GetInstance method. Avoid dereferencing GetInstance method directly using either -> or *. E.g., do not do ``hshm::Singleton<T>::GetInstance()->var_``. You should do ``auto *x = hshm::Singleton<T>::GetInstance(); x->var_;``.

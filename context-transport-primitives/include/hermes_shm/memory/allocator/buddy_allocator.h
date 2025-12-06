@@ -362,7 +362,7 @@ class _BuddyAllocator : public Allocator {
    * Find the first fit in a large page free list
    *
    * Iterates through all entries in the specified free list to find the first
-   * entry with size >= required_size. Removes the entry from the list.
+   * entry with size >= required_size. Removes the entry from the list using PopAt.
    *
    * @param list_idx Index of the free list to search
    * @param required_size Minimum size required (including BuddyPage header)
@@ -373,49 +373,19 @@ class _BuddyAllocator : public Allocator {
       return 0;
     }
 
-    // Start with the head of the list
-    OffsetPtr<> current_off = large_pages_[list_idx].GetHead();
-    OffsetPtr<> prev_off = OffsetPtr<>::GetNull();
-
-    // Iterate through all entries in the list
-    while (!current_off.IsNull()) {
+    // Iterate through all entries in the list using the iterator
+    for (auto it = large_pages_[list_idx].begin(this); it != large_pages_[list_idx].end(); ++it) {
       hipc::FullPtr<FreeLargeBuddyPage> free_page(
-          this, OffsetPtr<FreeLargeBuddyPage>(current_off.load()));
+          this, OffsetPtr<FreeLargeBuddyPage>(it.GetCurrent().load()));
 
       // Check if this page size is large enough
       if (free_page.ptr_->size_ >= required_size) {
-        // Found a fit - remove from list
-        if (prev_off.IsNull()) {
-          // Removing first element (head) - use pop
-          large_pages_[list_idx].pop(this);
-        } else {
-          // Removing element after prev_off
-          // Manually unlink: prev->next = current->next
-          hipc::FullPtr<FreeLargeBuddyPage> prev_page(
-              this, OffsetPtr<FreeLargeBuddyPage>(prev_off.load()));
-          prev_page.ptr_->next_ = free_page.ptr_->next_;
-
-          // Manually decrement the list size
-          // Since slist uses opt_atomic for size_, we can access it directly
-          size_t current_size = large_pages_[list_idx].size();
-          // We need to force update the size - unfortunately slist doesn't expose this
-          // So we'll use the list API by popping a dummy and re-emplacing
-          // Actually, let's just manually access the size field through pointer manipulation
-          // This is ugly but necessary given the limited slist API
-
-          // Better approach: rebuild the count by using the internal size_
-          // Cast the list to access its internal structure
-          auto *list_ptr = &large_pages_[list_idx];
-          auto *size_ptr = reinterpret_cast<opt_atomic<size_t, false>*>(list_ptr);
-          size_ptr->store(current_size - 1);
-        }
-
-        return current_off.load();
+        // Found a fit - capture offset before removing from list
+        size_t offset = it.GetCurrent().load();
+        // Remove from list using PopAt (iterator is invalidated after this)
+        (void)large_pages_[list_idx].PopAt(this, it);
+        return offset;
       }
-
-      // Move to next entry
-      prev_off = current_off;
-      current_off = free_page.ptr_->next_;
     }
 
     return 0;  // No fit found
@@ -428,35 +398,13 @@ class _BuddyAllocator : public Allocator {
   bool RepopulateSmallArena() {
     size_t arena_size = kSmallArenaSize + kSmallArenaPages * sizeof(BuddyPage);
 
-    // Step 4.2.1: Search large_pages_ for space
-    for (size_t i = 0; i < kMaxLargePages; ++i) {
-      if (!large_pages_[i].empty()) {
-        auto node = large_pages_[i].peek(this);
-        if (!node.IsNull()) {
-          hipc::FullPtr<FreeLargeBuddyPage> free_page(this, OffsetPtr<FreeLargeBuddyPage>(node.shm_.off_.load()));
-          if (free_page.ptr_->size_ >= arena_size) {
-            // Found a suitable page - remove it
-            large_pages_[i].pop(this);
-
-            size_t page_offset = node.shm_.off_.load();
-            size_t page_size = free_page.ptr_->size_;
-
-            // Step 4.2.2: Split the page and add remainder using exact size
-            if (page_size > arena_size) {
-              AddRemainderToFreeList(page_offset + arena_size, page_size - arena_size);
-            }
-
-            // Step 4.1: Divide into pages using greedy algorithm
-            // Set arena bounds for DivideArenaIntoPages to use
-            DivideArenaIntoPages();
-
-            small_arena_.Init(page_offset, page_offset + arena_size);
-
-            // Step 4.3: Arena is now fully divided into free list pages
-            // No need to reset - arena remains empty as all space is in free lists
-
-            return true;
-          }
+    // Step 4.2.1: Search all large_pages_ lists for space
+    {
+      for (size_t list_idx = 0; list_idx < kMaxLargePages; ++list_idx) {
+        size_t offset = FindFirstFit(list_idx, arena_size);
+        if (offset != 0) {
+          small_arena_.Init(offset, offset + arena_size);
+          return true;
         }
       }
     }

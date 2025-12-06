@@ -178,6 +178,7 @@ class Allocator {
     return GetBackend().GetSharedHeader<HEADER_T>();
   }
 
+
   /**
    * Construct custom header
    */
@@ -1169,6 +1170,26 @@ class BaseAllocator : public CoreAllocT {
   template <typename T, typename PointerT = ShmPtr<>>
   HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AllocateObjs(size_t count) {
     return Allocate<T, PointerT>(count * sizeof(T));
+  }
+
+  /**
+   * Allocate a region and construct an object of type T
+   *
+   * Allocates memory of size (sizeof(T) + size) and constructs a T object
+   * at the beginning. The remaining region can be used as managed data.
+   *
+   * @tparam T Type of object to construct
+   * @param size Additional size for region after the object (in bytes)
+   * @return FullPtr to the constructed object (region starts after the object)
+   */
+  template <typename T, typename PointerT = ShmPtr<>>
+  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AllocateRegion(size_t size) {
+    size_t total_size = sizeof(T) + size;
+    auto region = Allocate<T, PointerT>(total_size);
+    if (!region.IsNull()) {
+      new (region.ptr_) T();  // Construct T at the region start
+    }
+    return region;
   }
 
   /** Allocate + construct an array of objects */
