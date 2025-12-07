@@ -67,9 +67,9 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
     // File layout: [4KB backend header] [4KB shared header] [data]
     size_t shared_size = backend_size - kBackendHeaderSize;
 
-    // Create shared memory object
+    // Create shared memory object with entire backend size
     SystemInfo::DestroySharedMemory(url);
-    if (!SystemInfo::CreateNewSharedMemory(fd_, url, shared_size)) {
+    if (!SystemInfo::CreateNewSharedMemory(fd_, url, backend_size)) {
       char *err_buf = strerror(errno);
       HILOG(kError, "shm_open failed: {}", err_buf);
       return false;
@@ -85,11 +85,12 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
       return false;
     }
 
-    // Map the remaining using MapMixed
-    // Size: 2 * kBackendHeaderSize + custom_header_size + data_size
-    size_t remaining_size = backend_size - kBackendHeaderSize;
+    // Map the entire region using MapMixed
+    // Private portion: 4KB (private header)
+    // Shared portion: backend_size - 4KB (shared header + data)
+    // Offset into file: 0 (maps entire file starting from offset 0)
     region_ = reinterpret_cast<char *>(
-        SystemInfo::MapMixedMemory(fd_, kBackendHeaderSize, remaining_size, kBackendHeaderSize));
+        SystemInfo::MapMixedMemory(fd_, kBackendHeaderSize, shared_size, 0));
     if (!region_) {
       HILOG(kError, "Failed to create mixed mapping");
       SystemInfo::CloseSharedMemory(fd_);
@@ -97,13 +98,15 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
     }
 
     // region_ points to start of private header
-    // region_ + kBackendHeaderSize points to start of shared header  (maps to file offset 4KB)
+    // region_ + kBackendHeaderSize points to start of shared header (maps to file offset 0, which is the backend header)
     // region_ + 2*kBackendHeaderSize points to start of data
 
     // Calculate pointers
     char *shared_header_ptr = region_ + kBackendHeaderSize;
     data_ = shared_header_ptr + kBackendHeaderSize;
 
+    // Note: header_ is a separate mapping, so we need to update our view
+    // The shared header in the mixed region also contains the backend header data
     md_ = shared_header_ptr;
     md_size_ = kBackendHeaderSize;
     data_capacity_ = backend_size - 2 * kBackendHeaderSize;
@@ -147,11 +150,14 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
 
     // Read backend size from header
     size_t backend_size = header_->backend_size_;
+    size_t shared_size = backend_size - kBackendHeaderSize;
 
-    // Map the remaining using MapMixed
-    size_t remaining_size = backend_size - kBackendHeaderSize;
+    // Map the entire region using MapMixed with offset 0
+    // Private portion: 4KB (private header)
+    // Shared portion: backend_size - 4KB (shared header + data)
+    // Offset into file: 0 (maps entire file starting from offset 0)
     region_ = reinterpret_cast<char *>(
-        SystemInfo::MapMixedMemory(fd_, kBackendHeaderSize, remaining_size, kBackendHeaderSize));
+        SystemInfo::MapMixedMemory(fd_, kBackendHeaderSize, shared_size, 0));
     if (!region_) {
       HILOG(kError, "Failed to create mixed mapping during attach");
       SystemInfo::CloseSharedMemory(fd_);
