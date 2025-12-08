@@ -521,18 +521,6 @@ class _MultiProcessAllocator : public Allocator {
   }
 
   /**
-   * Allocate offset with alignment (alignment parameter ignored)
-   *
-   * @param size Size in bytes to allocate
-   * @param alignment Alignment (ignored - no alignment support)
-   * @return OffsetPtr to allocated memory, or null on failure
-   */
-  OffsetPtr<> AllocateOffset(size_t size, size_t alignment) {
-    (void)alignment;  // Alignment not supported
-    return AllocateOffset(size);
-  }
-
-  /**
    * Reallocate memory (NOT IMPLEMENTED)
    *
    * MultiProcessAllocator does not support reallocation.

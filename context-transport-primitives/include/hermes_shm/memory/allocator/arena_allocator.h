@@ -105,22 +105,25 @@ class _ArenaAllocator : public Allocator {
    * Allocate memory of specified size
    *
    * @param size Size to allocate
-   * @param alignment Optional alignment (default: 1)
+   * @param alignment Optional alignment (ignored)
    * @return Offset pointer to allocated memory
    * @throws OUT_OF_MEMORY if allocation fails
    */
   HSHM_CROSS_FUN
   OffsetPtr<> AllocateOffset(size_t size, size_t alignment = 1) {
-    // Check if we have enough remaining space (including alignment padding)
-    size_t max_padding = alignment - 1;
-    size_t required = size + max_padding;
-    if (heap_.GetRemainingSize() < required) {
+    (void)alignment;  // Alignment is not supported in arena allocator
+
+    if (heap_.GetRemainingSize() < size) {
       HSHM_THROW_ERROR(OUT_OF_MEMORY);
     }
 
-    size_t off = heap_.Allocate(size, alignment);
-    // At this point, off should be valid (non-failure)
-    // Note: off might be 0 if heap starts at offset 0, which is valid
+    // Allocate from heap
+    size_t off = heap_.Allocate(size);
+    if (off == 0 && heap_.GetOffset() != 0) {
+      // Allocation failed (out of memory)
+      HSHM_THROW_ERROR(OUT_OF_MEMORY);
+    }
+
 #ifdef HSHM_ALLOC_TRACK_SIZE
     total_alloc_ += size;
 #endif

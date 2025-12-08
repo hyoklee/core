@@ -66,41 +66,22 @@ class Heap {
    * Allocate space from the heap
    *
    * @param size Number of bytes to allocate
-   * @param align Alignment requirement (must be power of 2)
    * @return Offset of the allocated region, or 0 on failure (out of memory)
    */
   HSHM_CROSS_FUN
-  size_t Allocate(size_t size, size_t align = 8) {
-    // Calculate maximum padding needed for alignment
-    // Worst case: we're 1 byte past alignment boundary, need (align-1) bytes padding
-    size_t max_padding = align - 1;
-
-    // Reserve space: size + max possible padding
-    size_t reserve_size = size + max_padding;
-
-    // Atomically fetch current offset and advance heap by reserve_size
-    size_t off = heap_.fetch_add(reserve_size);
-
-    // Calculate the aligned offset from what we got
-    size_t aligned_off = AlignSize(off, align);
+  size_t Allocate(size_t size) {
+    // Atomically fetch current offset and advance heap by size
+    size_t off = heap_.fetch_add(size);
 
     // Calculate actual end offset after this allocation
-    size_t end_off = aligned_off + size;
+    size_t end_off = off + size;
 
     // Check if allocation would exceed maximum offset
     if (end_off > max_offset_) {
-      // Cap heap pointer at max_offset_ to prevent it from growing unbounded
-      // This ensures GetOffset() never returns a value > max_offset_
-      size_t current = heap_.load();
-      while (current > max_offset_) {
-        if (heap_.compare_exchange_weak(current, max_offset_)) {
-          break;
-        }
-      }
-      return 0;  // Return 0 to indicate failure
+      return 0;  // Return 0 to indicate failure (out of memory)
     }
 
-    return aligned_off;
+    return off;
   }
 
   /**
@@ -142,20 +123,6 @@ class Heap {
   size_t GetRemainingSize() const {
     size_t current = heap_.load();
     return (current < max_offset_) ? (max_offset_ - current) : 0;
-  }
-
-
- private:
-  /**
-   * Align a size to the specified alignment
-   *
-   * @param size Size to align
-   * @param align Alignment (must be power of 2)
-   * @return Aligned size
-   */
-  HSHM_CROSS_FUN
-  static size_t AlignSize(size_t size, size_t align) {
-    return ((size + align - 1) / align) * align;
   }
 };
 

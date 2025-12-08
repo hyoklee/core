@@ -27,10 +27,6 @@
 namespace hshm::ipc {
 
 class MallocBackend : public MemoryBackend {
- private:
-  size_t total_size_;
-  void *alloc_ptr_;  // Actual allocation start (includes private region)
-
  public:
   HSHM_CROSS_FUN
   MallocBackend() = default;
@@ -45,33 +41,29 @@ class MallocBackend : public MemoryBackend {
       backend_size = kMinBackendSize;
     }
 
-    // Total layout: [2*kBackendHeaderSize headers] [data]
-    total_size_ = backend_size;
-
     // Allocate total memory
-    char *ptr = (char *)malloc(total_size_);
+    char *ptr = (char *)malloc(backend_size);
     if (!ptr) {
       return false;
     }
-    alloc_ptr_ = ptr;  // Save allocation start for cleanup
 
-    region_ = ptr;
+    region_ = ptr;  // Save allocation start for cleanup
+
+    // Layout: [header (4KB)] [priv_header (4KB)] [shared_header (4KB)] [data...]
+    // header_ is the first part of the buffer
+    header_ = reinterpret_cast<MemoryBackendHeader *>(ptr);
     char *priv_header_ptr = ptr + kBackendHeaderSize;
     char *shared_header_ptr = priv_header_ptr + kBackendHeaderSize;
 
-    // Initialize header at shared header location
-    header_ = reinterpret_cast<MemoryBackendHeader *>(shared_header_ptr +
-                                                      kBackendHeaderSize);
-
     id_ = backend_id;
     backend_size_ = backend_size;
-    data_capacity_ = backend_size - 3 * kBackendHeaderSize;
-    data_id_ = -1;
-    priv_header_off_ = static_cast<size_t>(priv_header_ptr - ptr);
-    flags_.Clear();
 
     // data_ starts after shared header
     data_ = shared_header_ptr + kBackendHeaderSize;
+    data_capacity_ = backend_size - 3 * kBackendHeaderSize;
+    data_id_ = -1;
+    priv_header_off_ = static_cast<size_t>(data_ - priv_header_ptr);
+    flags_.Clear();
 
     // Copy all header fields to shared header
     new (header_) MemoryBackendHeader();
@@ -92,16 +84,16 @@ class MallocBackend : public MemoryBackend {
 
  protected:
   void _Detach() {
-    if (alloc_ptr_) {
-      free(alloc_ptr_);  // Free from allocation start (includes private region)
-      alloc_ptr_ = nullptr;
+    if (region_) {
+      free(region_);  // Free from allocation start (includes private region)
+      region_ = nullptr;
     }
   }
 
   void _Destroy() {
-    if (alloc_ptr_) {
-      free(alloc_ptr_);  // Free from allocation start (includes private region)
-      alloc_ptr_ = nullptr;
+    if (region_) {
+      free(region_);  // Free from allocation start (includes private region)
+      region_ = nullptr;
     }
   }
 };

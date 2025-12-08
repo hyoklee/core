@@ -129,6 +129,7 @@ TEST_CASE("BuddyAllocator - Weird Offset Allocation", "[BuddyAllocator]") {
   // Create backend with enough space for offset + allocator + heap
   size_t total_size = kOffsetFromData + kAllocSize + kHeapSize;
   backend.shm_init(hipc::MemoryBackendId(0, 0), total_size);
+  memset(backend.data_, 0, backend.data_capacity_);
 
   // Get pointer to data at weird offset
   char *data_ptr = backend.data_;
@@ -140,9 +141,8 @@ TEST_CASE("BuddyAllocator - Weird Offset Allocation", "[BuddyAllocator]") {
 
   // Initialize allocator with available space after allocator object
   // Region size should account for remaining space after allocator placement
-  size_t region_size = total_size - kOffsetFromData;
   try {
-    alloc->shm_init(backend, region_size);
+    alloc->shm_init(backend);
   } catch (...) {
     backend.shm_destroy();
     throw;

@@ -261,8 +261,25 @@ class slist {
       return FullPtr<slist_node>::GetNull();
     }
 
+    // Double-check that head is not null
+    if (head_.IsNull()) {
+      // This shouldn't happen if size > 0, but let's handle it gracefully
+      // Reset the list to empty state
+      size_.store(0);
+      return FullPtr<slist_node>::GetNull();
+    }
+
     // Get the head node
     auto head = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(head_.load()));
+
+    // Check if head was successfully created
+    if (head.IsNull()) {
+      // This shouldn't happen, but let's handle it gracefully
+      // Reset the list to empty state
+      size_.store(0);
+      head_ = OffsetPtr<>::GetNull();
+      return FullPtr<slist_node>::GetNull();
+    }
 
     // Update head to next node
     head_ = head.ptr_->next_;

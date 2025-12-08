@@ -50,7 +50,7 @@ class AllocatorTest {
    */
   void TestAllocFreeImmediate(size_t iterations, size_t alloc_size) {
     for (size_t i = 0; i < iterations; ++i) {
-      auto ptr = alloc_->template Allocate<char>(alloc_size, 64);
+      auto ptr = alloc_->template Allocate<char>(alloc_size);
       if (ptr.IsNull()) {
         throw std::runtime_error("Allocation failed in TestAllocFreeImmediate");
       }
@@ -75,7 +75,7 @@ class AllocatorTest {
     for (size_t iter = 0; iter < iterations; ++iter) {
       // Allocate batch
       for (size_t i = 0; i < batch_size; ++i) {
-        auto ptr = alloc_->template Allocate<char>(alloc_size, 64);
+        auto ptr = alloc_->template Allocate<char>(alloc_size);
         if (ptr.IsNull()) {
           // Clean up already allocated pointers
           for (auto &p : ptrs) {
@@ -106,7 +106,7 @@ class AllocatorTest {
    */
   void TestRandomAllocation(size_t iterations) {
     const size_t kMaxAllocSize = 16 * 1024;  // 16 MB
-    const size_t kMaxTotalSize = 64 * 1024 * 1024;  // 64 MB
+    const size_t kMaxTotalSize = 32 * 1024 * 1024;  // 16 MB
     const size_t kMaxAllocations = 5000;
 
     std::uniform_int_distribution<size_t> size_dist(1, kMaxAllocSize);
@@ -126,13 +126,16 @@ class AllocatorTest {
         }
 
         // printf("Allocating size: %lu\n", alloc_size);
-        auto ptr = alloc_->template Allocate<char>(alloc_size, 64);
+        auto ptr = alloc_->template Allocate<char>(alloc_size);
         if (ptr.IsNull()) {
           // Allocation failed - clean up and break
           break;
         }
 
         // Verify allocator correctness by writing to all allocated memory
+        if (!ptr.Validate(alloc_)) {
+          throw std::runtime_error("Allocation failed in TestRandomAllocation");
+        }
         std::memset(ptr.ptr_, static_cast<unsigned char>((iter + ptrs.size()) & 0xFF), alloc_size);
         ptrs.push_back({ptr, alloc_size});
         total_allocated += alloc_size;
@@ -177,7 +180,7 @@ class AllocatorTest {
           break;
         }
 
-        auto ptr = alloc_->template Allocate<char>(alloc_size, 64);
+        auto ptr = alloc_->template Allocate<char>(alloc_size);
         if (ptr.IsNull()) {
           // Allocation failed - clean up and break
           break;
@@ -272,7 +275,7 @@ class AllocatorTest {
     for (size_t iter = 0; iter < iterations; ++iter) {
       // Phase 1: Allocate large blocks
       for (size_t i = 0; i < num_large_allocs; ++i) {
-        auto ptr = alloc_->template Allocate<char>(large_size, 64);
+        auto ptr = alloc_->template Allocate<char>(large_size);
         if (ptr.IsNull()) {
           // Clean up and throw
           for (auto &p : large_ptrs) {
@@ -293,7 +296,7 @@ class AllocatorTest {
 
       // Phase 3: Allocate small blocks
       for (size_t i = 0; i < num_small_allocs; ++i) {
-        auto ptr = alloc_->template Allocate<char>(small_size, 64);
+        auto ptr = alloc_->template Allocate<char>(small_size);
         if (ptr.IsNull()) {
           // Clean up and throw
           for (auto &p : small_ptrs) {

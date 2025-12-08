@@ -89,7 +89,7 @@ TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
     
 
     for (size_t i = 0; i < 1000; ++i) {
-      auto ptr = sub_alloc->template Allocate<void>( 1024, 64);
+      auto ptr = sub_alloc->template Allocate<void>(1024);
       REQUIRE_FALSE(ptr.IsNull());
       sub_alloc->Free( ptr);
     }
@@ -101,7 +101,7 @@ TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
 
     // Allocate batch
     for (size_t i = 0; i < 100; ++i) {
-      auto ptr = sub_alloc->template Allocate<void>( 4096, 64);
+      auto ptr = sub_alloc->template Allocate<void>(4096);
       REQUIRE_FALSE(ptr.IsNull());
       ptrs.push_back(ptr);
     }

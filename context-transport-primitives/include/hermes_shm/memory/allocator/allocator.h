@@ -242,6 +242,8 @@ class Allocator {
   template<typename T, bool ATOMIC>
   HSHM_INLINE_CROSS_FUN bool ContainsPtr(const OffsetPtrBase<T, ATOMIC> &ptr) const {
     size_t off = ptr.off_.load();
+    // DEBUG
+    // printf("ContainsPtr(OffsetPtr): off=%zu, data_capacity=%zu, result=%d\n", off, backend_.data_capacity_, (int)(off < backend_.data_capacity_));
     return off < backend_.data_capacity_;
   }
 
@@ -925,6 +927,22 @@ struct FullPtr : public ShmPointer {
   /** Check if null */
   HSHM_INLINE_CROSS_FUN bool IsNull() const { return ptr_ == nullptr || shm_.IsNull(); }
 
+  /** Validate that ptr_ and shm_ are consistent with allocator backend
+   *
+   * @param alloc Allocator to validate against
+   * @return true if (ptr_ - alloc->GetBackendData()) == shm_.off_.load()
+   */
+  template <typename AllocT>
+  HSHM_INLINE_CROSS_FUN bool Validate(AllocT *alloc) const {
+    if (IsNull()) {
+      return true;  // Null pointers are always valid
+    }
+    size_t calculated_offset = reinterpret_cast<size_t>(ptr_) -
+                               reinterpret_cast<size_t>(alloc->GetBackendData());
+    size_t stored_offset = shm_.off_.load();
+    return calculated_offset == stored_offset;
+  }
+
   /** Get null */
   HSHM_INLINE_CROSS_FUN static FullPtr GetNull() {
     return FullPtr(nullptr, ShmPtr<>::GetNull());
@@ -1016,14 +1034,6 @@ class BaseAllocator : public CoreAllocT {
   }
 
   /**
-   * Allocate a region of memory of \a size size with \a alignment alignment
-   * */
-  HSHM_CROSS_FUN
-  OffsetPtr<> AllocateOffset(size_t size, size_t alignment) {
-    return CoreAllocT::AllocateOffset(size, alignment);
-  }
-
-  /**
    * Reallocate \a pointer to \a new_size new size.
    * Assumes that p is not kNulFullPtr.
    *
@@ -1104,13 +1114,9 @@ class BaseAllocator : public CoreAllocT {
    * Allocate a region of memory to a specific pointer type
    * */
   template <typename T = void, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Allocate(size_t size,
-                                                      size_t alignment = 1) {
-    FullPtr<T, PointerT> result;
-    CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
-    result.shm_ = PointerT(GetId(), AllocateOffset(size, alignment).load());
-    result.ptr_ = reinterpret_cast<T*>(reinterpret_cast<char*>(core_this) + result.shm_.off_.load());
-    return result;
+  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Allocate(size_t size) {
+    auto offset_ptr = AllocateOffset(size);
+    return FullPtr<T, PointerT>(this, OffsetPtr<T>(offset_ptr.load()));
   }
 
   /**
@@ -1125,13 +1131,9 @@ class BaseAllocator : public CoreAllocT {
     if (p.IsNull()) {
       return Allocate<T, PointerT>(new_size);
     }
-    auto new_off =
+    auto new_off_ptr =
         ReallocateOffsetNoNullCheck(p.shm_.ToOffsetPtr(), new_size);
-    FullPtr<T, PointerT> result;
-    CoreAllocT *core_this = static_cast<CoreAllocT*>(this);
-    result.shm_ = PointerT(GetId(), new_off.load());
-    result.ptr_ = reinterpret_cast<T*>(reinterpret_cast<char*>(core_this) + result.shm_.off_.load());
-    return result;
+    return FullPtr<T, PointerT>(this, OffsetPtr<T>(new_off_ptr.load()));
   }
 
   /**
@@ -1211,8 +1213,7 @@ class BaseAllocator : public CoreAllocT {
                                                              size_t new_count) {
     FullPtr<void, PointerT> old_full_ptr(reinterpret_cast<void*>(p.ptr_), p.shm_);
     auto new_full_ptr = Reallocate<void, PointerT>(old_full_ptr, new_count * sizeof(T));
-    p.shm_ = new_full_ptr.shm_;
-    p.ptr_ = reinterpret_cast<T*>(new_full_ptr.ptr_);
+    p = FullPtr<T, PointerT>(reinterpret_cast<T*>(new_full_ptr.ptr_), new_full_ptr.shm_);
     return p;
   }
 
