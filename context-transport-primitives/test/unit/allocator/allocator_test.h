@@ -221,12 +221,8 @@ class AllocatorTest {
     auto end = start + std::chrono::seconds(duration_sec);
 
     while (std::chrono::steady_clock::now() < end) {
-      try {
-        TestRandomAllocationWithRNG(1, thread_rng, min_alloc_size, max_alloc_size);
-      } catch (const std::exception &e) {
-        // Continue on allocation failure
-        continue;
-      }
+      TestRandomAllocationWithRNG(1, thread_rng, min_alloc_size,
+                                  max_alloc_size);
     }
   }
 

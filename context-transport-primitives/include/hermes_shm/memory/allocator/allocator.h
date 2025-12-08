@@ -100,11 +100,11 @@ class Allocator {
 
   /** Get the allocator identifier from backend */
   HSHM_INLINE_CROSS_FUN
-  MemoryBackendId GetId() const { return backend_.GetId(); }
+  AllocatorId GetId() const { return backend_.GetId(); }
 
   /** Get the allocator identifier (non-const version) */
   HSHM_INLINE_CROSS_FUN
-  MemoryBackendId GetId() { return backend_.GetId(); }
+  AllocatorId GetId() { return backend_.GetId(); }
 
   /**
    * Get backend data pointer (reconstructs from allocator position)

@@ -291,7 +291,7 @@ class _MultiProcessAllocator : public Allocator {
 
     // Default process and thread units
     process_unit_ = 16ULL * 1024 * 1024;  // 16MB
-    thread_unit_ = 1024 * 1024;         // 1MB
+    thread_unit_ = 2 * 1024 * 1024;         // 2MB
 
     // Allocate first ProcessBlock using AllocateProcessBlock()
     FullPtr<ProcessBlock> pblock_ptr = AllocateProcessBlock();

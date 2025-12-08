@@ -25,15 +25,12 @@ namespace hshm::ipc {
  * Metadata stored after each allocation
  *
  * NOTE: This structure acts as both an allocation header AND a free list node.
- * When allocated: next_ is unused, size_ holds the data size
- * When free: next_ links to next free page in slist, size_ is unused, free_size_ holds total size
+ * When allocated: next_ is unused, size_ holds the data size (excluding header)
+ * When free: next_ links to next free page in slist, size_ holds data size (excluding header)
  * This structure is 16 bytes to accommodate slist_node requirements.
  */
 struct BuddyPage : public pre::slist_node {
-  union {
-    size_t size_;                      /**< Size when allocated (excluding header) */
-    size_t free_size_;                 /**< Size when in free list (including header) */
-  };
+  size_t size_;  /**< Size of data portion (always excludes BuddyPage header) */
 
   BuddyPage() : pre::slist_node(), size_(0) {}
   explicit BuddyPage(size_t size) : pre::slist_node(), size_(size) {}
@@ -265,7 +262,7 @@ class _BuddyAllocator : public Allocator {
       // Initialize BuddyPage as a free list node
       hipc::FullPtr<BuddyPage> free_page(this, OffsetPtr<BuddyPage>(page_offset));
       free_page.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
-      free_page.ptr_->free_size_ = data_size + sizeof(BuddyPage);
+      // size_ already contains data_size from the allocation, keep it as-is
 
       // Add to free list - BuddyPage inherits from slist_node
       FullPtr<pre::slist_node> node_ptr(this, OffsetPtr<pre::slist_node>(page_offset));
@@ -277,7 +274,7 @@ class _BuddyAllocator : public Allocator {
       // Initialize BuddyPage as a free list node
       hipc::FullPtr<BuddyPage> free_page(this, OffsetPtr<BuddyPage>(page_offset));
       free_page.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
-      free_page.ptr_->free_size_ = data_size + sizeof(BuddyPage);
+      // size_ already contains data_size from the allocation, keep it as-is
 
       // Add to free list - BuddyPage inherits from slist_node
       FullPtr<pre::slist_node> node_ptr(this, OffsetPtr<pre::slist_node>(page_offset));
@@ -294,8 +291,7 @@ class _BuddyAllocator : public Allocator {
    * @param region Offset pointer to the new region
    * @param region_size Size of the new region in bytes
    */
-  void Expand(OffsetPtr<> region, size_t region_size) {
-    // TODO: Implement proper expansion logic
+  void Expand(OffsetPtr<> region, size_t region_size) { 
     if (region.IsNull() || region_size == 0) {
       return;
     }
@@ -371,11 +367,12 @@ class _BuddyAllocator : public Allocator {
         size_t found_offset = FindFirstFit(list_idx, total_size);
         if (found_offset != 0) {
         hipc::FullPtr<FreeLargeBuddyPage> free_page(this, OffsetPtr<FreeLargeBuddyPage>(found_offset));
-        size_t page_size = free_page.ptr_->free_size_;
+        size_t page_data_size = free_page.ptr_->size_;
+        size_t page_total_size = page_data_size + sizeof(BuddyPage);
 
         // If there's remainder, add it back to appropriate list using exact size
-        if (page_size > total_size) {
-            AddRemainderToFreeList(found_offset + total_size, page_size - total_size);
+        if (page_total_size > total_size) {
+            AddRemainderToFreeList(found_offset + total_size, page_total_size - total_size);
         }
 
         return FinalizeAllocation(found_offset, size);
@@ -413,8 +410,9 @@ class _BuddyAllocator : public Allocator {
       hipc::FullPtr<FreeLargeBuddyPage> free_page(
           this, OffsetPtr<FreeLargeBuddyPage>(it.GetCurrent().load()));
 
-      // Check if this page size is large enough
-      if (free_page.ptr_->free_size_ >= required_size) {
+      // Check if this page size (including header) is large enough
+      size_t page_total_size = free_page.ptr_->size_ + sizeof(BuddyPage);
+      if (page_total_size >= required_size) {
         // Found a fit - capture offset before removing from list
         size_t offset = it.GetCurrent().load();
         // Remove from list using PopAt (iterator is invalidated after this)
@@ -494,7 +492,7 @@ class _BuddyAllocator : public Allocator {
           break;
         }
         free_page.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
-        free_page.ptr_->free_size_ = page_total_size;
+        free_page.ptr_->size_ = page_data_size;  // Data size excluding header
 
         // Add to free list
         FullPtr<pre::slist_node> node_ptr(this, OffsetPtr<pre::slist_node>(remaining_offset));
@@ -526,7 +524,7 @@ class _BuddyAllocator : public Allocator {
 
       hipc::FullPtr<BuddyPage> remainder(this, OffsetPtr<BuddyPage>(page_offset));
       remainder.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
-      remainder.ptr_->free_size_ = total_size;
+      remainder.ptr_->size_ = data_size;  // Data size excluding header
 
       FullPtr<pre::slist_node> rem_node(this, OffsetPtr<pre::slist_node>(page_offset));
       small_pages_[rem_list_idx].emplace(this, rem_node);
@@ -536,7 +534,7 @@ class _BuddyAllocator : public Allocator {
 
       hipc::FullPtr<BuddyPage> remainder(this, OffsetPtr<BuddyPage>(page_offset));
       remainder.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
-      remainder.ptr_->free_size_ = total_size;
+      remainder.ptr_->size_ = data_size;  // Data size excluding header
 
       FullPtr<pre::slist_node> rem_node(this, OffsetPtr<pre::slist_node>(page_offset));
       large_pages_[rem_list_idx].emplace(this, rem_node);
