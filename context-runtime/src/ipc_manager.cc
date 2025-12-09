@@ -202,7 +202,7 @@ bool IpcManager::InitializeWorkerQueues(u32 num_workers) {
   }
 
   try {
-    AllocT* ctx_alloc(HSHM_MCTX, main_allocator_);
+    AllocT* ctx_alloc(main_allocator_);
 
     // Initialize worker queues vector in shared header using delay_ar
     // Single call to initialize vector with num_workers queues, each with depth
@@ -370,7 +370,7 @@ bool IpcManager::ServerInitQueues() {
     shared_header_->node_id = 0; // Will be set after host identification
 
     // Server creates the TaskQueue using delay_ar
-    AllocT* ctx_alloc(HSHM_MCTX, main_allocator_);
+    AllocT* ctx_alloc(main_allocator_);
 
     // Get number of sched workers from ConfigManager
     // Number of lanes equals number of sched workers for optimal distribution
@@ -829,7 +829,7 @@ FullPtr<char> IpcManager::AllocateBuffer(size_t size) {
   // Loop until allocation succeeds
   FullPtr<char> buffer = FullPtr<char>::GetNull();
   while (buffer.IsNull()) {
-    buffer = allocator->AllocateObjs<char>(HSHM_MCTX, size);
+    buffer = allocator->AllocateObjs<char>(size);
     if (buffer.IsNull()) {
       // Allocation failed - yield to allow other tasks to run
       Worker *worker = CHI_CUR_WORKER;
@@ -860,11 +860,11 @@ void IpcManager::FreeBuffer(FullPtr<char> buffer_ptr) {
   // Try runtime data allocator first, then client data allocator
   auto *rdata_alloc = CHI_IPC->GetRdataAlloc();
   if (rdata_alloc && buffer_ptr.shm_.alloc_id_ == runtime_data_allocator_id_) {
-    rdata_alloc->Free(HSHM_MCTX, buffer_ptr);
+    rdata_alloc->Free(buffer_ptr);
   } else {
     auto *cdata_alloc = CHI_IPC->GetDataAlloc();
     if (cdata_alloc) {
-      cdata_alloc->Free(HSHM_MCTX, buffer_ptr);
+      cdata_alloc->Free(buffer_ptr);
     }
   }
 }

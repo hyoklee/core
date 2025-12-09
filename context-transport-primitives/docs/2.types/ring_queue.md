@@ -84,22 +84,22 @@ hshm::spsc_queue<MyData, MyHeader> queue_with_header(depth);
 #### MPSC Queue
 ```cpp
 // Multiple Producer Single Consumer
-hshm::mpsc_queue<MyData> queue(depth);
-hshm::mpsc_queue<MyData, MyHeader> queue_with_header(depth);
+hshm::mpsc_ring_buffer<MyData> queue(depth);
+hshm::mpsc_ring_buffer<MyData, MyHeader> queue_with_header(depth);
 ```
 
 #### Fixed Size Variants
 ```cpp
 // Fixed size - no dynamic resizing
 hshm::fixed_spsc_queue<MyData> queue(depth);
-hshm::fixed_mpsc_queue<MyData, MyHeader> queue(depth);
+hshm::fixed_mpsc_ring_buffer<MyData, MyHeader> queue(depth);
 ```
 
 #### Circular Variants
 ```cpp
 // Circular behavior on overflow
 hshm::circular_spsc_queue<MyData> queue(depth);
-hshm::circular_mpsc_queue<MyData, MyHeader> queue(depth);
+hshm::circular_mpsc_ring_buffer<MyData, MyHeader> queue(depth);
 ```
 
 #### Extensible Variant
@@ -141,10 +141,10 @@ Multi-lane ring queues provide high-performance concurrent access by partitionin
 #### Multi-Lane MPSC Queue
 ```cpp
 // Basic multi-lane queue with 4 lanes, 2 priorities, depth 1024 per queue
-hshm::multi_mpsc_queue<WorkItem> multi_queue(4, 2, 1024);
+hshm::multi_mpsc_ring_buffer<WorkItem> multi_queue(4, 2, 1024);
 
 // With custom header
-hshm::multi_mpsc_queue<WorkItem, MyHeader> multi_queue_with_header(4, 2, 1024);
+hshm::multi_mpsc_ring_buffer<WorkItem, MyHeader> multi_queue_with_header(4, 2, 1024);
 ```
 
 #### Multi-Lane SPSC Queue
@@ -157,12 +157,12 @@ hshm::multi_spsc_queue<WorkItem, MyHeader> multi_queue(num_lanes, num_priorities
 #### Multi-Lane Fixed and Circular Variants
 ```cpp
 // Fixed-size multi-lane queues (no dynamic resizing)
-hshm::multi_fixed_mpsc_queue<WorkItem> fixed_multi_queue(4, 2, 512);
-hshm::multi_fixed_mpsc_queue<WorkItem, MyHeader> fixed_multi_queue(4, 2, 512);
+hshm::multi_fixed_mpsc_ring_buffer<WorkItem> fixed_multi_queue(4, 2, 512);
+hshm::multi_fixed_mpsc_ring_buffer<WorkItem, MyHeader> fixed_multi_queue(4, 2, 512);
 
 // Circular multi-lane queues (overwrite on overflow)
-hshm::multi_circular_mpsc_queue<WorkItem> circular_multi_queue(4, 2, 256);
-hshm::multi_circular_mpsc_queue<WorkItem, MyHeader> circular_multi_queue(4, 2, 256);
+hshm::multi_circular_mpsc_ring_buffer<WorkItem> circular_multi_queue(4, 2, 256);
+hshm::multi_circular_mpsc_ring_buffer<WorkItem, MyHeader> circular_multi_queue(4, 2, 256);
 ```
 
 ### Multi-Queue Operations
@@ -170,7 +170,7 @@ hshm::multi_circular_mpsc_queue<WorkItem, MyHeader> circular_multi_queue(4, 2, 2
 ```cpp
 // Initialize multi-queue with allocator
 auto alloc = HSHM_MEMORY_MANAGER->GetDefaultAllocator();
-hshm::multi_mpsc_queue<int, MyHeader> multi_queue(alloc, 4, 3, 1024);
+hshm::multi_mpsc_ring_buffer<int, MyHeader> multi_queue(alloc, 4, 3, 1024);
 
 // Access header for the entire multi-queue
 auto& header = multi_queue.GetHeader();
@@ -245,7 +245,7 @@ struct WorkItem {
 };
 
 class MultiWorkQueue {
-    hshm::multi_mpsc_queue<WorkItem, WorkQueueStats> queue_;
+    hshm::multi_mpsc_ring_buffer<WorkItem, WorkQueueStats> queue_;
     size_t num_lanes_;
     
 public:
@@ -446,7 +446,7 @@ struct QueueStats {
 };
 
 class StatsQueue {
-    hshm::mpsc_queue<WorkItem, QueueStats> queue_;
+    hshm::mpsc_ring_buffer<WorkItem, QueueStats> queue_;
     
 public:
     StatsQueue(size_t depth) : queue_(depth) {

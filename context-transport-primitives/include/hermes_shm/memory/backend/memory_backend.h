@@ -424,8 +424,8 @@ class MemoryBackend : public MemoryBackendHeader {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  const AllocT* Cast() const {
-    return reinterpret_cast<const AllocT*>(data_);
+  AllocT* Cast() const {
+    return reinterpret_cast<AllocT*>(data_);
   }
 
   /**

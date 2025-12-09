@@ -45,7 +45,7 @@ TEST_CASE("FlushTask Basic Functionality", "[flush][admin]") {
 
     // Create flush task
     auto pool_query = chi::PoolQuery();
-    auto flush_task = admin_client.AsyncFlush(HSHM_MCTX, pool_query);
+    auto flush_task = admin_client.AsyncFlush(pool_query);
 
     // Wait for completion
     flush_task->Wait();
@@ -69,7 +69,7 @@ TEST_CASE("FlushTask with MOD_NAME Container and Async Tasks",
     // pool if needed
     auto pool_query = chi::PoolQuery::Local();
     std::string pool_name = "flush_test_mod_name_pool";
-    bool success = mod_name_client.Create(HSHM_MCTX, pool_query, pool_name, mod_name_pool_id);
+    bool success = mod_name_client.Create(pool_query, pool_name, mod_name_pool_id);
     REQUIRE(success);
 
     // Send multiple async Custom tasks to the MOD_NAME runtime
@@ -81,8 +81,7 @@ TEST_CASE("FlushTask with MOD_NAME Container and Async Tasks",
       chi::u32 operation_id = static_cast<chi::u32>(i + 1);
 
       // Create async custom task
-      auto async_task = mod_name_client.AsyncCustom(
-          HSHM_MCTX, chi::PoolQuery::Local(), input_data, operation_id);
+      auto async_task = mod_name_client.AsyncCustom(chi::PoolQuery::Local(), input_data, operation_id);
 
       async_tasks.push_back(async_task);
     }
@@ -94,7 +93,7 @@ TEST_CASE("FlushTask with MOD_NAME Container and Async Tasks",
 
     std::thread flush_thread([&]() {
       auto flush_task =
-          flush_admin_client.AsyncFlush(HSHM_MCTX, chi::PoolQuery::Local());
+          flush_admin_client.AsyncFlush(chi::PoolQuery::Local());
       flush_task->Wait();
 
       flush_result_code.store(flush_task->return_code_);

@@ -61,7 +61,7 @@ std::unique_ptr<chimaera::admin::CreateTask> CreateTestAdminTask() {
       alloc, chi::TaskId(2, 2, 2, 0, 2), chi::PoolId(200, 0), chi::PoolQuery(),
       "test_chimod", "test_pool", chi::PoolId(300, 0));
   task->return_code_ = 42;
-  task->error_message_ = hipc::string(alloc, "test error message");
+  task->error_message_ = hshm::priv::string(alloc, "test error message");
   return task;
 }
 
@@ -339,8 +339,8 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     size_t task_count_in;
     in_archive_in.GetArchive()(task_count_in);
     auto new_task_in = CreateTestAdminTask();
-    new_task_in->chimod_name_ = hipc::string(GetTestAllocator(), ""); // Clear
-    new_task_in->pool_name_ = hipc::string(GetTestAllocator(), "");
+    new_task_in->chimod_name_ = hshm::priv::string(GetTestAllocator(), ""); // Clear
+    new_task_in->pool_name_ = hshm::priv::string(GetTestAllocator(), "");
     REQUIRE_NOTHROW(in_archive_in >> *new_task_in);
 
     // Verify IN/INOUT parameters were preserved
@@ -357,7 +357,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     chi::TaskLoadOutArchive in_archive_out(out_data);
     auto new_task_out = CreateTestAdminTask();
     new_task_out->return_code_ = 0; // Clear
-    new_task_out->error_message_ = hipc::string(GetTestAllocator(), "");
+    new_task_out->error_message_ = hshm::priv::string(GetTestAllocator(), "");
     REQUIRE_NOTHROW(in_archive_out >> *new_task_out);
 
     // Verify OUT/INOUT parameters were preserved
@@ -374,7 +374,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
         alloc, chi::TaskId(3, 3, 3, 0, 3), chi::PoolId(400, 0),
         chi::PoolQuery(), chi::PoolId(500, 0), 0x123);
     original_task.return_code_ = 99;
-    original_task.error_message_ = hipc::string(alloc, "destroy error");
+    original_task.error_message_ = hshm::priv::string(alloc, "destroy error");
 
     // Test round-trip IN parameters
     chi::TaskSaveInArchive out_archive_in(1);
@@ -408,7 +408,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
         alloc, chi::TaskId(4, 4, 4, 0, 4), chi::PoolId(600, 0),
         chi::PoolQuery(), 0x456, 10000);
     original_task.return_code_ = 777;
-    original_task.error_message_ = hipc::string(alloc, "shutdown error");
+    original_task.error_message_ = hshm::priv::string(alloc, "shutdown error");
 
     // Test IN parameters
     chi::TaskSaveInArchive out_archive_in(1);
@@ -709,8 +709,8 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     size_t task_count_in;
     recv_in_archive.GetArchive()(task_count_in);
     auto remote_task = CreateTestAdminTask();
-    remote_task->chimod_name_ = hipc::string(GetTestAllocator(), ""); // Clear
-    remote_task->pool_name_ = hipc::string(GetTestAllocator(), "");
+    remote_task->chimod_name_ = hshm::priv::string(GetTestAllocator(), ""); // Clear
+    remote_task->pool_name_ = hshm::priv::string(GetTestAllocator(), "");
     recv_in_archive >> *remote_task;
 
     // Verify IN parameters were transferred
@@ -722,7 +722,7 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     // Step 3: Simulate task execution and result generation on remote node
     remote_task->return_code_ = 123;
     remote_task->error_message_ =
-        hipc::string(GetTestAllocator(), "remote execution result");
+        hshm::priv::string(GetTestAllocator(), "remote execution result");
 
     // Step 4: Serialize OUT parameters (for sending results back)
     chi::TaskSaveOutArchive out_archive;
@@ -734,7 +734,7 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     chi::TaskLoadOutArchive recv_out_archive(out_data);
     auto final_task = CreateTestAdminTask();
     final_task->return_code_ = 0; // Clear
-    final_task->error_message_ = hipc::string(GetTestAllocator(), "");
+    final_task->error_message_ = hshm::priv::string(GetTestAllocator(), "");
     recv_out_archive >> *final_task;
 
     // Verify OUT parameters were transferred back

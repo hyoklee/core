@@ -325,11 +325,11 @@ struct AllocateBlocksTask : public chi::Task {
   OUT ArrayVector<Block, 16> blocks_;  // Allocated blocks information (max 16 blocks)
 
   /** SHM default constructor */
-  explicit AllocateBlocksTask(const AllocT* &alloc)
+  explicit AllocateBlocksTask(AllocT* alloc)
       : chi::Task(alloc), size_(0), blocks_() {}
 
   /** Emplace constructor */
-  explicit AllocateBlocksTask(const AllocT* &alloc,
+  explicit AllocateBlocksTask(AllocT* alloc,
                               const chi::TaskId &task_node,
                               const chi::PoolId &pool_id,
                               const chi::PoolQuery &pool_query, chi::u64 size)
@@ -370,11 +370,11 @@ struct FreeBlocksTask : public chi::Task {
   IN ArrayVector<Block, 16> blocks_;  // Blocks to free (max 16 blocks)
 
   /** SHM default constructor */
-  explicit FreeBlocksTask(const AllocT* &alloc)
+  explicit FreeBlocksTask(AllocT* alloc)
       : chi::Task(alloc), blocks_() {}
 
   /** Emplace constructor for multiple blocks */
-  explicit FreeBlocksTask(const AllocT* &alloc,
+  explicit FreeBlocksTask(AllocT* alloc,
                           const chi::TaskId &task_node,
                           const chi::PoolId &pool_id,
                           const chi::PoolQuery &pool_query,
@@ -426,11 +426,11 @@ struct WriteTask : public chi::Task {
   OUT chi::u64 bytes_written_;       // Number of bytes actually written
 
   /** SHM default constructor */
-  explicit WriteTask(const AllocT* &alloc)
+  explicit WriteTask(AllocT* alloc)
       : chi::Task(alloc), blocks_(), length_(0), bytes_written_(0) {}
 
   /** Emplace constructor */
-  explicit WriteTask(const AllocT* &alloc,
+  explicit WriteTask(AllocT* alloc,
                      const chi::TaskId &task_node, const chi::PoolId &pool_id,
                      const chi::PoolQuery &pool_query,
                      const ArrayVector<Block, 16> &blocks,
@@ -497,11 +497,11 @@ struct ReadTask : public chi::Task {
   OUT chi::u64 bytes_read_; // Number of bytes actually read
 
   /** SHM default constructor */
-  explicit ReadTask(const AllocT* &alloc)
+  explicit ReadTask(AllocT* alloc)
       : chi::Task(alloc), blocks_(), length_(0), bytes_read_(0) {}
 
   /** Emplace constructor */
-  explicit ReadTask(const AllocT* &alloc,
+  explicit ReadTask(AllocT* alloc,
                     const chi::TaskId &task_node, const chi::PoolId &pool_id,
                     const chi::PoolQuery &pool_query,
                     const ArrayVector<Block, 16> &blocks,
@@ -563,11 +563,11 @@ struct GetStatsTask : public chi::Task {
   OUT chi::u64 remaining_size_; // Remaining allocatable space
 
   /** SHM default constructor */
-  explicit GetStatsTask(const AllocT* &alloc)
+  explicit GetStatsTask(AllocT* alloc)
       : chi::Task(alloc), remaining_size_(0) {}
 
   /** Emplace constructor */
-  explicit GetStatsTask(const AllocT* &alloc,
+  explicit GetStatsTask(AllocT* alloc,
                         const chi::TaskId &task_node,
                         const chi::PoolId &pool_id,
                         const chi::PoolQuery &pool_query)

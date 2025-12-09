@@ -152,11 +152,11 @@ void AllocationWorkerThread(size_t thread_id, const BenchmarkConfig &config,
   // Continuously perform allocate/free operations until stop signal
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Allocate blocks
-    auto blocks = bdev_client.AllocateBlocks(HSHM_MCTX, chi::PoolQuery::Local(),
+    auto blocks = bdev_client.AllocateBlocks(chi::PoolQuery::Local(),
                                              alloc_size);
 
     // Free blocks immediately
-    bdev_client.FreeBlocks(HSHM_MCTX, chi::PoolQuery::Local(), blocks);
+    bdev_client.FreeBlocks(chi::PoolQuery::Local(), blocks);
 
     local_ops++;
 
@@ -274,7 +274,7 @@ void IOWorkerThread(size_t thread_id, const BenchmarkConfig &config,
   // Continuously perform I/O operations until stop signal
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Allocate blocks for the requested I/O size
-    auto blocks = bdev_client.AllocateBlocks(HSHM_MCTX, chi::PoolQuery::Local(),
+    auto blocks = bdev_client.AllocateBlocks(chi::PoolQuery::Local(),
                                              config.io_size);
 
     // Write data across all allocated blocks
@@ -292,7 +292,7 @@ void IOWorkerThread(size_t thread_id, const BenchmarkConfig &config,
       single_block.push_back(blocks[block_idx]);
 
       chi::u64 ret =
-          bdev_client.Write(HSHM_MCTX, chi::PoolQuery::Local(),
+          bdev_client.Write(chi::PoolQuery::Local(),
                             single_block, write_ptr, bytes_to_write);
       if (ret != bytes_to_write) {
         std::cerr << "ERROR: Thread " << thread_id
@@ -304,7 +304,7 @@ void IOWorkerThread(size_t thread_id, const BenchmarkConfig &config,
     }
 
     // Free blocks
-    bdev_client.FreeBlocks(HSHM_MCTX, chi::PoolQuery::Local(), blocks);
+    bdev_client.FreeBlocks(chi::PoolQuery::Local(), blocks);
 
     local_ops++;
     local_bytes += config.io_size;
@@ -358,7 +358,7 @@ void LatencyWorkerThread(size_t thread_id, const BenchmarkConfig &config,
   std::string output_data;
   while (!stop_flag.load(std::memory_order_relaxed)) {
     // Call Custom with simple operation (operation_id = 0)
-    chi::u32 result = mod_client.Custom(HSHM_MCTX, chi::PoolQuery::Broadcast(),
+    chi::u32 result = mod_client.Custom(chi::PoolQuery::Broadcast(),
                                         input_data, 0, output_data);
 
     // Verify result (should echo back input_data)
@@ -480,7 +480,7 @@ int main(int argc, char **argv) {
     // Create MOD_NAME container for latency test
     test_pool_id = chi::PoolId(8000, 0);
     chimaera::MOD_NAME::Client mod_client(test_pool_id);
-    mod_client.Create(HSHM_MCTX, chi::PoolQuery::Broadcast(),
+    mod_client.Create(chi::PoolQuery::Broadcast(),
                       "latency_test_pool", test_pool_id);
     if (mod_client.GetReturnCode() != 0) {
       std::cerr << "ERROR: Failed to create MOD_NAME container (return code: "
@@ -519,7 +519,7 @@ int main(int argc, char **argv) {
       std::cout << "Using file-based BDev: " << pool_name << "\n";
     }
 
-    bdev_client.Create(HSHM_MCTX, chi::PoolQuery::Broadcast(), pool_name,
+    bdev_client.Create(chi::PoolQuery::Broadcast(), pool_name,
                        test_pool_id, bdev_type, config.max_file_size, 32, 4096);
     if (bdev_client.GetReturnCode() != 0) {
       std::cerr << "ERROR: Failed to create BDev container (return code: "

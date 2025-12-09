@@ -14,9 +14,9 @@ This document outlines the data structures that are referenced in the codebase b
 **Purpose**: Represents a task execution lane in the worker queue system. TaskLane was used to route tasks to specific workers and manage per-lane state.
 
 **Required Functionality**:
-- Should be a pointer type that can be stored in `mpsc_queue`
+- Should be a pointer type that can be stored in `mpsc_ring_buffer`
 - Must integrate with the task routing system
-- Used in `WorkQueue = chi::ipc::mpsc_queue<TaskLane*>` typedef
+- Used in `WorkQueue = chi::ipc::mpsc_ring_buffer<TaskLane*>` typedef
 
 **Current Workaround**:
 - Temporarily use `void*` or `hipc::FullPtr<void>` as placeholder
@@ -56,21 +56,21 @@ This document outlines the data structures that are referenced in the codebase b
 
 **Current Definition Attempt**:
 ```cpp
-using WorkQueue = chi::ipc::mpsc_queue<hipc::TypedPointer<TaskLane>>;
+using WorkQueue = chi::ipc::mpsc_ring_buffer<hipc::TypedPointer<TaskLane>>;
 ```
 
 **Issues**:
 - `hipc::TypedPointer` doesn't exist (removed in refactoring)
 - `TaskLane` is undefined
-- `chi::ipc::mpsc_queue` requires proper template parameters
+- `chi::ipc::mpsc_ring_buffer` requires proper template parameters
 
 **Required Replacement**:
 ```cpp
 // Option 1: Generic placeholder
-using WorkQueue = chi::ipc::mpsc_queue<hipc::FullPtr<void>>;
+using WorkQueue = chi::ipc::mpsc_ring_buffer<hipc::FullPtr<void>>;
 
 // Option 2: When TaskLane is properly defined
-using WorkQueue = chi::ipc::mpsc_queue<TaskLane*>;
+using WorkQueue = chi::ipc::mpsc_ring_buffer<TaskLane*>;
 ```
 
 ---
@@ -113,7 +113,7 @@ using WorkQueue = chi::ipc::mpsc_queue<TaskLane*>;
 
 ---
 
-## 5. hipc::Pointer (now hipc::ShmPointer)
+## 5. hipc::ShmPtr<> (now hipc::ShmPointer)
 
 **Status**: Renamed in refactoring
 
@@ -123,8 +123,8 @@ using WorkQueue = chi::ipc::mpsc_queue<TaskLane*>;
 - `context-runtime/include/chimaera/ipc_manager.h:147` - FreeBuffer() method parameter
 
 **Required Changes**:
-- Replace `hipc::Pointer ptr` with `hipc::ShmPointer ptr`
-- Replace `hipc::Pointer::GetNull()` with `hipc::ShmPointer()` (default constructor)
+- Replace `hipc::ShmPtr<> ptr` with `hipc::ShmPointer ptr`
+- Replace `hipc::ShmPtr<>::GetNull()` with `hipc::ShmPointer()` (default constructor)
 
 ---
 
@@ -188,12 +188,12 @@ std::unique_ptr<chi::ipc::vector<WorkQueue>> worker_queues_;
 
 ### Immediate (to get compilation passing):
 
-1. **Replace hipc::Pointer with hipc::ShmPointer** in task_archives.h
+1. **Replace hipc::ShmPtr<> with hipc::ShmPointer** in task_archives.h
    - 8 occurrences identified
    - Use `hipc::ShmPointer()` for GetNull() calls
 
 2. **Define WorkQueue placeholder** in worker.h and ipc_manager.h
-   - Use generic type: `using WorkQueue = chi::ipc::mpsc_queue<hipc::FullPtr<void>>;`
+   - Use generic type: `using WorkQueue = chi::ipc::mpsc_ring_buffer<hipc::FullPtr<void>>;`
 
 3. **Fix allocator macros** in types.h
    - Replace `hipc::MallocAllocator` with `hshm::heap::HeapAllocator` or `hipc::BaseAllocator`
@@ -235,11 +235,11 @@ std::unique_ptr<chi::ipc::vector<WorkQueue>> worker_queues_;
 | File | Status | Required Fixes |
 |------|--------|-----------------|
 | task.h | ✅ Completed | String template parameters fixed |
-| task_archives.h | ⚠️ In Progress | Replace 8 hipc::Pointer → hipc::ShmPointer |
+| task_archives.h | ⚠️ In Progress | Replace 8 hipc::ShmPtr<> → hipc::ShmPointer |
 | worker.h | ⚠️ Blocked | Need TaskLane, ext_ring_buffer, WorkQueue definitions |
 | ipc_manager.h | ⚠️ Blocked | Need WorkQueue, delay_ar, allocator macros |
 | container.h | ⚠️ Blocked | Need allocator type fixes |
 | types.h | ⚠️ Blocked | Need allocator macro definitions |
-| zmq_transport.h | ✅ Completed | hipc::Pointer → hipc::ShmPointer fixed |
-| lightbeam.h | ✅ Completed | hipc::Pointer → hipc::ShmPointer fixed |
+| zmq_transport.h | ✅ Completed | hipc::ShmPtr<> → hipc::ShmPointer fixed |
+| lightbeam.h | ✅ Completed | hipc::ShmPtr<> → hipc::ShmPointer fixed |
 

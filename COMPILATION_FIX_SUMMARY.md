@@ -49,7 +49,7 @@ hipc::BaseAllocator* GetAllocator() const {
 ### 3. `/workspace/context-runtime/include/chimaera/worker.h`
 
 **Issues**:
-- Line 23: `chi::ipc::mpsc_queue` doesn't exist in chi namespace
+- Line 23: `chi::ipc::mpsc_ring_buffer` doesn't exist in chi namespace
 - Missing include for ring_buffer.h
 - Lines 247, 255: `hshm::ext_ring_buffer` references without proper include
 
@@ -57,11 +57,11 @@ hipc::BaseAllocator* GetAllocator() const {
 1. Added include: `#include "hermes_shm/data_structures/ipc/ring_buffer.h"` (line 19)
 2. Changed line 23 from:
    ```cpp
-   using WorkQueue = chi::ipc::mpsc_queue<hipc::FullPtr<void>>;
+   using WorkQueue = chi::ipc::mpsc_ring_buffer<hipc::FullPtr<void>>;
    ```
    To:
    ```cpp
-   using WorkQueue = hipc::mpsc_queue<hipc::FullPtr<void>>;
+   using WorkQueue = hipc::mpsc_ring_buffer<hipc::FullPtr<void>>;
    ```
 3. Commented out method declarations that use ext_ring_buffer (lines 242-258):
    - `ProcessBlockedQueue(hshm::ext_ring_buffer<RunContext *> &queue, u32 queue_idx);`

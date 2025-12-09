@@ -195,7 +195,7 @@ std::vector<std::string> ContextInterface::ContextRetrieve(
         }
 
         // Calculate buffer pointer for this blob
-        hipc::Pointer blob_buffer_ptr = context_buffer.shm_;
+        hipc::ShmPtr<> blob_buffer_ptr = context_buffer.shm_;
         blob_buffer_ptr.off_ = blob_buffer_ptr.off_ + buffer_offset;
 
         // Schedule AsyncGetBlob

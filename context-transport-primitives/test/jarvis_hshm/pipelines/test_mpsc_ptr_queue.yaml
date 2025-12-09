@@ -1,4 +1,4 @@
-name: hermes_shm_mpsc_queue
+name: hermes_shm_mpsc_ring_buffer
 env: hermes_shm
 pkgs:
   - pkg_type: hshm_unit_tests

@@ -141,7 +141,7 @@ TEST_CASE("Admin client Compose method", "[compose]") {
   chimaera::bdev::Client bdev_client(bdev_pool_id);
 
   // Try to allocate blocks to verify the pool exists and is functional
-  auto blocks = bdev_client.AllocateBlocks(HSHM_MCTX, chi::PoolQuery::Local(), 1024);
+  auto blocks = bdev_client.AllocateBlocks(chi::PoolQuery::Local(), 1024);
 
   REQUIRE(bdev_client.GetReturnCode() == 0);
   REQUIRE(blocks.size() > 0);

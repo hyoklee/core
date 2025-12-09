@@ -24,8 +24,8 @@ void Tag::PutBlob(const std::string &blob_name, const char *data, size_t data_si
   // Copy data to shared memory
   memcpy(shm_fullptr.ptr_, data, data_size);
 
-  // Convert to hipc::Pointer for API call
-  hipc::Pointer shm_ptr = shm_fullptr.shm_;
+  // Convert to hipc::ShmPtr<> for API call
+  hipc::ShmPtr<> shm_ptr = shm_fullptr.shm_;
 
   // Call SHM version with default score of 1.0
   PutBlob(blob_name, shm_ptr, data_size, off, 1.0f);
@@ -34,7 +34,7 @@ void Tag::PutBlob(const std::string &blob_name, const char *data, size_t data_si
   ipc_manager->FreeBuffer(shm_fullptr);
 }
 
-void Tag::PutBlob(const std::string &blob_name, const hipc::Pointer &data, size_t data_size,
+void Tag::PutBlob(const std::string &blob_name, const hipc::ShmPtr<> &data, size_t data_size,
                   size_t off, float score) {
   auto *cte_client = WRP_CTE_CLIENT;
   bool result = cte_client->PutBlob(hipc::MemContext(), tag_id_, blob_name,
@@ -51,7 +51,7 @@ void Tag::PutBlob(const std::string &blob_name, const hipc::Pointer &data, size_
 // 3. Calling: AsyncPutBlob(blob_name, shm_ptr.shm_, data_size, off, score);
 // 4. Keeping shm_ptr alive until task completes
 
-hipc::FullPtr<PutBlobTask> Tag::AsyncPutBlob(const std::string &blob_name, const hipc::Pointer &data,
+hipc::FullPtr<PutBlobTask> Tag::AsyncPutBlob(const std::string &blob_name, const hipc::ShmPtr<> &data,
                                              size_t data_size, size_t off, float score) {
   auto *cte_client = WRP_CTE_CLIENT;
   return cte_client->AsyncPutBlob(hipc::MemContext(), tag_id_, blob_name,
@@ -76,8 +76,8 @@ void Tag::GetBlob(const std::string &blob_name, char *data, size_t data_size, si
     throw std::runtime_error("Failed to allocate shared memory for GetBlob");
   }
 
-  // Convert to hipc::Pointer for API call
-  hipc::Pointer shm_ptr = shm_fullptr.shm_;
+  // Convert to hipc::ShmPtr<> for API call
+  hipc::ShmPtr<> shm_ptr = shm_fullptr.shm_;
 
   // Call SHM version
   GetBlob(blob_name, shm_ptr, data_size, off);
@@ -89,7 +89,7 @@ void Tag::GetBlob(const std::string &blob_name, char *data, size_t data_size, si
   ipc_manager->FreeBuffer(shm_fullptr);
 }
 
-void Tag::GetBlob(const std::string &blob_name, hipc::Pointer data, size_t data_size, size_t off) {
+void Tag::GetBlob(const std::string &blob_name, hipc::ShmPtr<> data, size_t data_size, size_t off) {
   // Validate input parameters
   if (data_size == 0) {
     throw std::invalid_argument("data_size must be specified for GetBlob");

@@ -432,7 +432,7 @@ class Container : public chi::Container {
     // Process the operation
     std::string result = processData(task->data_.str(),
                                     task->operation_id_);
-    task->data_ = hipc::string(main_allocator_, result);
+    task->data_ = hshm::priv::string(main_allocator_, result);
     task->result_code_ = 0;
     // Task completion is handled by the framework
   }
@@ -566,7 +566,7 @@ void Runtime::GetOrCreatePool(
 
   } catch (const std::exception &e) {
     task->return_code_ = 99;
-    task->error_message_ = hipc::string(
+    task->error_message_ = hshm::priv::string(
         task->GetCtxAllocator(),
         std::string("Exception during pool creation: ") + e.what());
     HELOG(kError, "Admin: Pool creation failed with exception: {}", e.what());
@@ -812,7 +812,7 @@ void Copy(const hipc::FullPtr<YourTask> &other);
 ```cpp
 struct WriteTask : public chi::Task {
   IN Block block_;
-  IN hipc::Pointer data_;
+  IN hipc::ShmPtr<> data_;
   IN size_t length_;
   OUT chi::u64 bytes_written_;
 
@@ -856,7 +856,7 @@ void Aggregate(const hipc::FullPtr<YourTask> &other);
 ```cpp
 struct WriteTask : public chi::Task {
   IN Block block_;
-  IN hipc::Pointer data_;
+  IN hipc::ShmPtr<> data_;
   OUT chi::u64 bytes_written_;
 
   /**
@@ -1008,7 +1008,7 @@ When tasks are sent across nodes using Send/Recv:
 ```cpp
 struct ReadTask : public chi::Task {
   IN Block block_;
-  OUT hipc::Pointer data_;
+  OUT hipc::ShmPtr<> data_;
   INOUT size_t length_;
   OUT chi::u64 bytes_read_;
 
@@ -1022,7 +1022,7 @@ struct ReadTask : public chi::Task {
                     const chi::PoolId &pool_id,
                     const chi::PoolQuery &pool_query,
                     const Block &block,
-                    hipc::Pointer data,
+                    hipc::ShmPtr<> data,
                     size_t length)
       : chi::Task(alloc, task_node, pool_id, pool_query, 10),
         block_(block), data_(data), length_(length), bytes_read_(0) {
@@ -2050,7 +2050,7 @@ auto task = ipc_manager->NewTask<CustomTask>(...);
 ipc_manager->Enqueue(task, chi::kLowLatency);
 
 // Server side
-hipc::Pointer task_ptr = ipc_manager->Dequeue(chi::kLowLatency);
+hipc::ShmPtr<> task_ptr = ipc_manager->Dequeue(chi::kLowLatency);
 ```
 
 ## Memory Management
@@ -2095,7 +2095,7 @@ ipc_manager->DelTask(task);
 
 The `CHI_IPC` singleton provides centralized buffer allocation for shared memory operations in client code. Use this for allocating temporary buffers that need to be shared between client and runtime processes.
 
-**Important**: `AllocateBuffer` returns `hipc::FullPtr<char>`, not `hipc::Pointer`. It is NOT a template function.
+**Important**: `AllocateBuffer` returns `hipc::FullPtr<char>`, not `hipc::ShmPtr<>`. It is NOT a template function.
 
 #### Basic Usage
 ```cpp
@@ -2142,15 +2142,15 @@ chi::ipc::string task_string(ctx_alloc, "persistent data");
 For task definitions and any data that needs to be shared between client and runtime processes, always use shared-memory compatible types instead of standard C++ containers.
 
 #### chi::ipc::string
-Use `chi::ipc::string` or `hipc::string` instead of `std::string` in task definitions:
+Use `chi::ipc::string` or `hshm::priv::string` instead of `std::string` in task definitions:
 
 ```cpp
 #include <[namespace]/types.h>
 
 // Task definition using shared-memory string
 struct CustomTask : public chi::Task {
-  INOUT hipc::string input_data_;     // Shared-memory compatible string
-  INOUT hipc::string output_data_;    // Results stored in shared memory
+  INOUT hshm::priv::string input_data_;     // Shared-memory compatible string
+  INOUT hshm::priv::string output_data_;    // Results stored in shared memory
   
   CustomTask(const hipc::CtxAllocator<CHI_MAIN_ALLOC_T>& alloc,
              const std::string& input) 
@@ -2186,7 +2186,7 @@ struct ProcessArrayTask : public chi::Task {
 
 #### When to Use Each Type
 
-**Use shared-memory types (chi::ipc::string, hipc::string, chi::ipc::vector, etc.) for:**
+**Use shared-memory types (chi::ipc::string, hshm::priv::string, chi::ipc::vector, etc.) for:**
 - Task input/output parameters
 - Data that persists across task execution
 - Any data structure that needs serialization
@@ -2201,7 +2201,7 @@ struct ProcessArrayTask : public chi::Task {
 ```cpp
 // Converting between std::string and shared-memory string types
 std::string std_str = "example data";
-hipc::string shm_str(ctx_alloc, std_str);          // std -> shared memory
+hshm::priv::string shm_str(ctx_alloc, std_str);          // std -> shared memory
 std::string result = std::string(shm_str);         // shared memory -> std
 
 // Converting between std::vector and shared-memory vector types
@@ -2218,7 +2218,7 @@ Both `chi::ipc::string` and `chi::ipc::vector` automatically support serializati
 ```cpp
 // Task definition - no manual serialization needed
 struct SerializableTask : public chi::Task {
-  INOUT hipc::string message_;
+  INOUT hshm::priv::string message_;
   INOUT chi::ipc::vector<chi::u64> timestamps_;
 
   // Cereal automatically handles chi::ipc types
@@ -2268,7 +2268,7 @@ For write operations, the sender has data to transfer:
 ```cpp
 struct WriteTask : public chi::Task {
   IN Block block_;              // Block to write to
-  IN hipc::Pointer data_;       // Data buffer pointer
+  IN hipc::ShmPtr<> data_;       // Data buffer pointer
   IN size_t length_;            // Data length
   OUT chi::u64 bytes_written_;  // Result
 
@@ -2309,7 +2309,7 @@ For read operations, the receiver allocates buffer for incoming data:
 ```cpp
 struct ReadTask : public chi::Task {
   IN Block block_;              // Block to read from
-  OUT hipc::Pointer data_;      // Data buffer pointer (allocated by receiver)
+  OUT hipc::ShmPtr<> data_;      // Data buffer pointer (allocated by receiver)
   INOUT size_t length_;         // Requested/actual length
   OUT chi::u64 bytes_read_;     // Result
 
@@ -2350,11 +2350,11 @@ struct ReadTask : public chi::Task {
 
 ```cpp
 template <typename Archive>
-void ar.bulk(hipc::Pointer ptr, size_t size, uint32_t flags);
+void ar.bulk(hipc::ShmPtr<> ptr, size_t size, uint32_t flags);
 ```
 
 **Parameters:**
-- `ptr`: Pointer to data buffer (`hipc::Pointer`, `hipc::FullPtr`, or raw pointer)
+- `ptr`: Pointer to data buffer (`hipc::ShmPtr<>`, `hipc::FullPtr`, or raw pointer)
 - `size`: Size of data in bytes
 - `flags`: Transfer flags (`BULK_EXPOSE` or `BULK_XFER`)
 
@@ -2370,7 +2370,7 @@ Some operations require data transfer in both directions:
 
 ```cpp
 struct ProcessTask : public chi::Task {
-  INOUT hipc::Pointer data_;    // Data buffer (modified in-place)
+  INOUT hipc::ShmPtr<> data_;    // Data buffer (modified in-place)
   INOUT size_t length_;         // Buffer length
 
   /** Serialize IN and INOUT parameters */
@@ -2414,7 +2414,7 @@ The `ar.bulk()` calls integrate seamlessly with the Lightbeam networking layer:
 ```cpp
 struct ReadTask : public chi::Task {
   IN Block block_;              // Block descriptor
-  OUT hipc::Pointer data_;      // Data buffer
+  OUT hipc::ShmPtr<> data_;      // Data buffer
   INOUT size_t length_;         // Buffer length
   OUT chi::u64 bytes_read_;     // Bytes actually read
 
@@ -2428,7 +2428,7 @@ struct ReadTask : public chi::Task {
                     const chi::PoolId &pool_id,
                     const chi::PoolQuery &pool_query,
                     const Block &block,
-                    hipc::Pointer data,
+                    hipc::ShmPtr<> data,
                     size_t length)
       : chi::Task(alloc, task_node, pool_id, pool_query, 10),
         block_(block), data_(data), length_(length), bytes_read_(0) {

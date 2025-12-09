@@ -12,14 +12,14 @@ The context-runtime refactoring to use new HSHM data structures and allocators i
 - Fixed move constructor and move assignment operator
 
 ### ✅ Transport Primitives
-- lightbeam.h: Updated `hipc::Pointer` to `hipc::ShmPointer` in Client and Server interfaces
-- zmq_transport.h: Updated both ZeroMqClient and ZeroMqServer Expose methods to use `hipc::ShmPointer` instead of `hipc::Pointer`
+- lightbeam.h: Updated `hipc::ShmPtr<>` to `hipc::ShmPointer` in Client and Server interfaces
+- zmq_transport.h: Updated both ZeroMqClient and ZeroMqServer Expose methods to use `hipc::ShmPointer` instead of `hipc::ShmPtr<>`
 
 ### ✅ task_archives.h
 - Updated DataTransfer struct constructor to accept `hipc::ShmPointer`
-- Updated BulkTransferInfo struct to use `hipc::ShmPointer` instead of `hipc::Pointer`
+- Updated BulkTransferInfo struct to use `hipc::ShmPointer` instead of `hipc::ShmPtr<>`
 - All bulk() method signatures already use `hipc::ShmPointer`
-- All `hipc::Pointer::GetNull()` calls replaced with `hipc::ShmPointer()`
+- All `hipc::ShmPtr<>::GetNull()` calls replaced with `hipc::ShmPointer()`
 
 ### ✅ types.h
 - Updated allocator macros to use `hipc::BaseAllocator` instead of removed `hipc::MallocAllocator`
@@ -29,17 +29,17 @@ The context-runtime refactoring to use new HSHM data structures and allocators i
 - Updated GetAllocator() return type from `hipc::CtxAllocator<CHI_MAIN_ALLOC_T>` to `CHI_MAIN_ALLOC_T*`
 
 ### ✅ ipc_manager.h
-- Updated WorkQueue typedef to use `hipc::mpsc_queue<hipc::FullPtr<void>>` (TaskLane placeholder)
+- Updated WorkQueue typedef to use `hipc::mpsc_ring_buffer<hipc::FullPtr<void>>` (TaskLane placeholder)
 - Commented out removed `hipc::delay_ar` template usage in IpcSharedHeader
 - Replaced delay_ar storage with direct pointers: `TaskQueue*` and `void*`
-- Updated FreeBuffer() to accept `hipc::ShmPointer` instead of `hipc::Pointer`
+- Updated FreeBuffer() to accept `hipc::ShmPointer` instead of `hipc::ShmPtr<>`
 
 ## Issues Requiring Further Work
 
-### 1. hipc::mpsc_queue Template
+### 1. hipc::mpsc_ring_buffer Template
 **Status**: Undefined in codebase
 **Location**: ipc_manager.h:23
-**Issue**: `hipc::mpsc_queue` doesn't appear to exist in the HSHM library
+**Issue**: `hipc::mpsc_ring_buffer` doesn't appear to exist in the HSHM library
 **Current**: Using as placeholder - needs replacement with actual queue type or alias definition
 
 ### 2. TaskLane Type (BLOCKED)
@@ -91,7 +91,7 @@ The context-runtime refactoring to use new HSHM data structures and allocators i
 
 | Category | Count | Examples |
 |----------|-------|----------|
-| Undefined templates | ~40 | mpsc_queue, delay_ar, ext_ring_buffer |
+| Undefined templates | ~40 | mpsc_ring_buffer, delay_ar, ext_ring_buffer |
 | TaskLane references | ~25 | Method signatures, typedefs |
 | BaseAllocator template args | ~15 | Partial function/member definitions |
 | Pointer type issues | ~20 | Constructor mismatches, operator overloads |
@@ -103,7 +103,7 @@ The context-runtime refactoring to use new HSHM data structures and allocators i
 ### Phase 1: Quick Wins (reduce errors to ~80)
 1. Comment out all remaining TaskLane references in worker.h
 2. Replace ext_ring_buffer references with std::vector
-3. Define proper `mpsc_queue` alias or type
+3. Define proper `mpsc_ring_buffer` alias or type
 4. Remove/comment calls to non-existent TaskQueue methods
 
 ### Phase 2: Allocator Resolution (reduce errors to ~40)
@@ -135,5 +135,5 @@ cmake --build . -j 4
 ## Notes
 - The user explicitly requested NOT to remove data structures entirely, only to comment them out
 - Focus is on getting code to compile, not on perfect functionality
-- All hipc::Pointer → hipc::ShmPointer migrations have been completed
+- All hipc::ShmPtr<> → hipc::ShmPointer migrations have been completed
 - Data structure definitions are preserved with comments indicating their removal status

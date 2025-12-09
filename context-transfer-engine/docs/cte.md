@@ -181,13 +181,13 @@ public:
   // Blob operations
   bool PutBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name,
-               chi::u64 offset, chi::u64 size, hipc::Pointer blob_data,
+               chi::u64 offset, chi::u64 size, hipc::ShmPtr<> blob_data,
                float score, chi::u32 flags);
 
   bool GetBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name,
                chi::u64 offset, chi::u64 size, chi::u32 flags,
-               hipc::Pointer blob_data);
+               hipc::ShmPtr<> blob_data);
 
   bool DelBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name);
@@ -254,16 +254,16 @@ public:
   
   // Blob storage operations
   void PutBlob(const std::string &blob_name, const char *data, size_t data_size, size_t off = 0);
-  void PutBlob(const std::string &blob_name, const hipc::Pointer &data, size_t data_size, 
+  void PutBlob(const std::string &blob_name, const hipc::ShmPtr<> &data, size_t data_size, 
                size_t off = 0, float score = 1.0f);
   
   // Asynchronous blob storage
-  hipc::FullPtr<PutBlobTask> AsyncPutBlob(const std::string &blob_name, const hipc::Pointer &data, 
+  hipc::FullPtr<PutBlobTask> AsyncPutBlob(const std::string &blob_name, const hipc::ShmPtr<> &data, 
                                           size_t data_size, size_t off = 0, float score = 1.0f);
   
   // Blob retrieval operations
   void GetBlob(const std::string &blob_name, char *data, size_t data_size, size_t off = 0);      // Automatic memory management
-  void GetBlob(const std::string &blob_name, hipc::Pointer data, size_t data_size, size_t off = 0); // Manual memory management
+  void GetBlob(const std::string &blob_name, hipc::ShmPtr<> data, size_t data_size, size_t off = 0); // Manual memory management
   
   // Blob metadata operations
   float GetBlobScore(const std::string &blob_name);
@@ -290,7 +290,7 @@ public:
 
 **For Synchronous Operations:**
 - Raw data variant (`const char*`) automatically manages shared memory lifecycle
-- Shared memory variant requires caller to manage `hipc::Pointer` lifecycle
+- Shared memory variant requires caller to manage `hipc::ShmPtr<>` lifecycle
 
 **For Asynchronous Operations:**
 - Only shared memory variant available to avoid memory lifecycle issues
@@ -1476,7 +1476,7 @@ if (result != 0) {
 ### Memory Management
 
 - CTE Core uses shared memory for zero-copy data transfer
-- The `hipc::Pointer` type represents shared memory locations
+- The `hipc::ShmPtr<>` type represents shared memory locations
 - Memory contexts (`hipc::MemContext`) manage allocation lifecycle
 
 ## Troubleshooting

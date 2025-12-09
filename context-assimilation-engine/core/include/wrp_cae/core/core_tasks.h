@@ -53,10 +53,10 @@ using DestroyTask = chi::Task;  // Simple task for destruction
  */
 struct ParseOmniTask : public chi::Task {
   // Task-specific data using HSHM macros
-  IN hipc::string serialized_ctx_;   // Input: Serialized AssimilationCtx (internal use)
+  IN hshm::priv::string serialized_ctx_;   // Input: Serialized AssimilationCtx (internal use)
   OUT chi::u32 num_tasks_scheduled_; // Output: Number of assimilation tasks scheduled
   OUT chi::u32 result_code_;         // Output: Result code (0 = success)
-  OUT hipc::string error_message_;   // Output: Error message if failed
+  OUT hshm::priv::string error_message_;   // Output: Error message if failed
 
   // SHM constructor
   explicit ParseOmniTask(const hipc::CtxAllocator<CHI_MAIN_ALLOC_T> &alloc)
@@ -89,7 +89,7 @@ struct ParseOmniTask : public chi::Task {
       cereal::BinaryOutputArchive ar(ss);
       ar(contexts);
     }
-    serialized_ctx_ = hipc::string(alloc, ss.str());
+    serialized_ctx_ = hshm::priv::string(alloc, ss.str());
   }
 
   // Copy method for distributed execution (optional)

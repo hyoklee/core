@@ -89,7 +89,7 @@ void Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext &ctx) {
   auto *main_allocator = ipc_manager->GetMainAllocator();
 
   // Initialize telemetry ring buffer
-  telemetry_log_ = hipc::circular_mpsc_queue<CteTelemetry>(main_allocator,
+  telemetry_log_ = hipc::circular_mpsc_ring_buffer<CteTelemetry>(main_allocator,
                                                            kTelemetryRingSize);
 
   // Initialize atomic counters
@@ -529,7 +529,7 @@ void Runtime::PutBlob(hipc::FullPtr<PutBlobTask> task, chi::RunContext &ctx) {
     std::string blob_name = task->blob_name_.str();
     chi::u64 offset = task->offset_;
     chi::u64 size = task->size_;
-    hipc::Pointer blob_data = task->blob_data_;
+    hipc::ShmPtr<> blob_data = task->blob_data_;
     float blob_score = task->score_;
     chi::u32 flags = task->flags_;
 
@@ -682,7 +682,7 @@ void Runtime::GetBlob(hipc::FullPtr<GetBlobTask> task, chi::RunContext &ctx) {
     }
 
     // Use the pre-provided data pointer from the task
-    hipc::Pointer blob_data_ptr = task->blob_data_;
+    hipc::ShmPtr<> blob_data_ptr = task->blob_data_;
 
     // Step 2: Read data from blob blocks (no lock held during I/O)
     chi::u32 read_result =
@@ -1359,7 +1359,7 @@ chi::u32 Runtime::AllocateNewData(BlobInfo &blob_info, chi::u64 offset,
 }
 
 chi::u32 Runtime::ModifyExistingData(const std::vector<BlobBlock> &blocks,
-                                     hipc::Pointer data, size_t data_size,
+                                     hipc::ShmPtr<> data, size_t data_size,
                                      size_t data_offset_in_blob) {
   HILOG(kDebug,
         "ModifyExistingData: blocks={}, data_size={}, data_offset_in_blob={}",
@@ -1419,7 +1419,7 @@ chi::u32 Runtime::ModifyExistingData(const std::vector<BlobBlock> &blocks,
       // Step 5: Perform async write on the updated range
       chimaera::bdev::Block bdev_block(
           block.target_offset_ + write_start_in_block, write_size, 0);
-      hipc::Pointer data_ptr = data + data_buffer_offset;
+      hipc::ShmPtr<> data_ptr = data + data_buffer_offset;
 
       // Wrap single block in ArrayVector for AsyncWrite
       chimaera::bdev::ArrayVector<chimaera::bdev::Block, 16> blocks;
@@ -1475,7 +1475,7 @@ chi::u32 Runtime::ModifyExistingData(const std::vector<BlobBlock> &blocks,
 }
 
 chi::u32 Runtime::ReadData(const std::vector<BlobBlock> &blocks,
-                           hipc::Pointer data, size_t data_size,
+                           hipc::ShmPtr<> data, size_t data_size,
                            size_t data_offset_in_blob) {
   HILOG(kDebug, "ReadData: blocks={}, data_size={}, data_offset_in_blob={}",
         blocks.size(), data_size, data_offset_in_blob);
@@ -1532,7 +1532,7 @@ chi::u32 Runtime::ReadData(const std::vector<BlobBlock> &blocks,
       // Step 5: Perform async read on the range
       chimaera::bdev::Block bdev_block(
           block.target_offset_ + read_start_in_block, read_size, 0);
-      hipc::Pointer data_ptr = data + data_buffer_offset;
+      hipc::ShmPtr<> data_ptr = data + data_buffer_offset;
 
       // Wrap single block in ArrayVector for AsyncRead
       chimaera::bdev::ArrayVector<chimaera::bdev::Block, 16> blocks;
@@ -1572,7 +1572,7 @@ chi::u32 Runtime::ReadData(const std::vector<BlobBlock> &blocks,
 
     // Log first few bytes of data that was read for debugging
     if (task->bytes_read_ > 0) {
-      hipc::Pointer read_data_ptr =
+      hipc::ShmPtr<> read_data_ptr =
           data + (task_idx > 0 ? expected_read_sizes[task_idx - 1] : 0);
       char *read_data =
           CHI_IPC->GetMainAllocator()->Convert<char>(read_data_ptr);
@@ -2018,7 +2018,7 @@ void Runtime::BlobQuery(hipc::FullPtr<BlobQueryTask> task,
                 // Respect max_blobs_ if set
                 if (task->max_blobs_ == 0 || 
                     task->results_.size() < static_cast<size_t>(task->max_blobs_)) {
-                  hipc::pair<hipc::string, hipc::string> pair(
+                  hipc::pair<hshm::priv::string, hshm::priv::string> pair(
                       task->results_.GetAllocator(), tag_name.c_str(), blob_name.c_str());
                   task->results_.emplace_back(std::move(pair));
                 }

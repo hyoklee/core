@@ -102,6 +102,7 @@
 #include "data_structures/ipc/shm_container.h"
 #include "data_structures/ipc/slist_pre.h"
 #include "data_structures/ipc/vector.h"
+#include "data_structures/ipc/multi_ring_buffer.h"
 
 // Private data structures (single-process containers)
 #include "data_structures/priv/string.h"

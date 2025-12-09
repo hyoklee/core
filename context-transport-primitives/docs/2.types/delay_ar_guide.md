@@ -157,7 +157,7 @@ vector_archive.shm_destroy();
 
 ### SHM-Aware Types (inherit from ShmContainer)
 
-SHM-aware types like `hipc::vector`, `hipc::string`, `hipc::pair` require an allocator:
+SHM-aware types like `hipc::vector`, `hshm::priv::string`, `hipc::pair` require an allocator:
 
 ```cpp
 auto alloc = GetAllocator();
@@ -226,7 +226,7 @@ input_archive >> restored_archive;  // Automatically calls shm_init
 class MyDataStructure : public hipc::ShmContainer {
 private:
     hipc::delay_ar<hipc::vector<int>> data_;
-    hipc::delay_ar<hipc::string> name_;
+    hipc::delay_ar<hshm::priv::string> name_;
 
 public:
     void shm_init(hipc::Allocator* alloc, const std::string& name) {

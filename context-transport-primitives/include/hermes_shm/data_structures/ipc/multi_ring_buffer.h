@@ -180,6 +180,42 @@ class multi_ring_buffer : public ShmContainer<AllocT> {
 
 };
 
+/**
+ * Typedef for extensible ring buffer (single-thread only).
+ *
+ * This ring buffer will dynamically resize when capacity is reached,
+ * making it suitable for scenarios where size cannot be predicted upfront.
+ * NOT thread-safe for multiple producers.
+ */
+template <typename T, typename AllocT = hipc::Allocator>
+using multi_ext_ring_buffer =
+    multi_ring_buffer<T, AllocT, (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_DYNAMIC_SIZE)>;
+
+/**
+ * Typedef for fixed-size SPSC (Single Producer Single Consumer) ring buffer.
+ *
+ * This ring buffer is optimized for single-threaded scenarios and will
+ * return an error when attempting to push beyond capacity.
+ */
+template <typename T, typename AllocT = hipc::Allocator>
+using multi_spsc_ring_buffer =
+    multi_ring_buffer<T, AllocT,
+                (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_FIXED_SIZE |
+                 RING_BUFFER_ERROR_ON_NO_SPACE)>;
+
+/**
+ * Typedef for fixed-size MPSC (Multiple Producer Single Consumer) ring buffer.
+ *
+ * This ring buffer is optimized for scenarios where multiple threads push
+ * but only one thread consumes. Uses atomic operations for thread-safe
+ * multi-producer access while supporting single consumer.
+ */
+template <typename T, typename AllocT = hipc::Allocator>
+using multi_mpsc_ring_buffer =
+    multi_ring_buffer<T, AllocT,
+                      (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE |
+                       RING_BUFFER_WAIT_FOR_SPACE)>;
+
 }  // namespace hshm::ipc
 
 #endif  // HSHM_DATA_STRUCTURES_IPC_MULTI_RING_BUFFER_H_

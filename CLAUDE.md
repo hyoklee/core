@@ -142,7 +142,7 @@ These methods handle task execution flow internally and do not return success/fa
 
 Use the `WorkQueue` typedef for worker queue types:
 ```cpp
-using WorkQueue = chi::ipc::mpsc_queue<hipc::TypedPointer<TaskLane>>;
+using WorkQueue = chi::ipc::mpsc_ring_buffer<hipc::TypedPointer<TaskLane>>;
 ```
 
 This simplifies code readability and maintenance for worker queue operations.
@@ -150,7 +150,7 @@ This simplifies code readability and maintenance for worker queue operations.
 **TaskLane Typedef:**
 The `TaskLane` typedef is defined globally in the `chi` namespace:
 ```cpp
-using TaskLane = chi::ipc::multi_mpsc_queue<hipc::TypedPointer<Task>, TaskQueueHeader>::queue_t;
+using TaskLane = chi::ipc::multi_mpsc_ring_buffer<hipc::TypedPointer<Task>, TaskQueueHeader>::queue_t;
 ```
 
 Use `TaskLane*` for all lane pointers in RunContext and other interfaces. Avoid `void*` and explicit type casts.

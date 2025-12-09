@@ -164,7 +164,7 @@ private:
 
   // Telemetry ring buffer for performance monitoring
   static const size_t kTelemetryRingSize = 1024; // Ring buffer size
-  hipc::circular_mpsc_queue<CteTelemetry> telemetry_log_;
+  hipc::circular_mpsc_ring_buffer<CteTelemetry> telemetry_log_;
   std::atomic<std::uint64_t>
       telemetry_counter_; // Atomic counter for logical time
 
@@ -268,7 +268,7 @@ private:
    * @return Error code: 0 for success, 1 for failure
    */
   chi::u32 ModifyExistingData(const std::vector<BlobBlock> &blocks,
-                              hipc::Pointer data, size_t data_size,
+                              hipc::ShmPtr<> data, size_t data_size,
                               size_t data_offset_in_blob);
 
   /**
@@ -279,7 +279,7 @@ private:
    * @param data_offset_in_blob Offset within blob where reading starts
    * @return Error code: 0 for success, 1 for failure
    */
-  chi::u32 ReadData(const std::vector<BlobBlock> &blocks, hipc::Pointer data,
+  chi::u32 ReadData(const std::vector<BlobBlock> &blocks, hipc::ShmPtr<> data,
                     size_t data_size, size_t data_offset_in_blob);
 
   /**

@@ -242,9 +242,9 @@ public:
 
   /**
    * Helper method to copy data from shared memory pointer (Pointer version)
-   * For compatibility with current GetBlob API that still returns hipc::Pointer
+   * For compatibility with current GetBlob API that still returns hipc::ShmPtr<>
    */
-  std::vector<char> CopyFromSharedMemory(hipc::Pointer ptr, size_t size) {
+  std::vector<char> CopyFromSharedMemory(hipc::ShmPtr<> ptr, size_t size) {
     std::vector<char> result;
 
     if (ptr.IsNull() || size == 0) {
@@ -255,7 +255,7 @@ public:
     // Use the FullPtr pattern following the filesystem adapter approach
     hipc::FullPtr<char> buffer_data(ptr);
     if (buffer_data.ptr_ == nullptr) {
-      INFO("Failed to get buffer data from hipc::Pointer");
+      INFO("Failed to get buffer data from hipc::ShmPtr<>");
       return result;
     }
 
@@ -552,7 +552,7 @@ TEST_CASE(
       INFO("  Score: " << score);
       return;
     }
-    hipc::Pointer blob_data_ptr = blob_data_fullptr.shm_;
+    hipc::ShmPtr<> blob_data_ptr = blob_data_fullptr.shm_;
 
     // Copy test data to shared memory
     REQUIRE(fixture->CopyToSharedMemory(blob_data_fullptr, test_data));
@@ -605,7 +605,7 @@ TEST_CASE(
                          << " due to memory context allocation failure");
         continue;
       }
-      hipc::Pointer blob_data_ptr = blob_data_fullptr.shm_;
+      hipc::ShmPtr<> blob_data_ptr = blob_data_fullptr.shm_;
 
       REQUIRE(fixture->CopyToSharedMemory(blob_data_fullptr, test_data));
 
@@ -651,7 +651,7 @@ TEST_CASE(
              << offset << " due to memory context allocation failure");
         continue;
       }
-      hipc::Pointer chunk_ptr = chunk_fullptr.shm_;
+      hipc::ShmPtr<> chunk_ptr = chunk_fullptr.shm_;
 
       REQUIRE(fixture->CopyToSharedMemory(chunk_fullptr, chunk_data));
 
@@ -689,7 +689,7 @@ TEST_CASE(
       INFO("AsyncPutBlob API structure validated");
       return;
     }
-    hipc::Pointer blob_data_ptr = blob_data_fullptr.shm_;
+    hipc::ShmPtr<> blob_data_ptr = blob_data_fullptr.shm_;
 
     REQUIRE(fixture->CopyToSharedMemory(blob_data_fullptr, test_data));
 
@@ -722,8 +722,8 @@ TEST_CASE(
     auto test_data = fixture->CreateTestData(512);
     // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
     hipc::FullPtr<char> data_fullptr = CHI_IPC->AllocateBuffer(512);
-    hipc::Pointer data_ptr =
-        data_fullptr.IsNull() ? hipc::Pointer::GetNull() : data_fullptr.shm_;
+    hipc::ShmPtr<> data_ptr =
+        data_fullptr.IsNull() ? hipc::ShmPtr<>::GetNull() : data_fullptr.shm_;
 
     if (!data_fullptr.IsNull() && fixture->CopyToSharedMemory(data_fullptr, test_data)) {
       auto error_task = fixture->core_client_->AsyncPutBlob(fixture->mctx_, tag_id, "",
@@ -829,7 +829,7 @@ TEST_CASE(
       return;
     }
 
-    hipc::Pointer put_data_ptr = put_data_fullptr.shm_;
+    hipc::ShmPtr<> put_data_ptr = put_data_fullptr.shm_;
     REQUIRE(fixture->CopyToSharedMemory(put_data_fullptr, original_data));
 
     INFO("Storing blob for retrieval test...");
@@ -853,7 +853,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for GetBlob");
       return;
     }
-    hipc::Pointer get_data_ptr = get_data_fullptr.shm_;
+    hipc::ShmPtr<> get_data_ptr = get_data_fullptr.shm_;
 
     // Use blob name for retrieval
     bool get_success = fixture->core_client_->GetBlob(
@@ -907,7 +907,7 @@ TEST_CASE(
                          << " due to memory context allocation failure");
         continue;
       }
-      hipc::Pointer put_ptr = put_fullptr.shm_;
+      hipc::ShmPtr<> put_ptr = put_fullptr.shm_;
 
       REQUIRE(fixture->CopyToSharedMemory(put_fullptr, blob_data));
 
@@ -943,7 +943,7 @@ TEST_CASE(
         INFO("Failed to allocate buffer for GetBlob");
         continue;
       }
-      hipc::Pointer buffer_ptr = buffer_fullptr.shm_;
+      hipc::ShmPtr<> buffer_ptr = buffer_fullptr.shm_;
 
       // Use blob name for retrieval
       bool get_success = fixture->core_client_->GetBlob(
@@ -983,7 +983,7 @@ TEST_CASE(
            "failure");
       return;
     }
-    hipc::Pointer put_ptr = put_fullptr.shm_;
+    hipc::ShmPtr<> put_ptr = put_fullptr.shm_;
 
     REQUIRE(fixture->CopyToSharedMemory(put_fullptr, full_data));
 
@@ -1009,7 +1009,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for partial GetBlob");
       return;
     }
-    hipc::Pointer partial_buffer_ptr = partial_buffer_fullptr.shm_;
+    hipc::ShmPtr<> partial_buffer_ptr = partial_buffer_fullptr.shm_;
 
     // Use blob name for retrieval
     bool partial_success = fixture->core_client_->GetBlob(
@@ -1056,7 +1056,7 @@ TEST_CASE(
       INFO("AsyncGetBlob API structure validated");
       return;
     }
-    hipc::Pointer put_ptr = put_fullptr.shm_;
+    hipc::ShmPtr<> put_ptr = put_fullptr.shm_;
 
     REQUIRE(fixture->CopyToSharedMemory(put_fullptr, test_data));
 
@@ -1081,7 +1081,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for AsyncGetBlob");
       return;
     }
-    hipc::Pointer async_buffer_ptr = async_buffer_fullptr.shm_;
+    hipc::ShmPtr<> async_buffer_ptr = async_buffer_fullptr.shm_;
 
     // Use blob name for retrieval
     auto get_task =
@@ -1124,7 +1124,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for error case testing");
       return;
     }
-    hipc::Pointer error_buffer_ptr = error_buffer_fullptr.shm_;
+    hipc::ShmPtr<> error_buffer_ptr = error_buffer_fullptr.shm_;
 
     // Test non-existent blob name
     INFO("Testing non-existent blob name error case...");
@@ -1213,7 +1213,7 @@ TEST_CASE(
       INFO("Skipping Put-Get cycle due to memory context allocation failure");
       return;
     }
-    hipc::Pointer put_ptr = put_fullptr.shm_;
+    hipc::ShmPtr<> put_ptr = put_fullptr.shm_;
 
     REQUIRE(fixture->CopyToSharedMemory(put_fullptr, original_data));
 
@@ -1239,7 +1239,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for GetBlob");
       return;
     }
-    hipc::Pointer get_buffer_ptr = get_buffer_fullptr.shm_;
+    hipc::ShmPtr<> get_buffer_ptr = get_buffer_fullptr.shm_;
 
     // Use blob name for retrieval
     bool get_success = fixture->core_client_->GetBlob(
@@ -1309,7 +1309,7 @@ TEST_CASE(
                          << " due to memory context allocation failure");
         continue;
       }
-      hipc::Pointer put_ptr = put_fullptr.shm_;
+      hipc::ShmPtr<> put_ptr = put_fullptr.shm_;
 
       REQUIRE(fixture->CopyToSharedMemory(put_fullptr, blob_data));
 
@@ -1349,7 +1349,7 @@ TEST_CASE(
         INFO("Failed to allocate buffer for GetBlob");
         continue;
       }
-      hipc::Pointer multi_buffer_ptr = multi_buffer_fullptr.shm_;
+      hipc::ShmPtr<> multi_buffer_ptr = multi_buffer_fullptr.shm_;
 
       // Use blob name for retrieval
       bool multi_success =
@@ -1398,8 +1398,8 @@ TEST_CASE(
     // Store in tag1
     // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
     hipc::FullPtr<char> put1_fullptr = CHI_IPC->AllocateBuffer(blob_size);
-    hipc::Pointer put1_ptr =
-        put1_fullptr.IsNull() ? hipc::Pointer::GetNull() : put1_fullptr.shm_;
+    hipc::ShmPtr<> put1_ptr =
+        put1_fullptr.IsNull() ? hipc::ShmPtr<>::GetNull() : put1_fullptr.shm_;
     bool tag1_stored = false;
     if (!put1_fullptr.IsNull() && fixture->CopyToSharedMemory(put1_fullptr, tag1_data)) {
       auto put1_task = fixture->core_client_->AsyncPutBlob(
@@ -1416,8 +1416,8 @@ TEST_CASE(
     // Store in tag2
     // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
     hipc::FullPtr<char> put2_fullptr = CHI_IPC->AllocateBuffer(blob_size);
-    hipc::Pointer put2_ptr =
-        put2_fullptr.IsNull() ? hipc::Pointer::GetNull() : put2_fullptr.shm_;
+    hipc::ShmPtr<> put2_ptr =
+        put2_fullptr.IsNull() ? hipc::ShmPtr<>::GetNull() : put2_fullptr.shm_;
     bool tag2_stored = false;
     if (!put2_fullptr.IsNull() && fixture->CopyToSharedMemory(put2_fullptr, tag2_data)) {
       auto put2_task = fixture->core_client_->AsyncPutBlob(
@@ -1439,7 +1439,7 @@ TEST_CASE(
     hipc::FullPtr<char> tag1_buffer_fullptr =
         CHI_IPC->AllocateBuffer(blob_size);
     if (!tag1_buffer_fullptr.IsNull() && tag1_stored) {
-      hipc::Pointer tag1_buffer_ptr = tag1_buffer_fullptr.shm_;
+      hipc::ShmPtr<> tag1_buffer_ptr = tag1_buffer_fullptr.shm_;
 
       // Use blob name for retrieval
       bool get1_success =
@@ -1461,7 +1461,7 @@ TEST_CASE(
     hipc::FullPtr<char> tag2_buffer_fullptr =
         CHI_IPC->AllocateBuffer(blob_size);
     if (!tag2_buffer_fullptr.IsNull() && tag2_stored) {
-      hipc::Pointer tag2_buffer_ptr = tag2_buffer_fullptr.shm_;
+      hipc::ShmPtr<> tag2_buffer_ptr = tag2_buffer_fullptr.shm_;
 
       // Use blob name for retrieval
       bool get2_success =
@@ -1497,7 +1497,7 @@ TEST_CASE(
           "Skipping async-sync cycle due to memory context allocation failure");
       return;
     }
-    hipc::Pointer put_ptr = put_fullptr.shm_;
+    hipc::ShmPtr<> put_ptr = put_fullptr.shm_;
 
     // STEP 1: Async Put
     INFO("Step 1: Async PutBlob...");
@@ -1524,7 +1524,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for sync GetBlob");
       return;
     }
-    hipc::Pointer sync_get_buffer_ptr = sync_get_buffer_fullptr.shm_;
+    hipc::ShmPtr<> sync_get_buffer_ptr = sync_get_buffer_fullptr.shm_;
 
     // Use blob name for retrieval
     bool sync_get_success =
@@ -1582,7 +1582,7 @@ TEST_CASE(
                                << " due to memory context allocation failure");
         continue;
       }
-      hipc::Pointer chunk_ptr = chunk_fullptr.shm_;
+      hipc::ShmPtr<> chunk_ptr = chunk_fullptr.shm_;
 
       auto chunk_task =
           fixture->core_client_->AsyncPutBlob(fixture->mctx_, tag_id, blob_name, offset,
@@ -1619,7 +1619,7 @@ TEST_CASE(
         INFO("Failed to allocate buffer for chunk GetBlob");
         continue;
       }
-      hipc::Pointer chunk_get_buffer_ptr = chunk_get_buffer_fullptr.shm_;
+      hipc::ShmPtr<> chunk_get_buffer_ptr = chunk_get_buffer_fullptr.shm_;
 
       // Use blob name for retrieval
       bool chunk_get_success =
@@ -1647,7 +1647,7 @@ TEST_CASE(
       INFO("Failed to allocate buffer for full blob GetBlob");
       return;
     }
-    hipc::Pointer full_buffer_ptr = full_buffer_fullptr.shm_;
+    hipc::ShmPtr<> full_buffer_ptr = full_buffer_fullptr.shm_;
 
     // Use blob name for retrieval
     bool full_success =
@@ -1740,7 +1740,7 @@ TEST_CASE(
   hipc::FullPtr<char> put_data_buffer =
       CHI_IPC->AllocateBuffer(test_data_size);
   REQUIRE(!put_data_buffer.IsNull());
-  hipc::Pointer put_data_ptr = put_data_buffer.shm_;
+  hipc::ShmPtr<> put_data_ptr = put_data_buffer.shm_;
 
   // Copy test data to shared memory
   REQUIRE(fixture->CopyToSharedMemory(put_data_buffer, original_data));
@@ -1773,7 +1773,7 @@ TEST_CASE(
   hipc::FullPtr<char> get_data_buffer =
       CHI_IPC->AllocateBuffer(test_data_size);
   REQUIRE(!get_data_buffer.IsNull());
-  hipc::Pointer get_data_ptr = get_data_buffer.shm_;
+  hipc::ShmPtr<> get_data_ptr = get_data_buffer.shm_;
 
   // Create GetBlob task using blob_name
   auto get_task =
@@ -2266,7 +2266,7 @@ TEST_CASE(
     hipc::FullPtr<char> blob_data_fullptr =
         CHI_IPC->AllocateBuffer(blob_size);
     REQUIRE(!blob_data_fullptr.IsNull());
-    hipc::Pointer blob_data_ptr = blob_data_fullptr.shm_;
+    hipc::ShmPtr<> blob_data_ptr = blob_data_fullptr.shm_;
 
     // Copy test data to shared memory
     REQUIRE(fixture->CopyToSharedMemory(blob_data_fullptr, test_data));
@@ -2292,7 +2292,7 @@ TEST_CASE(
     hipc::FullPtr<char> get_blob_data_fullptr =
         CHI_IPC->AllocateBuffer(blob_size);
     REQUIRE(!get_blob_data_fullptr.IsNull());
-    hipc::Pointer get_blob_data_ptr = get_blob_data_fullptr.shm_;
+    hipc::ShmPtr<> get_blob_data_ptr = get_blob_data_fullptr.shm_;
 
     // Execute GetBlob operation
     auto get_task = fixture->core_client_->AsyncGetBlob(fixture->mctx_, tag_id, blob_name, 0,
@@ -2309,7 +2309,7 @@ TEST_CASE(
                           << ", completer=" << get_completer);
 
     // Verify retrieved data matches original
-    hipc::Pointer retrieved_data_ptr = get_task->blob_data_;
+    hipc::ShmPtr<> retrieved_data_ptr = get_task->blob_data_;
     REQUIRE(!retrieved_data_ptr.IsNull());
     auto retrieved_data = fixture->CopyFromSharedMemory(retrieved_data_ptr, blob_size);
     REQUIRE(retrieved_data.size() == blob_size);

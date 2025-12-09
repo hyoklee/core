@@ -10,7 +10,7 @@ class WorkOrchestrator;
 
 // Forward declarations
 class Worker;
-class TaskQueue;
+// class TaskQueue;
 class WorkOrchestrator;
 
 /**
@@ -28,80 +28,87 @@ struct TaskQueueHeader {
 };
 
 // Type alias for individual lanes with per-lane headers (moved outside TaskQueue class)
-using TaskLane = chi::ipc::multi_mpsc_queue<hipc::ShmPtr<Task>, TaskQueueHeader>::queue_t;
+using TaskLane =
+    hipc::multi_mpsc_ring_buffer<hipc::ShmPtr<Task>,
+                                 CHI_MAIN_ALLOC_T>::ring_buffer_type;
 
 /**
- * Simple wrapper around hipc::multi_mpsc_queue
- * 
+ * Simple wrapper around hipc::multi_mpsc_ring_buffer
+ *
  * This wrapper adds custom enqueue and dequeue functions while maintaining
- * compatibility with existing code that expects the multi_mpsc_queue interface.
+ * compatibility with existing code that expects the multi_mpsc_ring_buffer
+ * interface.
  */
-class TaskQueue {
-public:
-  /**
-   * Constructor using CtxAllocator (preferred pattern)
-   * @param alloc Context allocator containing memory context
-   * @param num_lanes Number of lanes
-   * @param num_prios Number of priorities
-   * @param depth_per_lane Depth per lane
-   */
-  TaskQueue(const AllocT*& alloc,
-            u32 num_lanes, u32 num_prios, u32 depth_per_lane);
+typedef hipc::multi_mpsc_ring_buffer<hipc::ShmPtr<Task>, CHI_MAIN_ALLOC_T>
+    TaskQueue;
 
-  /**
-   * Destructor
-   */
-  ~TaskQueue() = default;
+// template <typename 
+// class TaskQueue {
+// public:
+//   /**
+//    * Constructor using CtxAllocator (preferred pattern)
+//    * @param alloc Context allocator containing memory context
+//    * @param num_lanes Number of lanes
+//    * @param num_prios Number of priorities
+//    * @param depth_per_lane Depth per lane
+//    */
+//   TaskQueue(CHI_MAIN_ALLOC_T* alloc,
+//             u32 num_lanes, u32 num_prios, u32 depth_per_lane);
 
-
-  /**
-   * Forward all other methods to underlying queue for compatibility
-   */
-  TaskLane& GetLane(u32 lane_id, u32 prio_id) { 
-    return queue_.GetLane(lane_id, prio_id); 
-  }
-  const TaskLane& GetLane(u32 lane_id, u32 prio_id) const { 
-    return queue_.GetLane(lane_id, prio_id); 
-  }
-
-  /**
-   * Check if queue is null (for compatibility)
-   */
-  bool IsNull() const { return queue_.IsNull(); }
-
-  /**
-   * Get number of lanes in the queue
-   */
-  u32 GetNumLanes() const { return queue_.GetNumLanes(); }
-
-  /**
-   * Get number of priorities in the queue
-   */
-  u32 GetNumPriorities() const { return queue_.GetNumPriorities(); }
+//   /**
+//    * Destructor
+//    */
+//   ~TaskQueue() = default;
 
 
+//   /**
+//    * Forward all other methods to underlying queue for compatibility
+//    */
+//   TaskLane& GetLane(u32 lane_id, u32 prio_id) { 
+//     return queue_.GetLane(lane_id, prio_id); 
+//   }
+//   const TaskLane& GetLane(u32 lane_id, u32 prio_id) const { 
+//     return queue_.GetLane(lane_id, prio_id); 
+//   }
 
-  /**
-   * Static method to emplace a task into a specific lane
-   * @param lane_ptr FullPtr to the lane (as returned by GetLane)
-   * @param task_ptr TypedPointer to the task to emplace
-   * @return true if emplace successful
-   */
-  static bool EmplaceTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task> task_ptr);
+//   /**
+//    * Check if queue is null (for compatibility)
+//    */
+//   bool IsNull() const { return queue_.IsNull(); }
+
+//   /**
+//    * Get number of lanes in the queue
+//    */
+//   u32 GetNumLanes() const { return queue_.GetNumLanes(); }
+
+//   /**
+//    * Get number of priorities in the queue
+//    */
+//   u32 GetNumPriorities() const { return queue_.GetNumPriorities(); }
 
 
-  /**
-   * Static method to pop a task from a specific lane
-   * @param lane_ptr FullPtr to the lane
-   * @param task_ptr Output TypedPointer to the popped task
-   * @return true if pop successful
-   */
-  static bool PopTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task>& task_ptr);
 
-private:
-  chi::ipc::multi_mpsc_queue<hipc::ShmPtr<Task>, TaskQueueHeader> queue_; // Underlying queue
+//   /**
+//    * Static method to emplace a task into a specific lane
+//    * @param lane_ptr FullPtr to the lane (as returned by GetLane)
+//    * @param task_ptr TypedPointer to the task to emplace
+//    * @return true if emplace successful
+//    */
+//   static bool EmplaceTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task> task_ptr);
 
-};
+
+//   /**
+//    * Static method to pop a task from a specific lane
+//    * @param lane_ptr FullPtr to the lane
+//    * @param task_ptr Output TypedPointer to the popped task
+//    * @return true if pop successful
+//    */
+//   static bool PopTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task>& task_ptr);
+
+// private:
+//   chi::ipc::multi_mpsc_ring_buffer<hipc::ShmPtr<Task>, TaskQueueHeader> queue_; // Underlying queue
+
+// };
 
 } // namespace chi
 

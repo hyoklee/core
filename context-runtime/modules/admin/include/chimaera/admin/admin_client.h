@@ -31,15 +31,14 @@ class Client : public chi::ContainerClient {
 
   /**
    * Create the Admin container (synchronous)
-   * @param mctx Memory context for the operation
    * @param pool_query Pool routing information
    * @param pool_name Unique name for the admin pool (user-provided)
    * @param custom_pool_id Explicit pool ID for the pool being created
    * @return true if creation succeeded, false if it failed
    */
-  bool Create(const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  bool Create(const chi::PoolQuery& pool_query,
               const std::string& pool_name, const chi::PoolId& custom_pool_id) {
-    auto task = AsyncCreate(mctx, pool_query, pool_name, custom_pool_id);
+    auto task = AsyncCreate(pool_query, pool_name, custom_pool_id);
     task->Wait();
 
     // CRITICAL: Update client pool_id_ with the actual pool ID from the task
@@ -58,13 +57,11 @@ class Client : public chi::ContainerClient {
 
   /**
    * Create the Admin container (asynchronous)
-   * @param mctx Memory context for the operation
    * @param pool_query Pool routing information
    * @param pool_name Unique name for the admin pool (user-provided)
    * @param custom_pool_id Explicit pool ID for the pool being created
    */
-  hipc::FullPtr<CreateTask> AsyncCreate(const hipc::MemContext& mctx,
-                                        const chi::PoolQuery& pool_query,
+  hipc::FullPtr<CreateTask> AsyncCreate(const chi::PoolQuery& pool_query,
                                         const std::string& pool_name,
                                         const chi::PoolId& custom_pool_id) {
     auto* ipc_manager = CHI_IPC;
@@ -84,11 +81,10 @@ class Client : public chi::ContainerClient {
   /**
    * Destroy an existing ChiPool (synchronous)
    */
-  void DestroyPool(const hipc::MemContext& mctx,
-                   const chi::PoolQuery& pool_query, chi::PoolId target_pool_id,
+  void DestroyPool(const chi::PoolQuery& pool_query, chi::PoolId target_pool_id,
                    chi::u32 destruction_flags = 0) {
     auto task =
-        AsyncDestroyPool(mctx, pool_query, target_pool_id, destruction_flags);
+        AsyncDestroyPool(pool_query, target_pool_id, destruction_flags);
     task->Wait();
 
     // Check for errors
@@ -107,8 +103,7 @@ class Client : public chi::ContainerClient {
   /**
    * Destroy an existing ChiPool (asynchronous)
    */
-  hipc::FullPtr<DestroyPoolTask> AsyncDestroyPool(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  hipc::FullPtr<DestroyPoolTask> AsyncDestroyPool(const chi::PoolQuery& pool_query,
       chi::PoolId target_pool_id, chi::u32 destruction_flags = 0) {
     auto* ipc_manager = CHI_IPC;
 
@@ -128,12 +123,11 @@ class Client : public chi::ContainerClient {
    * Can be used for both SerializeIn (sending inputs) and SerializeOut (sending outputs)
    */
   template <typename TaskType>
-  void Send(const hipc::MemContext& mctx,
-            chi::MsgType msg_type,
+  void Send(chi::MsgType msg_type,
             const hipc::FullPtr<TaskType>& subtask,
             const std::vector<chi::PoolQuery>& pool_queries,
             chi::u32 transfer_flags = 0) {
-    auto task = AsyncSend(mctx, msg_type, subtask, pool_queries, transfer_flags);
+    auto task = AsyncSend(msg_type, subtask, pool_queries, transfer_flags);
     task->Wait();
 
     // Check for errors
@@ -154,9 +148,7 @@ class Client : public chi::ContainerClient {
    * Can be used for SerializeIn (sending inputs), SerializeOut (sending outputs), or Heartbeat
    */
   template <typename TaskType>
-  hipc::FullPtr<SendTask> AsyncSend(
-      const hipc::MemContext& mctx,
-      chi::MsgType msg_type,
+  hipc::FullPtr<SendTask> AsyncSend(chi::MsgType msg_type,
       const hipc::FullPtr<TaskType>& subtask,
       const std::vector<chi::PoolQuery>& pool_queries,
       chi::u32 transfer_flags = 0) {
@@ -183,10 +175,9 @@ class Client : public chi::ContainerClient {
    * Receive tasks from network (synchronous)
    * Can be used for both SerializeIn (receiving inputs) and SerializeOut (receiving outputs)
    */
-  void Recv(const hipc::MemContext& mctx,
-            const chi::PoolQuery& pool_query,
+  void Recv(const chi::PoolQuery& pool_query,
             chi::u32 transfer_flags = 0) {
-    auto task = AsyncRecv(mctx, pool_query, transfer_flags);
+    auto task = AsyncRecv(pool_query, transfer_flags);
     task->Wait();
 
     // Check for errors
@@ -206,9 +197,7 @@ class Client : public chi::ContainerClient {
    * Receive tasks from network (asynchronous)
    * Can be used for both SerializeIn (receiving inputs) and SerializeOut (receiving outputs)
    */
-  hipc::FullPtr<RecvTask> AsyncRecv(
-      const hipc::MemContext& mctx,
-      const chi::PoolQuery& pool_query,
+  hipc::FullPtr<RecvTask> AsyncRecv(const chi::PoolQuery& pool_query,
       chi::u32 transfer_flags = 0,
       double period_us = 25) {
     auto* ipc_manager = CHI_IPC;
@@ -232,8 +221,8 @@ class Client : public chi::ContainerClient {
   /**
    * Flush administrative operations (synchronous)
    */
-  void Flush(const hipc::MemContext& mctx, const chi::PoolQuery& pool_query) {
-    auto task = AsyncFlush(mctx, pool_query);
+  void Flush(const chi::PoolQuery& pool_query) {
+    auto task = AsyncFlush(pool_query);
     task->Wait();
 
     // Check for errors
@@ -252,8 +241,7 @@ class Client : public chi::ContainerClient {
   /**
    * Flush administrative operations (asynchronous)
    */
-  hipc::FullPtr<FlushTask> AsyncFlush(const hipc::MemContext& mctx,
-                                      const chi::PoolQuery& pool_query) {
+  hipc::FullPtr<FlushTask> AsyncFlush(const chi::PoolQuery& pool_query) {
     auto* ipc_manager = CHI_IPC;
 
     // Allocate FlushTask
@@ -269,8 +257,7 @@ class Client : public chi::ContainerClient {
   /**
    * Stop the entire Chimaera runtime (asynchronous)
    */
-  hipc::FullPtr<StopRuntimeTask> AsyncStopRuntime(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  hipc::FullPtr<StopRuntimeTask> AsyncStopRuntime(const chi::PoolQuery& pool_query,
       chi::u32 shutdown_flags = 0, chi::u32 grace_period_ms = 5000) {
     auto* ipc_manager = CHI_IPC;
 

@@ -64,18 +64,18 @@ public:
   /**
    * SHM default constructor
    */
-  explicit Task(const AllocT* &alloc)
-      : hipc::ShmContainer() {
+  explicit Task(AllocT* alloc)
+      : hipc::ShmContainer(alloc) {
     SetNull();
   }
 
   /**
    * Emplace constructor with task initialization
    */
-  explicit Task(const AllocT* &alloc,
+  explicit Task(AllocT* alloc,
                 const TaskId &task_id, const PoolId &pool_id,
                 const PoolQuery &pool_query, const MethodId &method)
-      : hipc::ShmContainer() {
+      : hipc::ShmContainer(alloc) {
     // Initialize task
     task_id_ = task_id;
     pool_id_ = pool_id;
@@ -87,33 +87,6 @@ public:
     is_complete_.store(0); // Initialize as not complete
     return_code_.store(0); // Initialize as success
     completer_.store(0); // Initialize as null (0 is invalid container ID)
-  }
-
-  /**
-   * Copy constructor
-   */
-  HSHM_CROSS_FUN explicit Task(const Task &other) {
-    SetNull();
-    shm_strong_copy_main(other);
-  }
-
-  /**
-   * Strong copy implementation
-   */
-  template <typename ContainerT>
-  HSHM_CROSS_FUN void shm_strong_copy_main(const ContainerT &other) {
-    pool_id_ = other.pool_id_;
-    task_id_ = other.task_id_;
-    pool_query_ = other.pool_query_;
-    method_ = other.method_;
-    task_flags_ = other.task_flags_;
-    period_ns_ = other.period_ns_;
-    run_ctx_ = other.run_ctx_;
-    return_code_.store(other.return_code_.load());
-    completer_.store(other.completer_.load());
-    stat_ = other.stat_;
-    // Explicitly initialize as not complete for copied tasks
-    is_complete_.store(0);
   }
 
   /**
@@ -136,31 +109,6 @@ public:
   }
 
   /**
-   * Move constructor
-   */
-  HSHM_CROSS_FUN Task(Task &&other) {
-    shm_move_op<false>(
-        CHI_IPC->GetMainAllocator(),
-        std::move(other));
-  }
-
-  template <bool IS_ASSIGN>
-  HSHM_CROSS_FUN void
-  shm_move_op(const AllocT* &alloc,
-              Task &&other) noexcept {
-    // For simplified Task class, just copy the data
-    shm_strong_copy_main(other);
-    other.SetNull();
-  }
-
-  /**
-   * IsNull check
-   */
-  HSHM_INLINE_CROSS_FUN bool IsNull() const {
-    return false; // Base task is never null
-  }
-
-  /**
    * SetNull implementation
    */
   HSHM_INLINE_CROSS_FUN void SetNull() {
@@ -177,18 +125,6 @@ public:
     stat_.io_size_ = 0;
     stat_.compute_ = 0;
   }
-
-  /**
-   * Destructor implementation
-   */
-  HSHM_INLINE_CROSS_FUN void shm_destroy_main() {
-    // Base task has no dynamic resources to clean up
-  }
-
-  /**
-   * Virtual destructor
-   */
-  HSHM_CROSS_FUN virtual ~Task() = default;
 
   /**
    * Wait for task completion (blocking)
@@ -270,41 +206,20 @@ public:
   HSHM_CROSS_FUN void ClearFlags(u32 flags) { task_flags_.UnsetBits(flags); }
 
   /**
-   * Get shared memory pointer representation
-   */
-  HSHM_CROSS_FUN hipc::ShmPtr<> GetShmPointer() const {
-    return hipc::ShmPtr<>::GetNull();
-  }
-
-  /**
-   * Get the allocator (stub implementation for compatibility)
-   */
-  HSHM_CROSS_FUN AllocT* GetAllocator() const {
-    return CHI_IPC->GetMainAllocator();
-  }
-
-  /**
-   * Get context allocator (stub implementation for compatibility)
-   */
-  HSHM_CROSS_FUN AllocT* GetCtxAllocator() const {
-    return CHI_IPC->GetMainAllocator();
-  }
-
-  /**
    * Serialize data structures to chi::ipc::string using cereal
    * @param alloc Context allocator for memory management
    * @param output_str The string to store serialized data
    * @param args The arguments to serialize
    */
   template <typename... Args>
-  static void Serialize(const AllocT* &alloc,
-                        hipc::string &output_str, const Args &...args) {
+  static void Serialize(AllocT* alloc,
+                        hshm::priv::string &output_str, const Args &...args) {
     std::ostringstream os;
     cereal::BinaryOutputArchive archive(os);
     archive(args...);
 
     std::string serialized = os.str();
-    output_str = hipc::string(alloc, serialized);
+    output_str = hshm::priv::string(alloc, serialized);
   }
 
   /**
@@ -313,7 +228,7 @@ public:
    * @return The deserialized object
    */
   template <typename OutT>
-  static OutT Deserialize(const hipc::string &input_str) {
+  static OutT Deserialize(const hshm::priv::string &input_str) {
     std::string data = input_str.str();
     std::istringstream is(data);
     cereal::BinaryInputArchive archive(is);

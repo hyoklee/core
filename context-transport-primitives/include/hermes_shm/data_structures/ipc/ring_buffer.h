@@ -491,7 +491,19 @@ using spsc_ring_buffer = ring_buffer<T, AllocT,
  */
 template<typename T, typename AllocT = hipc::Allocator>
 using mpsc_ring_buffer = ring_buffer<T, AllocT,
-    (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE | RING_BUFFER_ERROR_ON_NO_SPACE)>;
+    (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE | RING_BUFFER_WAIT_FOR_SPACE)>;
+
+/**
+ * Typedef for circular fixed-size MPSC (Multiple Producer Single Consumer) ring buffer.
+ *
+ * This ring buffer is optimized for scenarios where multiple threads push
+ * but only one thread consumes. Uses atomic operations for thread-safe
+ * multi-producer access while supporting single consumer. Wraps around
+ * when full instead of waiting.
+ */
+template<typename T, typename AllocT = hipc::Allocator>
+using circular_mpsc_ring_buffer = ring_buffer<T, AllocT,
+    (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE)>;
 
 }  // namespace hshm::ipc
 

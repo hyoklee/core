@@ -19,7 +19,7 @@ namespace chi {
 /**
  * Typedef for worker queue type to simplify usage
  */
-using WorkQueue = chi::ipc::mpsc_queue<hipc::ShmPtr<TaskLane>>;
+using WorkQueue = chi::ipc::mpsc_ring_buffer<hipc::ShmPtr<TaskLane>>;
 
 /**
  * Custom header structure for shared memory allocator
@@ -109,7 +109,7 @@ public:
       return FullPtr<TaskT>();
     }
 
-    return main_allocator_->template NewObj<TaskT>(HSHM_MCTX, main_allocator_,
+    return main_allocator_->template NewObj<TaskT>(main_allocator_,
                                                    std::forward<Args>(args)...);
   }
 
@@ -121,7 +121,7 @@ public:
     if (task_ptr.IsNull() || !main_allocator_)
       return;
 
-    main_allocator_->template DelObj<TaskT>(HSHM_MCTX, task_ptr);
+    main_allocator_->template DelObj<TaskT>(task_ptr);
   }
 
   /**

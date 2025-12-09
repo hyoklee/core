@@ -212,7 +212,7 @@ public:
    */
   bool PutBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name, chi::u64 offset, chi::u64 size,
-               hipc::Pointer blob_data, float score, chi::u32 flags) {
+               hipc::ShmPtr<> blob_data, float score, chi::u32 flags) {
     auto task = AsyncPutBlob(mctx, tag_id, blob_name, offset, size, blob_data,
                              score, flags);
     task->Wait();
@@ -230,7 +230,7 @@ public:
   hipc::FullPtr<PutBlobTask>
   AsyncPutBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name, chi::u64 offset, chi::u64 size,
-               hipc::Pointer blob_data, float score, chi::u32 flags) {
+               hipc::ShmPtr<> blob_data, float score, chi::u32 flags) {
     (void)mctx; // Suppress unused parameter warning
     auto *ipc_manager = CHI_IPC;
 
@@ -247,7 +247,7 @@ public:
    */
   bool GetBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name, chi::u64 offset, chi::u64 size,
-               chi::u32 flags, hipc::Pointer blob_data) {
+               chi::u32 flags, hipc::ShmPtr<> blob_data) {
     auto task =
         AsyncGetBlob(mctx, tag_id, blob_name, offset, size, flags, blob_data);
     task->Wait();
@@ -262,7 +262,7 @@ public:
   hipc::FullPtr<GetBlobTask>
   AsyncGetBlob(const hipc::MemContext &mctx, const TagId &tag_id,
                const std::string &blob_name, chi::u64 offset, chi::u64 size,
-               chi::u32 flags, hipc::Pointer blob_data) {
+               chi::u32 flags, hipc::ShmPtr<> blob_data) {
     (void)mctx; // Suppress unused parameter warning
     auto *ipc_manager = CHI_IPC;
 
@@ -688,7 +688,7 @@ public:
    * @param off Offset within blob (default 0)
    * @param score Blob score for placement decisions (default 1.0)
    */
-  void PutBlob(const std::string &blob_name, const hipc::Pointer &data,
+  void PutBlob(const std::string &blob_name, const hipc::ShmPtr<> &data,
                size_t data_size, size_t off = 0, float score = 1.0f);
 
   /**
@@ -705,7 +705,7 @@ public:
    * task completes
    */
   hipc::FullPtr<PutBlobTask> AsyncPutBlob(const std::string &blob_name,
-                                          const hipc::Pointer &data,
+                                          const hipc::ShmPtr<> &data,
                                           size_t data_size, size_t off = 0,
                                           float score = 1.0f);
 
@@ -732,7 +732,7 @@ public:
    * @note Caller must pre-allocate shared memory using
    * CHI_IPC->AllocateBuffer<void>(data_size)
    */
-  void GetBlob(const std::string &blob_name, hipc::Pointer data,
+  void GetBlob(const std::string &blob_name, hipc::ShmPtr<> data,
                size_t data_size, size_t off = 0);
 
   /**

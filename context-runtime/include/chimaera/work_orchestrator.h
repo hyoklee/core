@@ -20,7 +20,7 @@ class Worker;
  *
  * Spawns configurable worker threads of different types using HSHM thread
  * model, maps queue lanes to workers using round-robin scheduling, and
- * coordinates task distribution. Uses hipc::multi_mpsc_queue for both container
+ * coordinates task distribution. Uses hipc::multi_mpsc_ring_buffer for both container
  * queues and process queues.
  */
 class WorkOrchestrator {

@@ -1,15 +1,15 @@
 /**
- * TaskQueue implementation - simple wrapper around hipc::multi_mpsc_queue
+ * TaskQueue implementation - simple wrapper around hipc::multi_mpsc_ring_buffer
  */
 
 #include "chimaera/task_queue.h"
 
 namespace chi {
 
-TaskQueue::TaskQueue(const AllocT*& alloc,
+TaskQueue::TaskQueue(AllocT* alloc,
                      u32 num_lanes, u32 num_prios, u32 depth_per_lane)
     : queue_(alloc, num_lanes, num_prios, depth_per_lane) {
-  // Headers are now managed automatically by the multi_mpsc_queue per lane
+  // Headers are now managed automatically by the multi_mpsc_ring_buffer per lane
 }
 
 
