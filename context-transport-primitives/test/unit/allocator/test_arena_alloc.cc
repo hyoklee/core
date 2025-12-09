@@ -31,6 +31,5 @@ TEST_CASE("ArenaAllocator<false> - Allocate and Free Immediate", "[ArenaAllocato
     REQUIRE_NOTHROW(tester.TestAllocFreeImmediate(100, 1024));
   }
   
-  backend.shm_destroy();
 }
 

@@ -241,7 +241,6 @@ TEST_CASE("rb_tree_pre - Basic Operations", "[rb_tree_pre]") {
     REQUIRE(found.ptr_->value_ == 100);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("rb_tree_pre - Deletion", "[rb_tree_pre]") {
@@ -381,7 +380,6 @@ TEST_CASE("rb_tree_pre - Deletion", "[rb_tree_pre]") {
     REQUIRE_FALSE(tree.find(alloc, 12).IsNull());
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("rb_tree_pre - Large Tree", "[rb_tree_pre]") {
@@ -423,7 +421,6 @@ TEST_CASE("rb_tree_pre - Large Tree", "[rb_tree_pre]") {
     REQUIRE(VerifyRBProperties(alloc, tree));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("rb_tree_pre - Atomic Version", "[rb_tree_pre][atomic]") {
@@ -457,5 +454,4 @@ TEST_CASE("rb_tree_pre - Atomic Version", "[rb_tree_pre][atomic]") {
     REQUIRE(tree.size() == 13);
   }
 
-  backend.shm_destroy();
 }

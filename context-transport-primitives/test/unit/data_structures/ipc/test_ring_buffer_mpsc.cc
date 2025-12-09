@@ -54,7 +54,6 @@ TEST_CASE("MPSC RingBuffer: single producer baseline", "[ring_buffer][mpsc]") {
 
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("MPSC RingBuffer: concurrent producers", "[ring_buffer][mpsc]") {
@@ -96,7 +95,6 @@ TEST_CASE("MPSC RingBuffer: concurrent producers", "[ring_buffer][mpsc]") {
   REQUIRE(popped_values.size() == 100);
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("MPSC RingBuffer: producer/consumer coordination",
@@ -138,7 +136,6 @@ TEST_CASE("MPSC RingBuffer: producer/consumer coordination",
   REQUIRE(consumed_count.load() == 100);
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("MPSC RingBuffer: contention under capacity limit",
@@ -181,7 +178,6 @@ TEST_CASE("MPSC RingBuffer: contention under capacity limit",
   REQUIRE(total_succeeded + total_failed == total_attempts);
   REQUIRE(total_succeeded <= 16);  // At most capacity items in buffer
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("MPSC RingBuffer: stress test with varying producer count",
@@ -230,7 +226,6 @@ TEST_CASE("MPSC RingBuffer: stress test with varying producer count",
   REQUIRE(consumed == 400);
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 SIMPLE_TEST_MAIN()

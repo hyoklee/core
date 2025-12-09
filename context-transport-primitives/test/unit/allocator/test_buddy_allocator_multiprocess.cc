@@ -1,13 +1,16 @@
 /**
- * Single-threaded multi-process unit test for BuddyAllocator
+ * Single-threaded multi-process unit test for BuddyAllocator with Ownership Tracking
  *
- * Usage: test_buddy_allocator_singlethread <rank> <duration_sec>
+ * Usage: test_buddy_allocator_multiprocess <rank> <duration_sec>
  *
- * rank 0: Initializes shared memory and optionally runs for duration_sec
- * rank 1+: Attaches to shared memory and runs for duration_sec
+ * rank 0: Initializes shared memory (owner), optionally runs for duration_sec
+ *         then calls UnsetOwner() to indicate another process is taking over
+ * rank 1+: Attaches to shared memory (non-owner), calls SetOwner() to indicate
+ *          it will manage cleanup, and runs for duration_sec
  *
  * This test validates BuddyAllocator in a single-threaded environment across
- * multiple processes using small allocations (1 byte to 16KB).
+ * multiple processes using small allocations (1 byte to 16KB), and tests
+ * ownership tracking between processes.
  */
 
 #include <cstdlib>
@@ -25,7 +28,7 @@ using namespace hshm::testing;
 
 // Shared memory configuration
 constexpr size_t kShmSize = 512UL * 1024UL * 1024UL;  // 512 MB
-const std::string kShmUrl = "/buddy_allocator_singlethread_test";
+const std::string kShmUrl = "/buddy_allocator_multiprocess_test";
 
 int main(int argc, char **argv) {
   if (argc != 3) {
@@ -54,6 +57,10 @@ int main(int argc, char **argv) {
     std::cout << "Rank 0: Shared memory initialized successfully" << std::endl;
     std::cout << "  Shared memory size: " << kShmSize << " bytes ("
               << (kShmSize / (1024UL * 1024UL)) << " MB)" << std::endl;
+    std::cout << "Rank 0: Backend owner flag set (IsOwner = "
+              << (backend.IsOwner() ? "true" : "false") << ")" << std::endl;
+
+    backend.UnsetOwner();
   } else {
     // Other ranks attach to existing shared memory
     std::cout << "Rank " << rank << ": Attaching to shared memory" << std::endl;
@@ -69,6 +76,13 @@ int main(int argc, char **argv) {
     }
     std::cout << "Rank " << rank << ": Attached to shared memory successfully"
               << std::endl;
+    std::cout << "Rank " << rank << ": Backend owner flag set (IsOwner = "
+              << (backend.IsOwner() ? "true" : "false") << ")" << std::endl;
+
+    // Rank 1+ takes ownership of the backend
+    backend.SetOwner();
+    std::cout << "Rank " << rank << ": Called SetOwner() (IsOwner = "
+              << (backend.IsOwner() ? "true" : "false") << ")" << std::endl;
   }
 
   // Initialize or attach allocator
@@ -82,7 +96,6 @@ int main(int argc, char **argv) {
     allocator = backend.MakeAlloc<BuddyAllocator>();
     if (allocator == nullptr) {
       std::cerr << "Rank 0: Failed to initialize BuddyAllocator" << std::endl;
-      backend.shm_destroy();
       return 1;
     }
 
@@ -128,11 +141,11 @@ int main(int argc, char **argv) {
               << std::endl;
   }
 
-  // Only rank 0 should clean up shared memory, and only if it ran the test
-  // (if duration was 0, other ranks may still be using it)
-  if (rank == 0 && duration_sec > 0) {
-    std::cout << "Rank 0: Cleaning up shared memory" << std::endl;
-    backend.shm_destroy();
+  // Rank 0 releases ownership after test completes
+  if (rank == 0) {
+    backend.UnsetOwner();
+    std::cout << "Rank 0: Called UnsetOwner() (IsOwner = "
+              << (backend.IsOwner() ? "true" : "false") << ")" << std::endl;
   }
 
   return 0;

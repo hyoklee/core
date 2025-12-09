@@ -185,7 +185,6 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
     REQUIRE(reinterpret_cast<TestNode*>(n3.ptr_)->value_ == 0);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("slist_pre - Atomic Version", "[slist_pre][atomic]") {
@@ -221,7 +220,6 @@ TEST_CASE("slist_pre - Atomic Version", "[slist_pre][atomic]") {
     REQUIRE(list.empty());
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("slist_pre - Node Reuse", "[slist_pre]") {
@@ -260,7 +258,6 @@ TEST_CASE("slist_pre - Node Reuse", "[slist_pre]") {
     REQUIRE(reinterpret_cast<TestNode*>(final.ptr_)->value_ == 999);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("slist_pre - Large List", "[slist_pre]") {
@@ -298,7 +295,6 @@ TEST_CASE("slist_pre - Large List", "[slist_pre]") {
     REQUIRE(list.size() == 0);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
@@ -634,5 +630,4 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     REQUIRE(list.size() == 2);
   }
 
-  backend.shm_destroy();
 }

@@ -47,7 +47,6 @@ TEST_CASE("SPSC RingBuffer: sequential workload", "[ring_buffer][spsc]") {
     REQUIRE(val == static_cast<int>(i));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SPSC RingBuffer: interleaved push/pop", "[ring_buffer][spsc]") {
@@ -64,7 +63,6 @@ TEST_CASE("SPSC RingBuffer: interleaved push/pop", "[ring_buffer][spsc]") {
     REQUIRE(val == static_cast<int>(i));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SPSC RingBuffer: wrap-around operations", "[ring_buffer][spsc]") {
@@ -97,7 +95,6 @@ TEST_CASE("SPSC RingBuffer: wrap-around operations", "[ring_buffer][spsc]") {
     REQUIRE(val == static_cast<int>(i));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SPSC RingBuffer: capacity limit enforcement", "[ring_buffer][spsc]") {
@@ -128,7 +125,6 @@ TEST_CASE("SPSC RingBuffer: capacity limit enforcement", "[ring_buffer][spsc]") 
   REQUIRE(rb.Push(99));
   REQUIRE(rb.Full());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SPSC RingBuffer: mixed operations", "[ring_buffer][spsc]") {
@@ -163,7 +159,6 @@ TEST_CASE("SPSC RingBuffer: mixed operations", "[ring_buffer][spsc]") {
 
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 SIMPLE_TEST_MAIN()

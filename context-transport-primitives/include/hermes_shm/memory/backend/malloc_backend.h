@@ -69,6 +69,9 @@ class MallocBackend : public MemoryBackend {
     new (header_) MemoryBackendHeader();
     (*header_) = (const MemoryBackendHeader&)*this;
 
+    // Mark this process as the owner of the backend
+    SetOwner();
+
     return true;
   }
 

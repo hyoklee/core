@@ -41,7 +41,6 @@ TEST_CASE("BuddyAllocator - Allocate and Free Immediate", "[BuddyAllocator]") {
     REQUIRE_NOTHROW(tester.TestAllocFreeImmediate(100, 1024 * 1024));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("BuddyAllocator - Batch Allocate and Free", "[BuddyAllocator]") {
@@ -66,7 +65,6 @@ TEST_CASE("BuddyAllocator - Batch Allocate and Free", "[BuddyAllocator]") {
     REQUIRE_NOTHROW(tester.TestAllocFreeBatch(10, 1000, 1024));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("BuddyAllocator - Random Allocation", "[BuddyAllocator]") {
@@ -95,7 +93,6 @@ TEST_CASE("BuddyAllocator - Random Allocation", "[BuddyAllocator]") {
     REQUIRE_NOTHROW(tester.TestRandomAllocation(32));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("BuddyAllocator - Large Then Small", "[BuddyAllocator]") {
@@ -116,7 +113,6 @@ TEST_CASE("BuddyAllocator - Large Then Small", "[BuddyAllocator]") {
     REQUIRE_NOTHROW(tester.TestLargeThenSmall(5, 50, 512 * 1024, 500, 256));
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("BuddyAllocator - Weird Offset Allocation", "[BuddyAllocator]") {
@@ -144,7 +140,6 @@ TEST_CASE("BuddyAllocator - Weird Offset Allocation", "[BuddyAllocator]") {
   try {
     alloc->shm_init(backend);
   } catch (...) {
-    backend.shm_destroy();
     throw;
   }
 
@@ -165,5 +160,4 @@ TEST_CASE("BuddyAllocator - Weird Offset Allocation", "[BuddyAllocator]") {
     REQUIRE_NOTHROW(tester.TestAllocFreeImmediate(100, 4096));
   }
 
-  backend.shm_destroy();
 }

@@ -109,6 +109,9 @@ class GpuShmMmap : public MemoryBackend, public UrlMemoryBackend {
     Register(md_, aligned_md_size);
     Register(accel_data_, size);
 
+    // Mark this process as the owner of the backend
+    SetOwner();
+
     return true;
   }
 
@@ -158,6 +161,9 @@ class GpuShmMmap : public MemoryBackend, public UrlMemoryBackend {
     // Register both metadata and data sections with GPU
     Register(md_, aligned_md_size);
     Register(accel_data_, accel_data_size_);
+
+    // Mark this process as NOT the owner (attaching to existing backend)
+    UnsetOwner();
 
     return true;
   }

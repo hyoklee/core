@@ -134,9 +134,6 @@ struct MemoryBackendHeader {
 
 #define MEMORY_BACKEND_INITIALIZED BIT_OPT(u64, 0)
 #define MEMORY_BACKEND_OWNED BIT_OPT(u64, 1)
-#define MEMORY_BACKEND_HAS_ALLOC BIT_OPT(u64, 2)
-#define MEMORY_BACKEND_HAS_GPU_ALLOC BIT_OPT(u64, 3)
-#define MEMORY_BACKEND_IS_SCANNED BIT_OPT(u64, 4)
 
 class UrlMemoryBackend {};
 
@@ -174,6 +171,33 @@ class MemoryBackend : public MemoryBackendHeader {
   HSHM_CROSS_FUN
   const MemoryBackendId &GetId() const { return id_; }
 
+  /**
+   * Set the MEMORY_BACKEND_OWNED flag
+   * Called during shm_init to indicate this process owns the backend
+   */
+  HSHM_CROSS_FUN
+  void SetOwner() {
+    flags_.SetBits(MEMORY_BACKEND_OWNED);
+  }
+
+  /**
+   * Check if this process owns the backend
+   * @return true if MEMORY_BACKEND_OWNED flag is set
+   */
+  HSHM_CROSS_FUN
+  bool IsOwner() const {
+    return flags_.Any(MEMORY_BACKEND_OWNED) != 0;
+  }
+
+  /**
+   * Unset the MEMORY_BACKEND_OWNED flag
+   * Called during shm_attach to indicate this process is attaching to
+   * a backend created by another process
+   */
+  HSHM_CROSS_FUN
+  void UnsetOwner() {
+    flags_.UnsetBits(MEMORY_BACKEND_OWNED);
+  }
 
   /**
    * Get pointer to the private header given a data pointer.

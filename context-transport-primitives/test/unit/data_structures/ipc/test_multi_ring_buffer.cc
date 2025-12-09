@@ -49,7 +49,6 @@ TEST_CASE("MultiRingBuffer: constructor with lanes and prios",
     REQUIRE(mrb.GetTotalBuffers() == 8);
   }  // mrb destructor runs here
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("MultiRingBuffer: constructor with single lane and prio",
@@ -63,7 +62,6 @@ TEST_CASE("MultiRingBuffer: constructor with single lane and prio",
   REQUIRE(mrb.GetNumPrios() == 1);
   REQUIRE(mrb.GetTotalBuffers() == 1);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -88,7 +86,6 @@ TEST_CASE("MultiRingBuffer: GetLane with valid indices",
   REQUIRE(lane1_0.Empty());
   REQUIRE(lane2_1.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("MultiRingBuffer: push and pop from specific lanes",
@@ -127,7 +124,6 @@ TEST_CASE("MultiRingBuffer: push and pop from specific lanes",
   REQUIRE(val == 300);
   REQUIRE(lane1_0.Empty());
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -173,7 +169,6 @@ TEST_CASE("MultiRingBuffer: lanes are independent queues",
   }
   printf("[TEST] All pops verified, destroying backend\n"); fflush(stdout);
 
-  backend.shm_destroy();
   printf("[TEST] Test completed successfully\n"); fflush(stdout);
 }
 
@@ -212,7 +207,6 @@ TEST_CASE("MultiRingBuffer: multiple lanes with different priorities",
   }
   printf("[TEST] All pops from multiple lanes verified\n"); fflush(stdout);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -235,7 +229,6 @@ TEST_CASE("MultiRingBuffer: const GetLane access", "[multi_ring_buffer]") {
   REQUIRE(const_lane.Size() == 1);
   REQUIRE_FALSE(const_lane.Empty());
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -269,7 +262,6 @@ TEST_CASE("MultiRingBuffer: many lanes and priorities", "[multi_ring_buffer]") {
   REQUIRE(val == 2);
   printf("[TEST] Stress test completed successfully\n"); fflush(stdout);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -293,7 +285,6 @@ TEST_CASE("MultiRingBuffer: constructor with allocator", "[multi_ring_buffer]") 
   REQUIRE(mrb.GetTotalBuffers() == num_lanes * num_prios);
   printf("[TEST] Multi_ring_buffer tests passed\n"); fflush(stdout);
 
-  backend.shm_destroy();
 }
 
 SIMPLE_TEST_MAIN()

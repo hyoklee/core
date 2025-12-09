@@ -54,7 +54,6 @@ TEST_CASE("MemorySlot") {
   if (rank == 0) {
     {
       std::cout << "Destroying shmem (rank 1)" << std::endl;
-      backend.shm_destroy();
     }
   }
 

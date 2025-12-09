@@ -49,7 +49,6 @@ TEST_CASE("Extensible RingBuffer: basic operations", "[ring_buffer][ext]") {
 
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Extensible RingBuffer: multiple cycles", "[ring_buffer][ext]") {
@@ -73,7 +72,6 @@ TEST_CASE("Extensible RingBuffer: multiple cycles", "[ring_buffer][ext]") {
     REQUIRE(rb.Empty());
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Extensible RingBuffer: partial cycles", "[ring_buffer][ext]") {
@@ -111,7 +109,6 @@ TEST_CASE("Extensible RingBuffer: partial cycles", "[ring_buffer][ext]") {
 
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Extensible RingBuffer: FIFO ordering", "[ring_buffer][ext]") {
@@ -133,7 +130,6 @@ TEST_CASE("Extensible RingBuffer: FIFO ordering", "[ring_buffer][ext]") {
     }
   }
 
-  backend.shm_destroy();
 }
 
 SIMPLE_TEST_MAIN()

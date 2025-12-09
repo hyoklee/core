@@ -98,6 +98,9 @@ class GpuMalloc : public MemoryBackend, public UrlMemoryBackend {
     // Store IPC handle for GPU memory in shared metadata
     GpuApi::GetIpcMemHandle(gpu_header->ipc_, (void *)accel_data_);
 
+    // Mark this process as the owner of the backend
+    SetOwner();
+
     return true;
   }
 
@@ -135,6 +138,9 @@ class GpuMalloc : public MemoryBackend, public UrlMemoryBackend {
     accel_data_size_ = gpu_header->accel_data_size_;
     accel_id_ = gpu_header->accel_id_;
     GpuApi::OpenIpcMemHandle(gpu_header->ipc_, &accel_data_);
+
+    // Mark this process as NOT the owner (attaching to existing backend)
+    UnsetOwner();
 
     return true;
   }

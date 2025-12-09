@@ -40,7 +40,6 @@ TEST_CASE("MultiProcessAllocator - Allocate and Free Immediate", "[MultiProcessA
   }
 
   alloc->shm_detach();
-  backend.shm_destroy();
 }
 
 TEST_CASE("MultiProcessAllocator - Batch Allocate and Free", "[MultiProcessAllocator]") {
@@ -66,7 +65,6 @@ TEST_CASE("MultiProcessAllocator - Batch Allocate and Free", "[MultiProcessAlloc
   }
 
   alloc->shm_detach();
-  backend.shm_destroy();
 }
 
 TEST_CASE("MultiProcessAllocator - Random Allocation", "[MultiProcessAllocator]") {
@@ -88,7 +86,6 @@ TEST_CASE("MultiProcessAllocator - Random Allocation", "[MultiProcessAllocator]"
   }
 
   alloc->shm_detach();
-  backend.shm_destroy();
 }
 
 TEST_CASE("MultiProcessAllocator - Multi-threaded Random", "[MultiProcessAllocator][multithread]") {
@@ -110,5 +107,4 @@ TEST_CASE("MultiProcessAllocator - Multi-threaded Random", "[MultiProcessAllocat
   }
 
   alloc->shm_detach();
-  backend.shm_destroy();
 }

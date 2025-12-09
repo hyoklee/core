@@ -71,7 +71,6 @@ TEST_CASE("SubAllocator - Basic Creation and Destruction", "[SubAllocator]") {
     parent_alloc->FreeSubAllocator(sub_alloc3);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
@@ -115,7 +114,6 @@ TEST_CASE("SubAllocator - Allocations within SubAllocator", "[SubAllocator]") {
   // Free the sub-allocator
   parent_alloc->FreeSubAllocator(sub_alloc);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SubAllocator - Random Allocation Test", "[SubAllocator]") {
@@ -139,7 +137,6 @@ TEST_CASE("SubAllocator - Random Allocation Test", "[SubAllocator]") {
   // Free the sub-allocator
   parent_alloc->FreeSubAllocator(sub_alloc);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SubAllocator - Multiple SubAllocators with Random Tests", "[SubAllocator]") {
@@ -174,7 +171,6 @@ TEST_CASE("SubAllocator - Multiple SubAllocators with Random Tests", "[SubAlloca
   parent_alloc->FreeSubAllocator(sub_alloc2);
   parent_alloc->FreeSubAllocator(sub_alloc3);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("SubAllocator - Nested SubAllocators", "[SubAllocator][nested]") {
@@ -203,5 +199,4 @@ TEST_CASE("SubAllocator - Nested SubAllocators", "[SubAllocator][nested]") {
   sub_alloc1.ptr_->FreeSubAllocator(sub_alloc2);
   parent_alloc->FreeSubAllocator(sub_alloc1);
 
-  backend.shm_destroy();
 }

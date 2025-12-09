@@ -47,9 +47,8 @@ TEST_CASE("RingBuffer: constructor with capacity", "[ring_buffer]") {
     REQUIRE(rb.Empty());
     REQUIRE_FALSE(rb.Full());
     REQUIRE(rb.Size() == 0);
-  }  // rb destructor runs here, BEFORE backend.shm_destroy()
+  }  // rb destructor runs here (backend auto-destroyed)
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: constructor with small capacity", "[ring_buffer]") {
@@ -62,7 +61,6 @@ TEST_CASE("RingBuffer: constructor with small capacity", "[ring_buffer]") {
   REQUIRE(rb.Empty());
   REQUIRE(rb.Size() == 0);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -86,7 +84,6 @@ TEST_CASE("RingBuffer: single push and pop", "[ring_buffer]") {
   REQUIRE(value == 42);
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: multiple pushes and pops", "[ring_buffer]") {
@@ -111,7 +108,6 @@ TEST_CASE("RingBuffer: multiple pushes and pops", "[ring_buffer]") {
   }
 
   REQUIRE(rb.Empty());
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: push to capacity", "[ring_buffer]") {
@@ -132,7 +128,6 @@ TEST_CASE("RingBuffer: push to capacity", "[ring_buffer]") {
   // Next push should fail
   REQUIRE_FALSE(rb.Push(5));
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: wrap-around", "[ring_buffer]") {
@@ -162,7 +157,6 @@ TEST_CASE("RingBuffer: wrap-around", "[ring_buffer]") {
   }
 
   REQUIRE(rb.Empty());
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: multiple wrap-arounds", "[ring_buffer]") {
@@ -185,7 +179,6 @@ TEST_CASE("RingBuffer: multiple wrap-arounds", "[ring_buffer]") {
   }
 
   REQUIRE(rb.Empty());
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -206,7 +199,6 @@ TEST_CASE("RingBuffer: try_push and try_pop", "[ring_buffer]") {
   REQUIRE(value == 99);
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: try_pop on empty buffer", "[ring_buffer]") {
@@ -219,7 +211,6 @@ TEST_CASE("RingBuffer: try_pop on empty buffer", "[ring_buffer]") {
   REQUIRE_FALSE(rb.TryPop(value));
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: try_push on full buffer", "[ring_buffer]") {
@@ -240,7 +231,6 @@ TEST_CASE("RingBuffer: try_push on full buffer", "[ring_buffer]") {
   // Next try_push should fail
   REQUIRE_FALSE(rb.TryPush(5));
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -270,7 +260,6 @@ TEST_CASE("RingBuffer: clear", "[ring_buffer]") {
   REQUIRE(rb.Push(100));
   REQUIRE(rb.Size() == 1);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: reset", "[ring_buffer]") {
@@ -302,7 +291,6 @@ TEST_CASE("RingBuffer: reset", "[ring_buffer]") {
   REQUIRE(rb.Pop(value));
   REQUIRE(value == 999);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -325,7 +313,6 @@ TEST_CASE("RingBuffer: capacity consistency", "[ring_buffer]") {
   // Capacity should not change
   REQUIRE(rb.Capacity() == 32);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("RingBuffer: size after operations", "[ring_buffer]") {
@@ -349,7 +336,6 @@ TEST_CASE("RingBuffer: size after operations", "[ring_buffer]") {
   rb.Pop(value);
   REQUIRE(rb.Size() == 0);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -376,7 +362,6 @@ TEST_CASE("RingBuffer: string elements", "[ring_buffer]") {
 
   REQUIRE(rb.Empty());
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -412,7 +397,6 @@ TEST_CASE("RingBuffer: Complex data type", "[ring_buffer]") {
   REQUIRE(entry.key == 30);
   REQUIRE(entry.value == 40);
 
-  backend.shm_destroy();
 }
 
 SIMPLE_TEST_MAIN()

@@ -118,6 +118,9 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
     new (header_) MemoryBackendHeader();
     (*header_) = (const MemoryBackendHeader&)*this;
 
+    // Mark this process as the owner of the backend
+    SetOwner();
+
     return true;
   }
 
@@ -163,6 +166,9 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
     // Set up pointers (same layout as shm_init)
     char *shared_header_ptr = region_ + kBackendHeaderSize;
     data_ = shared_header_ptr + kBackendHeaderSize;
+
+    // Mark this process as NOT the owner (attaching to existing backend)
+    UnsetOwner();
 
     return true;
   }

@@ -42,7 +42,6 @@ TEST_CASE("Vector: constructor default", "[vector]") {
   REQUIRE(vec.empty());
   REQUIRE(vec.data() == nullptr);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: constructor with size", "[vector]") {
@@ -61,7 +60,6 @@ TEST_CASE("Vector: constructor with size", "[vector]") {
     REQUIRE(vec[i] == 0);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: constructor with fill value", "[vector]") {
@@ -79,7 +77,6 @@ TEST_CASE("Vector: constructor with fill value", "[vector]") {
     REQUIRE(vec[i] == 42);
   }
 
-  backend.shm_destroy();
 }
 
 // Copy constructor test removed - copy constructor is intentionally deleted
@@ -105,7 +102,6 @@ TEST_CASE("Vector: range constructor", "[vector]") {
   REQUIRE(vec[3] == 40);
   REQUIRE(vec[4] == 50);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: initializer list constructor", "[vector]") {
@@ -121,7 +117,6 @@ TEST_CASE("Vector: initializer list constructor", "[vector]") {
   REQUIRE(vec[3] == 4);
   REQUIRE(vec[4] == 5);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -142,7 +137,6 @@ TEST_CASE("Vector: at access", "[vector]") {
   vec.at(1) = 99;
   REQUIRE(vec.at(1) == 99);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: operator bracket", "[vector]") {
@@ -159,7 +153,6 @@ TEST_CASE("Vector: operator bracket", "[vector]") {
   vec[1] = 99;
   REQUIRE(vec[1] == 99);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: front element", "[vector]") {
@@ -174,7 +167,6 @@ TEST_CASE("Vector: front element", "[vector]") {
   REQUIRE(vec.front() == 99);
   REQUIRE(vec[0] == 99);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: back element", "[vector]") {
@@ -189,7 +181,6 @@ TEST_CASE("Vector: back element", "[vector]") {
   REQUIRE(vec.back() == 99);
   REQUIRE(vec[2] == 99);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: data pointer", "[vector]") {
@@ -208,7 +199,6 @@ TEST_CASE("Vector: data pointer", "[vector]") {
   ptr[1] = 99;
   REQUIRE(vec[1] == 99);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: const access methods", "[vector]") {
@@ -224,7 +214,6 @@ TEST_CASE("Vector: const access methods", "[vector]") {
   REQUIRE(const_vec.back() == 30);
   REQUIRE(const_vec.data() != nullptr);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -246,7 +235,6 @@ TEST_CASE("Vector: begin end iterators", "[vector]") {
   ++it;
   REQUIRE(it == vec.end());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: const iterators", "[vector]") {
@@ -265,7 +253,6 @@ TEST_CASE("Vector: const iterators", "[vector]") {
   ++it;
   REQUIRE(it == const_vec.end());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: cbegin cend", "[vector]") {
@@ -283,7 +270,6 @@ TEST_CASE("Vector: cbegin cend", "[vector]") {
   ++it;
   REQUIRE(it == vec.cend());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: iterator arithmetic", "[vector]") {
@@ -323,7 +309,6 @@ TEST_CASE("Vector: iterator arithmetic", "[vector]") {
   it -= 1;
   REQUIRE(*it == 20);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: iterator comparison", "[vector]") {
@@ -343,7 +328,6 @@ TEST_CASE("Vector: iterator comparison", "[vector]") {
   REQUIRE(it3 > it1);
   REQUIRE(it3 >= it1);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: range loop", "[vector]") {
@@ -366,7 +350,6 @@ TEST_CASE("Vector: range loop", "[vector]") {
   REQUIRE(vec[1] == 40);
   REQUIRE(vec[2] == 60);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: reverse iteration", "[vector]") {
@@ -384,7 +367,6 @@ TEST_CASE("Vector: reverse iteration", "[vector]") {
   REQUIRE(*it == 10);
   REQUIRE(it == vec.begin());
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -406,7 +388,6 @@ TEST_CASE("Vector: push_back copy", "[vector]") {
   REQUIRE(vec[0] == 10);
   REQUIRE(vec[1] == 20);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: push_back move", "[vector]") {
@@ -422,7 +403,6 @@ TEST_CASE("Vector: push_back move", "[vector]") {
   REQUIRE(vec[0] == 10);
   REQUIRE(vec[1] == 20);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: emplace_back", "[vector]") {
@@ -440,7 +420,6 @@ TEST_CASE("Vector: emplace_back", "[vector]") {
   REQUIRE(vec[1] == 20);
   REQUIRE(vec[2] == 30);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: push_back growth", "[vector]") {
@@ -459,7 +438,6 @@ TEST_CASE("Vector: push_back growth", "[vector]") {
     REQUIRE(vec[i] == i);
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: insert copy", "[vector]") {
@@ -477,7 +455,6 @@ TEST_CASE("Vector: insert copy", "[vector]") {
   REQUIRE(vec[2] == 30);
   REQUIRE(vec[3] == 40);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: insert move", "[vector]") {
@@ -494,7 +471,6 @@ TEST_CASE("Vector: insert move", "[vector]") {
   REQUIRE(vec[2] == 30);
   REQUIRE(vec[3] == 40);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: emplace", "[vector]") {
@@ -511,7 +487,6 @@ TEST_CASE("Vector: emplace", "[vector]") {
   REQUIRE(vec[2] == 30);
   REQUIRE(vec[3] == 40);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: erase single", "[vector]") {
@@ -527,7 +502,6 @@ TEST_CASE("Vector: erase single", "[vector]") {
   REQUIRE(vec[1] == 30);
   REQUIRE(vec[2] == 40);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: erase range", "[vector]") {
@@ -542,7 +516,6 @@ TEST_CASE("Vector: erase range", "[vector]") {
   REQUIRE(vec[0] == 10);
   REQUIRE(vec[1] == 50);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: clear", "[vector]") {
@@ -558,7 +531,6 @@ TEST_CASE("Vector: clear", "[vector]") {
   REQUIRE(vec.empty());
   REQUIRE(vec.capacity() == old_capacity); // Capacity unchanged
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: multiple operations", "[vector]") {
@@ -587,7 +559,6 @@ TEST_CASE("Vector: multiple operations", "[vector]") {
   REQUIRE(vec[1] == 15);
   REQUIRE(vec[2] == 30);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -610,7 +581,6 @@ TEST_CASE("Vector: size method", "[vector]") {
   vec.clear();
   REQUIRE(vec.size() == 0);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: capacity method", "[vector]") {
@@ -627,7 +597,6 @@ TEST_CASE("Vector: capacity method", "[vector]") {
   vec.push_back(1);
   REQUIRE(vec.capacity() == cap); // No reallocation
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: empty check", "[vector]") {
@@ -643,7 +612,6 @@ TEST_CASE("Vector: empty check", "[vector]") {
   vec.clear();
   REQUIRE(vec.empty());
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: reserve growth", "[vector]") {
@@ -662,7 +630,6 @@ TEST_CASE("Vector: reserve growth", "[vector]") {
   }
   REQUIRE(vec.size() == 100);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: reserve no shrink", "[vector]") {
@@ -677,7 +644,6 @@ TEST_CASE("Vector: reserve no shrink", "[vector]") {
   vec.reserve(50);
   REQUIRE(vec.capacity() == cap); // No shrinkage
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: shrink_to_fit", "[vector]") {
@@ -703,7 +669,6 @@ TEST_CASE("Vector: shrink_to_fit", "[vector]") {
   REQUIRE(vec[1] == 20);
   REQUIRE(vec[2] == 30);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: resize grow", "[vector]") {
@@ -722,7 +687,6 @@ TEST_CASE("Vector: resize grow", "[vector]") {
   REQUIRE(vec[4] == 0);
   REQUIRE(vec[5] == 0);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: resize with value", "[vector]") {
@@ -741,7 +705,6 @@ TEST_CASE("Vector: resize with value", "[vector]") {
   REQUIRE(vec[4] == 99);
   REQUIRE(vec[5] == 99);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: resize shrink", "[vector]") {
@@ -757,7 +720,6 @@ TEST_CASE("Vector: resize shrink", "[vector]") {
   REQUIRE(vec[1] == 20);
   REQUIRE(vec[2] == 30);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -782,7 +744,6 @@ TEST_CASE("Vector: copy assignment", "[vector]") {
   vec2[0] = 99;
   REQUIRE(vec1[0] == 10);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: copy assignment self", "[vector]") {
@@ -798,7 +759,6 @@ TEST_CASE("Vector: copy assignment self", "[vector]") {
   REQUIRE(vec[1] == 20);
   REQUIRE(vec[2] == 30);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: move assignment", "[vector]") {
@@ -822,7 +782,6 @@ TEST_CASE("Vector: move assignment", "[vector]") {
   REQUIRE(vec1.size() == 0);
   REQUIRE(vec1.capacity() == 0);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: move assignment self", "[vector]") {
@@ -838,7 +797,6 @@ TEST_CASE("Vector: move assignment self", "[vector]") {
   REQUIRE(vec[1] == 20);
   REQUIRE(vec[2] == 30);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -854,7 +812,6 @@ TEST_CASE("Vector: equality same content", "[vector]") {
 
   REQUIRE(vec1 == vec2);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: equality different size", "[vector]") {
@@ -866,7 +823,6 @@ TEST_CASE("Vector: equality different size", "[vector]") {
 
   REQUIRE_FALSE(vec1 == vec2);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: equality different content", "[vector]") {
@@ -878,7 +834,6 @@ TEST_CASE("Vector: equality different content", "[vector]") {
 
   REQUIRE_FALSE(vec1 == vec2);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: inequality", "[vector]") {
@@ -890,7 +845,6 @@ TEST_CASE("Vector: inequality", "[vector]") {
 
   REQUIRE(vec1 != vec2);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: empty vector equality", "[vector]") {
@@ -903,7 +857,6 @@ TEST_CASE("Vector: empty vector equality", "[vector]") {
   REQUIRE(vec1 == vec2);
   REQUIRE_FALSE(vec1 != vec2);
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -925,7 +878,6 @@ TEST_CASE("Vector: pod push_back", "[vector][pod]") {
   REQUIRE(vec[1] == 2.5);
   REQUIRE(vec[2] == 3.5);
 
-  backend.shm_destroy();
 }
 
 // Pod copy constructor test removed - copy constructor is intentionally deleted
@@ -944,7 +896,6 @@ TEST_CASE("Vector: pod insert", "[vector][pod]") {
   REQUIRE(vec[1] == 2.0f);
   REQUIRE(vec[2] == 3.0f);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: pod erase", "[vector][pod]") {
@@ -959,7 +910,6 @@ TEST_CASE("Vector: pod erase", "[vector][pod]") {
   REQUIRE(vec[1] == 30);
   REQUIRE(vec[2] == 40);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: pod large vector", "[vector][pod]") {
@@ -978,7 +928,6 @@ TEST_CASE("Vector: pod large vector", "[vector][pod]") {
     REQUIRE(vec[i] == i);
   }
 
-  backend.shm_destroy();
 }
 
 // ============================================================================
@@ -1012,7 +961,6 @@ TEST_CASE("Vector: non-pod construction", "[vector][non-pod]") {
   REQUIRE(vec[1].value == 2);
   REQUIRE(vec[1].str == "second");
 
-  backend.shm_destroy();
 }
 
 // Non-pod copy and move tests removed - copy/move constructors are
@@ -1038,7 +986,6 @@ TEST_CASE("Vector: empty vector operations", "[vector][edge]") {
   vec.clear();
   REQUIRE(vec.size() == 0);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: single element", "[vector][edge]") {
@@ -1061,7 +1008,6 @@ TEST_CASE("Vector: single element", "[vector][edge]") {
   }
   REQUIRE(count == 1);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: capacity doubling", "[vector][edge]") {
@@ -1082,7 +1028,6 @@ TEST_CASE("Vector: capacity doubling", "[vector][edge]") {
     }
   }
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: repeated reserve", "[vector][edge]") {
@@ -1101,7 +1046,6 @@ TEST_CASE("Vector: repeated reserve", "[vector][edge]") {
   vec.reserve(15); // Should not shrink
   REQUIRE(vec.capacity() == cap2);
 
-  backend.shm_destroy();
 }
 
 TEST_CASE("Vector: all operations sequence", "[vector][stress]") {
@@ -1147,7 +1091,6 @@ TEST_CASE("Vector: all operations sequence", "[vector][stress]") {
   REQUIRE(vec.size() == 0);
   REQUIRE(vec.empty());
 
-  backend.shm_destroy();
 }
 
 SIMPLE_TEST_MAIN()

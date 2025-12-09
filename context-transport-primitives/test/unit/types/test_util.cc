@@ -26,7 +26,6 @@ TEST_CASE("ShmArchive") {
   x.shm_init(10);
   REQUIRE(sizeof(hipc::delay_ar<int>) == sizeof(int));
   REQUIRE(*x == 10);
-  x.shm_destroy();
 }
 
 TEST_CASE("TypeSwitch") {
