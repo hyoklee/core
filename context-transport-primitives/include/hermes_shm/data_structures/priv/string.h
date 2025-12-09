@@ -1907,6 +1907,17 @@ class basic_string {
   operator std::string() const {
     return std::string(GetData(), size_);
   }
+
+  /**
+   * Convert to std::string.
+   * Returns an std::string with same content as this string.
+   *
+   * @return std::string with same content
+   */
+  HSHM_CROSS_FUN
+  std::string str() const {
+    return std::string(GetData(), size_);
+  }
 };
 
 /**
