@@ -97,10 +97,10 @@ class _BuddyAllocator : public Allocator {
   Heap<false> big_heap_;   /**< Heap for large allocations */
   Heap<false> small_arena_; /**< Arena for small allocations */
 
-  pre::slist<false> small_pages_[kMaxSmallPages];   /**< Free lists for sizes 32B - 16KB */
-  pre::slist<false>
+  pre::slist<BuddyPage, false> small_pages_[kMaxSmallPages];   /**< Free lists for sizes 32B - 16KB */
+  pre::slist<BuddyPage, false>
       large_pages_[kMaxLargePages]; /**< Free lists for sizes 16KB - 1MB */
-  pre::slist<false> regions_;   /**< List of big_heap_ regions */
+  pre::slist<BuddyPage, false> regions_;   /**< List of big_heap_ regions */
 
   // _MultiProcessAllocator needs access to reconstruct pointers when attaching
   friend class _MultiProcessAllocator;
@@ -265,7 +265,7 @@ class _BuddyAllocator : public Allocator {
       // size_ already contains data_size from the allocation, keep it as-is
 
       // Add to free list - BuddyPage inherits from slist_node
-      FullPtr<pre::slist_node> node_ptr(this, OffsetPtr<pre::slist_node>(page_offset));
+      FullPtr<BuddyPage> node_ptr(this, OffsetPtr<BuddyPage>(page_offset));
       small_pages_[list_idx].emplace(this, node_ptr);
     } else {
       // Large page - add to large_pages_ list
@@ -277,7 +277,7 @@ class _BuddyAllocator : public Allocator {
       // size_ already contains data_size from the allocation, keep it as-is
 
       // Add to free list - BuddyPage inherits from slist_node
-      FullPtr<pre::slist_node> node_ptr(this, OffsetPtr<pre::slist_node>(page_offset));
+      FullPtr<BuddyPage> node_ptr(this, OffsetPtr<BuddyPage>(page_offset));
       large_pages_[list_idx].emplace(this, node_ptr);
     }
   }
@@ -297,7 +297,7 @@ class _BuddyAllocator : public Allocator {
     }
     FullPtr<BuddyPage> node(this, OffsetPtr<BuddyPage>(region.load()));
     node->size_ = region_size;
-    regions_.emplace(this, node.Cast<pre::slist_node>());
+    regions_.emplace(this, node);
     region += sizeof(BuddyPage);
     region_size -= sizeof(BuddyPage);
     DivideArenaIntoPages(big_heap_);
@@ -495,7 +495,7 @@ class _BuddyAllocator : public Allocator {
         free_page.ptr_->size_ = page_data_size;  // Data size excluding header
 
         // Add to free list
-        FullPtr<pre::slist_node> node_ptr(this, OffsetPtr<pre::slist_node>(remaining_offset));
+        FullPtr<BuddyPage> node_ptr(this, OffsetPtr<BuddyPage>(remaining_offset));
         small_pages_[i].emplace(this, node_ptr);
 
         remaining_offset += page_total_size;
@@ -526,7 +526,7 @@ class _BuddyAllocator : public Allocator {
       remainder.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
       remainder.ptr_->size_ = data_size;  // Data size excluding header
 
-      FullPtr<pre::slist_node> rem_node(this, OffsetPtr<pre::slist_node>(page_offset));
+      FullPtr<BuddyPage> rem_node(this, OffsetPtr<BuddyPage>(page_offset));
       small_pages_[rem_list_idx].emplace(this, rem_node);
     } else {
       // Large remainder - use exact size match
@@ -536,7 +536,7 @@ class _BuddyAllocator : public Allocator {
       remainder.ptr_->next_ = OffsetPtr<>::GetNull();  // Initialize slist_node
       remainder.ptr_->size_ = data_size;  // Data size excluding header
 
-      FullPtr<pre::slist_node> rem_node(this, OffsetPtr<pre::slist_node>(page_offset));
+      FullPtr<BuddyPage> rem_node(this, OffsetPtr<BuddyPage>(page_offset));
       large_pages_[rem_list_idx].emplace(this, rem_node);
     }
   }

@@ -27,7 +27,7 @@
 namespace hshm::ipc {
 
 /** Forward declaration for FullPtr (defined in allocator.h after this header) */
-template<typename T, typename PointerT>
+template <typename T, bool ATOMIC>
 struct FullPtr;
 
 /** ID for memory backend */

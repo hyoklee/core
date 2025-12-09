@@ -546,6 +546,18 @@ struct OffsetPtrBase : public ShmPointer {
 
   /** Set to 0 */
   HSHM_INLINE_CROSS_FUN void SetZero() { off_ = 0; }
+
+  /** Reinterpret cast to other type */
+  template <typename U, bool ATOMIC2 = ATOMIC>
+  HSHM_INLINE_CROSS_FUN OffsetPtrBase<U, ATOMIC2> &Cast() {
+    return *((OffsetPtrBase<U, ATOMIC2> *)this);
+  }
+
+  /** Reinterpret cast to other type (const) */
+  template <typename U, bool ATOMIC2 = ATOMIC>
+  HSHM_INLINE_CROSS_FUN const OffsetPtrBase<U, ATOMIC2> &Cast() const {
+    return *((const OffsetPtrBase<U, ATOMIC2> *)this);
+  }
 };
 
 /** Non-atomic offset pointer (defaults to void*) */
@@ -725,6 +737,18 @@ struct ShmPtrBase : public ShmPointer {
 
   /** Set to 0 */
   HSHM_INLINE_CROSS_FUN void SetZero() { off_.SetZero(); }
+
+  /** Reinterpret cast to other type */
+  template <typename U, bool ATOMIC2 = ATOMIC>
+  HSHM_INLINE_CROSS_FUN ShmPtrBase<U, ATOMIC2> &Cast() {
+    return *((ShmPtrBase<U, ATOMIC2> *)this);
+  }
+
+  /** Reinterpret cast to other type (const) */
+  template <typename U, bool ATOMIC2 = ATOMIC>
+  HSHM_INLINE_CROSS_FUN const ShmPtrBase<U, ATOMIC2> &Cast() const {
+    return *((const ShmPtrBase<U, ATOMIC2> *)this);
+  }
 };
 
 /** Non-atomic shared memory pointer (defaults to void*) */
@@ -737,8 +761,9 @@ using AtomicShmPtr = ShmPtrBase<T, true>;
 
 
 /** Struct containing both private and shared pointer */
-template <typename T = char, typename PointerT = ShmPtr<T>>
+template <typename T = char, bool ATOMIC = false>
 struct FullPtr : public ShmPointer {
+  typedef ShmPtrBase<T, ATOMIC> PointerT;
   T *ptr_;
   PointerT shm_;
 
@@ -775,9 +800,7 @@ struct FullPtr : public ShmPointer {
       : ptr_(const_cast<T *>(ptr)), shm_(shm) {}
 
   /** Shared half + alloc constructor for OffsetPtr */
-  template <
-      typename AllocT, bool ATOMIC,
-      typename = typename std::enable_if<!std::is_same<T, AllocT>::value>::type>
+  template <typename AllocT>
   HSHM_CROSS_FUN explicit FullPtr(AllocT *alloc,
                                   const OffsetPtrBase<T, ATOMIC> &shm) {
     if (alloc && alloc->ContainsPtr(shm)) {
@@ -804,9 +827,7 @@ struct FullPtr : public ShmPointer {
   }
 
   /** Shared half + alloc constructor for ShmPtr */
-  template <
-      typename AllocT, bool ATOMIC,
-      typename = typename std::enable_if<!std::is_same<T, AllocT>::value>::type>
+  template <typename AllocT>
   HSHM_CROSS_FUN explicit FullPtr(AllocT *alloc,
                                   const ShmPtrBase<T, ATOMIC> &shm) {
     if (alloc->ContainsPtr(shm)) {
@@ -953,22 +974,22 @@ struct FullPtr : public ShmPointer {
 
   /** Get null */
   HSHM_INLINE_CROSS_FUN static FullPtr GetNull() {
-    return FullPtr(nullptr, ShmPtr<>::GetNull());
+    return FullPtr(nullptr, PointerT::GetNull());
   }
 
   /** Set to null */
   HSHM_INLINE_CROSS_FUN void SetNull() { ptr_ = nullptr; }
 
   /** Reintrepret cast to other internal type */
-  template <typename U>
-  HSHM_INLINE_CROSS_FUN FullPtr<U, PointerT> &Cast() {
-    return DeepCast<FullPtr<U, PointerT>>();
+  template <typename U, bool ATOMIC2=ATOMIC>
+  HSHM_INLINE_CROSS_FUN FullPtr<U, ATOMIC2> &Cast() {
+    return DeepCast<FullPtr<U, ATOMIC2>>();
   }
 
-  /** Reintrepret cast to other internal type (const) */
-  template <typename U>
-  HSHM_INLINE_CROSS_FUN const FullPtr<U, PointerT> &Cast() const {
-    return DeepCast<FullPtr<U, PointerT>>();
+  /** Reintrepret cast to other internal type */
+  template <typename U, bool ATOMIC2 = ATOMIC>
+  HSHM_INLINE_CROSS_FUN const FullPtr<U, ATOMIC2> &Cast() const {
+    return DeepCast<FullPtr<U, ATOMIC2>>();
   }
 
   /** Reintrepret cast to another FullPtr */
@@ -1121,11 +1142,11 @@ class BaseAllocator : public CoreAllocT {
   /**
    * Allocate a region of memory to a specific pointer type
    * */
-  template <typename T = void, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Allocate(size_t size) {
+  template <typename T = void>
+  HSHM_INLINE_CROSS_FUN FullPtr<T> Allocate(size_t size) {
     auto offset_ptr = AllocateOffset(size);
     auto *alloc_ptr = static_cast<Allocator*>(this);
-    return FullPtr<T, PointerT>(alloc_ptr, OffsetPtr<T>(offset_ptr.load()));
+    return FullPtr<T>(alloc_ptr, OffsetPtr<T>(offset_ptr.load()));
   }
 
   /**
@@ -1134,22 +1155,23 @@ class BaseAllocator : public CoreAllocT {
    *
    * @return the reallocated FullPtr.
    * */
-  template <typename T = void, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> Reallocate(const FullPtr<T, PointerT> &p,
-                                        size_t new_size) {
+  template <typename T = void>
+  HSHM_INLINE_CROSS_FUN FullPtr<T> Reallocate(
+      const FullPtr<T> &p,
+      size_t new_size) {
     if (p.IsNull()) {
-      return Allocate<T, PointerT>(new_size);
+      return Allocate<T>(new_size);
     }
     auto new_off_ptr =
         ReallocateOffsetNoNullCheck(p.shm_.ToOffsetPtr(), new_size);
-    return FullPtr<T, PointerT>(this, OffsetPtr<T>(new_off_ptr.load()));
+    return FullPtr<T>(this, OffsetPtr<T>(new_off_ptr.load()));
   }
 
   /**
    * Free the memory pointed to by \a p Pointer
    * */
-  template <typename T = void, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN void Free(const FullPtr<T, PointerT> &p) {
+  template <typename T = void>
+  HSHM_INLINE_CROSS_FUN void Free(const FullPtr<T> &p) {
     if (p.IsNull()) {
       HSHM_THROW_ERROR(INVALID_FREE);
     }
@@ -1169,9 +1191,9 @@ class BaseAllocator : public CoreAllocT {
    *
    * @return A FullPtr to the allocated memory
    * */
-  template <typename T, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AllocateObjs(size_t count) {
-    return Allocate<T, PointerT>(count * sizeof(T));
+  template <typename T>
+  HSHM_INLINE_CROSS_FUN FullPtr<T> AllocateObjs(size_t count) {
+    return Allocate<T>(count * sizeof(T));
   }
 
   /**
@@ -1184,10 +1206,10 @@ class BaseAllocator : public CoreAllocT {
    * @param size Additional size for region after the object (in bytes)
    * @return FullPtr to the constructed object (region starts after the object)
    */
-  template <typename T, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> AllocateRegion(size_t size) {
+  template <typename T>
+  HSHM_INLINE_CROSS_FUN FullPtr<T> AllocateRegion(size_t size) {
     size_t total_size = sizeof(T) + size;
-    auto region = Allocate<T, PointerT>(total_size);
+    auto region = Allocate<T>(total_size);
     if (!region.IsNull()) {
       new (region.ptr_) T();  // Construct T at the region start
     }
@@ -1217,39 +1239,39 @@ class BaseAllocator : public CoreAllocT {
    *
    * @return A FullPtr to the reallocated objects
    * */
-  template <typename T, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN FullPtr<T, PointerT> ReallocateObjs(FullPtr<T, PointerT> &p,
+  template <typename T>
+  HSHM_INLINE_CROSS_FUN FullPtr<T> ReallocateObjs(FullPtr<T> &p,
                                                              size_t new_count) {
-    FullPtr<void, PointerT> old_full_ptr(reinterpret_cast<void*>(p.ptr_), p.shm_);
-    auto new_full_ptr = Reallocate<void, PointerT>(old_full_ptr, new_count * sizeof(T));
-    p = FullPtr<T, PointerT>(reinterpret_cast<T*>(new_full_ptr.ptr_), new_full_ptr.shm_);
+    FullPtr<void> old_full_ptr(reinterpret_cast<void*>(p.ptr_), p.shm_);
+    auto new_full_ptr = Reallocate<void>(old_full_ptr, new_count * sizeof(T));
+    p = FullPtr<T>(reinterpret_cast<T*>(new_full_ptr.ptr_), new_full_ptr.shm_);
     return p;
   }
 
   /** Free a region */
-  template <typename T, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN void FreeRegion(const FullPtr<T, PointerT> &p) {
+  template <typename T>
+  HSHM_INLINE_CROSS_FUN void FreeRegion(const FullPtr<T> &p) {
     DestructObj(p.ptr_);
-    FreeOffsetNoNullCheck(p.shm_.off_);
+    FreeOffsetNoNullCheck(p.shm_.off_.template Cast<void>());
   }
 
   /**
    * Free + destruct objects
    * */
-  template <typename T, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN void DelObjs(FullPtr<T, PointerT> &p,
+  template <typename T>
+  HSHM_INLINE_CROSS_FUN void DelObjs(FullPtr<T> &p,
                                      size_t count) {
     DestructObjs<T>(p.ptr_, count);
-    FullPtr<void, PointerT> void_ptr(reinterpret_cast<void*>(p.ptr_), p.shm_);
-    Free<void, PointerT>(void_ptr);
+    FullPtr<void> void_ptr(reinterpret_cast<void*>(p.ptr_), p.shm_);
+    Free<void>(void_ptr);
   }
 
   /**
    * Free + destruct an object
    * */
-  template <typename T, typename PointerT = ShmPtr<>>
-  HSHM_INLINE_CROSS_FUN void DelObj(FullPtr<T, PointerT> &p) {
-    DelObjs<T, PointerT>(p, 1);
+  template <typename T>
+  HSHM_INLINE_CROSS_FUN void DelObj(FullPtr<T> &p) {
+    DelObjs<T>(p, 1);
   }
 
 

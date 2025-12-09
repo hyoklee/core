@@ -73,8 +73,8 @@ class SimpleHeapAllocator {
    * @tparam T The object type
    * @param ptr FullPtr to memory to free
    */
-  template <typename T, typename PointerT = hipc::ShmPtr<>>
-  void Free(const hipc::FullPtr<T, PointerT>& ptr) {
+  template <typename T, bool ATOMIC = false>
+  void Free(const hipc::FullPtr<T, ATOMIC>& ptr) {
     if (ptr.ptr_ != nullptr) {
       free(ptr.ptr_);
     }

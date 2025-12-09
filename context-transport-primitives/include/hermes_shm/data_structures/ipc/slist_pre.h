@@ -58,11 +58,12 @@ class slist_node {
  * perform allocations. All nodes must be preallocated by the caller.
  *
  * The list maintains only the linkage between nodes - it does not own
- * the node memory. Nodes are expected to embed slist_node as a member.
+ * the node memory. Nodes are expected to inherit from slist_node.
  *
+ * @tparam NodeT The actual node type that inherits from slist_node
  * @tparam ATOMIC Whether to use atomic operations for thread-safety
  */
-template<bool ATOMIC = false>
+template<typename NodeT, bool ATOMIC = false>
 class slist {
  public:
   /**
@@ -77,16 +78,16 @@ class slist {
    */
   class Iterator {
    private:
-    OffsetPtr<> current_;  /**< Current node offset */
-    OffsetPtr<> prev_;     /**< Previous node offset (for PopAt functionality) */
-    void *alloc_;          /**< Allocator pointer for node traversal */
+    OffsetPtr<NodeT> current_;  /**< Current node offset */
+    OffsetPtr<NodeT> prev_;     /**< Previous node offset (for PopAt functionality) */
+    void *alloc_;               /**< Allocator pointer for node traversal */
 
    public:
     /**
      * Construct a null iterator
      */
     HSHM_CROSS_FUN
-    Iterator() : current_(OffsetPtr<>::GetNull()), prev_(OffsetPtr<>::GetNull()), alloc_(nullptr) {}
+    Iterator() : current_(OffsetPtr<NodeT>::GetNull()), prev_(OffsetPtr<NodeT>::GetNull()), alloc_(nullptr) {}
 
     /**
      * Construct an iterator at a specific position
@@ -96,7 +97,7 @@ class slist {
      * @param alloc Allocator pointer for node traversal
      */
     HSHM_CROSS_FUN
-    Iterator(const OffsetPtr<> &current, const OffsetPtr<> &prev, void *alloc = nullptr)
+    Iterator(const OffsetPtr<NodeT> &current, const OffsetPtr<NodeT> &prev, void *alloc = nullptr)
         : current_(current), prev_(prev), alloc_(alloc) {}
 
     /**
@@ -105,7 +106,7 @@ class slist {
      * @return OffsetPtr to current node
      */
     HSHM_CROSS_FUN
-    OffsetPtr<> GetCurrent() const {
+    OffsetPtr<NodeT> GetCurrent() const {
       return current_;
     }
 
@@ -115,7 +116,7 @@ class slist {
      * @return OffsetPtr to previous node (or null if at head)
      */
     HSHM_CROSS_FUN
-    OffsetPtr<> GetPrev() const {
+    OffsetPtr<NodeT> GetPrev() const {
       return prev_;
     }
 
@@ -147,8 +148,8 @@ class slist {
      */
     HSHM_CROSS_FUN
     void SetNull() {
-      current_ = OffsetPtr<>::GetNull();
-      prev_ = OffsetPtr<>::GetNull();
+      current_ = OffsetPtr<NodeT>::GetNull();
+      prev_ = OffsetPtr<NodeT>::GetNull();
     }
 
     /**
@@ -190,34 +191,34 @@ class slist {
       }
 
       // Get the next pointer from current node
-      auto current = FullPtr<slist_node>(static_cast<hipc::Allocator*>(alloc_),
-                                         OffsetPtr<slist_node>(current_.load()));
+      auto current = FullPtr<NodeT>(static_cast<hipc::Allocator*>(alloc_),
+                                    current_);
       OffsetPtr<> next_off = current.ptr_->next_;
 
       if (next_off.IsNull()) {
         // Update to null iterator for end
-        current_ = OffsetPtr<>::GetNull();
-        prev_ = OffsetPtr<>::GetNull();
+        current_ = OffsetPtr<NodeT>::GetNull();
+        prev_ = OffsetPtr<NodeT>::GetNull();
         return *this;
       }
 
       // Update previous to current, and advance current to next
       prev_ = current_;
-      current_ = next_off;
+      current_ = OffsetPtr<NodeT>(next_off);
       return *this;
     }
   };
 
  private:
   opt_atomic<size_t, ATOMIC> size_;  /**< Number of elements in the list */
-  OffsetPtr<> head_;               /**< Offset pointer to head node */
+  OffsetPtr<NodeT> head_;            /**< Offset pointer to head node */
 
  public:
   /**
    * Default constructor
    */
   HSHM_CROSS_FUN
-  slist() : size_(0), head_(OffsetPtr<>::GetNull()) {}
+  slist() : size_(0), head_(OffsetPtr<NodeT>::GetNull()) {}
 
   /**
    * Initialize the list
@@ -225,7 +226,7 @@ class slist {
   HSHM_CROSS_FUN
   void Init() {
     size_.store(0);
-    head_ = OffsetPtr<>::GetNull();
+    head_ = OffsetPtr<NodeT>::GetNull();
   }
 
   /**
@@ -236,9 +237,9 @@ class slist {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  void emplace(AllocT *alloc, FullPtr<slist_node> node) {
+  void emplace(AllocT *alloc, FullPtr<NodeT> node) {
     // Set node's next to current head
-    node.ptr_->next_ = head_;
+    node.ptr_->next_ = head_.template Cast<void>();
 
     // Update head to point to new node
     head_ = node.shm_.off_;
@@ -255,10 +256,10 @@ class slist {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  FullPtr<slist_node> pop(AllocT *alloc) {
+  FullPtr<NodeT> pop(AllocT *alloc) {
     // Check if list is empty
     if (size_.load() == 0) {
-      return FullPtr<slist_node>::GetNull();
+      return FullPtr<NodeT>::GetNull();
     }
 
     // Double-check that head is not null
@@ -266,23 +267,23 @@ class slist {
       // This shouldn't happen if size > 0, but let's handle it gracefully
       // Reset the list to empty state
       size_.store(0);
-      return FullPtr<slist_node>::GetNull();
+      return FullPtr<NodeT>::GetNull();
     }
 
     // Get the head node
-    auto head = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(head_.load()));
+    auto head = FullPtr<NodeT>(alloc, head_);
 
     // Check if head was successfully created
     if (head.IsNull()) {
       // This shouldn't happen, but let's handle it gracefully
       // Reset the list to empty state
       size_.store(0);
-      head_ = OffsetPtr<>::GetNull();
-      return FullPtr<slist_node>::GetNull();
+      head_ = OffsetPtr<NodeT>::GetNull();
+      return FullPtr<NodeT>::GetNull();
     }
 
     // Update head to next node
-    head_ = head.ptr_->next_;
+    head_ = OffsetPtr<NodeT>(head.ptr_->next_);
 
     // Decrement size
     size_.store(size_.load() - 1);
@@ -316,7 +317,7 @@ class slist {
    * @return Offset pointer to the head node
    */
   HSHM_CROSS_FUN
-  OffsetPtr<>GetHead() const {
+  OffsetPtr<NodeT> GetHead() const {
     return head_;
   }
 
@@ -328,11 +329,11 @@ class slist {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  FullPtr<slist_node> peek(AllocT *alloc) const {
+  FullPtr<NodeT> peek(AllocT *alloc) const {
     if (size_.load() == 0) {
-      return FullPtr<slist_node>::GetNull();
+      return FullPtr<NodeT>::GetNull();
     }
-    return FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(head_.load()));
+    return FullPtr<NodeT>(alloc, head_);
   }
 
   /**
@@ -344,7 +345,7 @@ class slist {
   template<typename AllocT>
   HSHM_CROSS_FUN
   Iterator begin(AllocT *alloc) {
-    return Iterator(head_, OffsetPtr<>::GetNull(), alloc);
+    return Iterator(head_, OffsetPtr<NodeT>::GetNull(), alloc);
   }
 
   /**
@@ -369,26 +370,26 @@ class slist {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  FullPtr<slist_node> PopAt(AllocT *alloc, const Iterator &it) {
+  FullPtr<NodeT> PopAt(AllocT *alloc, const Iterator &it) {
     // Check if iterator is valid
     if (it.IsNull()) {
-      return FullPtr<slist_node>::GetNull();
+      return FullPtr<NodeT>::GetNull();
     }
 
     // Check if list is empty
     if (size_.load() == 0) {
-      return FullPtr<slist_node>::GetNull();
+      return FullPtr<NodeT>::GetNull();
     }
 
     // Get the current node
-    auto current = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(it.GetCurrent().load()));
+    auto current = FullPtr<NodeT>(alloc, it.GetCurrent());
 
     if (it.IsAtHead()) {
       // Removing head node - update head_ directly
-      head_ = current.ptr_->next_;
+      head_ = OffsetPtr<NodeT>(current.ptr_->next_);
     } else {
       // Removing middle node - update prev's next pointer
-      auto prev = FullPtr<slist_node>(alloc, OffsetPtr<slist_node>(it.GetPrev().load()));
+      auto prev = FullPtr<NodeT>(alloc, it.GetPrev());
       prev.ptr_->next_ = current.ptr_->next_;
     }
 

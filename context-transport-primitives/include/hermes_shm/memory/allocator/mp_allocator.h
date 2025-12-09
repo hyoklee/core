@@ -95,7 +95,7 @@ class ProcessBlock : public pre::slist_node {
   int pid_;                    /**< Process ID */
   int tid_count_;              /**< Number of thread blocks allocated */
   hshm::Mutex lock_;           /**< Mutex protecting thread list */
-  pre::slist<false> threads_;  /**< List of ThreadBlocks */
+  pre::slist<ThreadBlock, false> threads_;  /**< List of ThreadBlocks */
   ThreadLocalKey tblock_key_;  /**< TLS key for ThreadBlock* */
   ThreadLocalKey pblock_key_;  /**< TLS key for ProcessBlock* */
   BuddyAllocator alloc_;       /**< Allocator for managing ThreadBlock regions (MUST BE LAST) */
@@ -195,8 +195,8 @@ class _MultiProcessAllocator : public Allocator {
  public:
   // Header fields (shared memory compatible)
   int pid_count_;                /**< Number of processes */
-  pre::slist<false> alloc_procs_;/**< Active ProcessBlocks */
-  pre::slist<false> free_procs_; /**< Free ProcessBlocks */
+  pre::slist<ProcessBlock, false> alloc_procs_;/**< Active ProcessBlocks */
+  pre::slist<ProcessBlock, false> free_procs_; /**< Free ProcessBlocks */
   hshm::Mutex lock_;             /**< Mutex protecting process lists */
 
   // Allocator state (shared memory compatible)
@@ -470,8 +470,7 @@ class _MultiProcessAllocator : public Allocator {
     }
 
     // Step 4: Add to allocated process list
-    FullPtr<pre::slist_node> pblock_node = pblock_ptr.Cast<pre::slist_node>();
-    alloc_procs_.emplace(&alloc_, pblock_node);
+    alloc_procs_.emplace(&alloc_, pblock_ptr);
 
     // Step 5: Call SetProcessBlock(pblock)
     SetProcessBlock(pblock_ptr.ptr_);

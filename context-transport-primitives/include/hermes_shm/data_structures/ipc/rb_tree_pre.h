@@ -85,14 +85,14 @@ class rb_tree {
 
  private:
   opt_atomic<size_t, ATOMIC> size_;  /**< Number of nodes in the tree */
-  OffsetPtr<>root_;                /**< Offset pointer to root node */
+  OffsetPtr<NodeT> root_;            /**< Offset pointer to root node */
 
  public:
   /**
    * Default constructor
    */
   HSHM_CROSS_FUN
-  rb_tree() : size_(0), root_(OffsetPtr<>::GetNull()) {}
+  rb_tree() : size_(0), root_(OffsetPtr<NodeT>::GetNull()) {}
 
   /**
    * Initialize the tree
@@ -100,7 +100,7 @@ class rb_tree {
   HSHM_CROSS_FUN
   void Init() {
     size_.store(0);
-    root_ = OffsetPtr<>::GetNull();
+    root_ = OffsetPtr<NodeT>::GetNull();
   }
 
   /**
@@ -123,7 +123,7 @@ class rb_tree {
    * Get the root pointer (for debugging/inspection)
    */
   HSHM_CROSS_FUN
-  OffsetPtr<>GetRoot() const {
+  OffsetPtr<NodeT> GetRoot() const {
     return root_;
   }
 
@@ -150,17 +150,17 @@ class rb_tree {
     }
 
     // Find insertion point
-    OffsetPtr<>curr_off = root_;
-    OffsetPtr<>parent_off = OffsetPtr<>::GetNull();
+    OffsetPtr<NodeT> curr_off = root_;
+    OffsetPtr<NodeT> parent_off = OffsetPtr<NodeT>::GetNull();
 
     while (!curr_off.IsNull()) {
-      FullPtr<NodeT> curr(alloc, OffsetPtr<NodeT>(curr_off.load()));
+      FullPtr<NodeT> curr(alloc, curr_off);
       parent_off = curr_off;
 
       if (*node.ptr_ < *curr.ptr_) {
-        curr_off = curr.ptr_->left_;
+        curr_off = OffsetPtr<NodeT>(curr.ptr_->left_);
       } else if (*node.ptr_ > *curr.ptr_) {
-        curr_off = curr.ptr_->right_;
+        curr_off = OffsetPtr<NodeT>(curr.ptr_->right_);
       } else {
         // Key already exists - don't insert duplicate
         return;
@@ -168,13 +168,13 @@ class rb_tree {
     }
 
     // Insert node
-    node.ptr_->parent_ = parent_off;
-    FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(parent_off.load()));
+    node.ptr_->parent_ = parent_off.template Cast<void>();
+    FullPtr<NodeT> parent(alloc, parent_off);
 
     if (*node.ptr_ < *parent.ptr_) {
-      parent.ptr_->left_ = node.shm_.off_;
+      parent.ptr_->left_ = node.shm_.off_.template Cast<void>();
     } else {
-      parent.ptr_->right_ = node.shm_.off_;
+      parent.ptr_->right_ = node.shm_.off_.template Cast<void>();
     }
 
     size_.store(size_.load() + 1);
@@ -198,54 +198,54 @@ class rb_tree {
     }
 
     // Find the node to delete
-    OffsetPtr<>node_off = FindNode(alloc, key);
+    OffsetPtr<NodeT> node_off = FindNode(alloc, key);
     if (node_off.IsNull()) {
       return FullPtr<NodeT>::GetNull();
     }
 
-    FullPtr<NodeT> node(alloc, OffsetPtr<NodeT>(node_off.load()));
+    FullPtr<NodeT> node(alloc, node_off);
     FullPtr<NodeT> result = node;  // Save for return
 
     // Node to be deleted and node to replace it
-    OffsetPtr<>replace_off;
+    OffsetPtr<> replace_off;
     RBColor original_color = node.ptr_->color_;
 
     // Track where the black node was actually removed (for FixDeleteFromParent)
-    OffsetPtr<>deleted_parent;
+    OffsetPtr<NodeT> deleted_parent;
     bool deleted_was_left;
 
     if (node.ptr_->left_.IsNull()) {
       // Case 1: No left child
       replace_off = node.ptr_->right_;
-      deleted_parent = node.ptr_->parent_;
+      deleted_parent = OffsetPtr<NodeT>(node.ptr_->parent_);
       deleted_was_left = false;
       if (!deleted_parent.IsNull()) {
-        FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(deleted_parent.load()));
+        FullPtr<NodeT> parent(alloc, deleted_parent);
         deleted_was_left = (parent.ptr_->left_.load() == node_off.load());
       }
-      Transplant(alloc, node_off, node.ptr_->right_);
+      Transplant(alloc, node_off, node.ptr_->right_.template Cast<void>());
     } else if (node.ptr_->right_.IsNull()) {
       // Case 2: No right child
       replace_off = node.ptr_->left_;
-      deleted_parent = node.ptr_->parent_;
+      deleted_parent = OffsetPtr<NodeT>(node.ptr_->parent_);
       deleted_was_left = false;
       if (!deleted_parent.IsNull()) {
-        FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(deleted_parent.load()));
+        FullPtr<NodeT> parent(alloc, deleted_parent);
         deleted_was_left = (parent.ptr_->left_.load() == node_off.load());
       }
-      Transplant(alloc, node_off, node.ptr_->left_);
+      Transplant(alloc, node_off, node.ptr_->left_.template Cast<void>());
     } else {
       // Case 3: Two children - find successor
-      OffsetPtr<>successor_off = Minimum(alloc, node.ptr_->right_);
-      FullPtr<NodeT> successor(alloc, OffsetPtr<NodeT>(successor_off.load()));
+      OffsetPtr<NodeT> successor_off = Minimum(alloc, node.ptr_->right_);
+      FullPtr<NodeT> successor(alloc, successor_off);
       original_color = successor.ptr_->color_;
       replace_off = successor.ptr_->right_;
 
       // Track where successor was originally (that's where black node is removed)
-      deleted_parent = successor.ptr_->parent_;
+      deleted_parent = OffsetPtr<NodeT>(successor.ptr_->parent_);
       deleted_was_left = false;
       if (!deleted_parent.IsNull()) {
-        FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(deleted_parent.load()));
+        FullPtr<NodeT> parent(alloc, deleted_parent);
         deleted_was_left = (parent.ptr_->left_.load() == successor_off.load());
       }
 
@@ -253,24 +253,24 @@ class rb_tree {
         // Successor is direct child
         if (!replace_off.IsNull()) {
           FullPtr<NodeT> replace(alloc, OffsetPtr<NodeT>(replace_off.load()));
-          replace.ptr_->parent_ = successor_off;
+          replace.ptr_->parent_ = successor_off.template Cast<void>();
         }
         // When successor is direct child of node, the deleted position's parent becomes the successor itself after transplant
         deleted_parent = successor_off;
       } else {
-        Transplant(alloc, successor_off, successor.ptr_->right_);
+        Transplant(alloc, successor_off, successor.ptr_->right_.template Cast<void>());
         successor.ptr_->right_ = node.ptr_->right_;
         if (!successor.ptr_->right_.IsNull()) {
           FullPtr<NodeT> right_child(alloc, OffsetPtr<NodeT>(successor.ptr_->right_.load()));
-          right_child.ptr_->parent_ = successor_off;
+          right_child.ptr_->parent_ = successor_off.template Cast<void>();
         }
       }
 
-      Transplant(alloc, node_off, successor_off);
+      Transplant(alloc, node_off, successor_off.template Cast<void>());
       successor.ptr_->left_ = node.ptr_->left_;
       if (!successor.ptr_->left_.IsNull()) {
         FullPtr<NodeT> left_child(alloc, OffsetPtr<NodeT>(successor.ptr_->left_.load()));
-        left_child.ptr_->parent_ = successor_off;
+        left_child.ptr_->parent_ = successor_off.template Cast<void>();
       }
       successor.ptr_->color_ = node.ptr_->color_;
     }
@@ -290,7 +290,7 @@ class rb_tree {
 
     // Ensure root is black
     if (!root_.IsNull()) {
-      FullPtr<NodeT> root_node(alloc, OffsetPtr<NodeT>(root_.load()));
+      FullPtr<NodeT> root_node(alloc, root_);
       root_node.ptr_->color_ = RBColor::BLACK;
     }
 
@@ -312,11 +312,11 @@ class rb_tree {
   template<typename AllocT>
   HSHM_CROSS_FUN
   FullPtr<NodeT> find(AllocT *alloc, const KeyT &key) const {
-    OffsetPtr<>node_off = FindNode(alloc, key);
+    OffsetPtr<NodeT> node_off = FindNode(alloc, key);
     if (node_off.IsNull()) {
       return FullPtr<NodeT>::GetNull();
     }
-    return FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node_off.load()));
+    return FullPtr<NodeT>(alloc, node_off);
   }
 
  private:
@@ -325,22 +325,22 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  OffsetPtr<>FindNode(AllocT *alloc, const KeyT &key) const {
-    OffsetPtr<>curr_off = root_;
+  OffsetPtr<NodeT> FindNode(AllocT *alloc, const KeyT &key) const {
+    OffsetPtr<NodeT> curr_off = root_;
 
     while (!curr_off.IsNull()) {
-      FullPtr<NodeT> curr(alloc, OffsetPtr<NodeT>(curr_off.load()));
+      FullPtr<NodeT> curr(alloc, curr_off);
 
       if (key < curr.ptr_->key) {
-        curr_off = curr.ptr_->left_;
+        curr_off = OffsetPtr<NodeT>(curr.ptr_->left_);
       } else if (key > curr.ptr_->key) {
-        curr_off = curr.ptr_->right_;
+        curr_off = OffsetPtr<NodeT>(curr.ptr_->right_);
       } else {
         return curr_off;
       }
     }
 
-    return OffsetPtr<>::GetNull();
+    return OffsetPtr<NodeT>::GetNull();
   }
 
   /**
@@ -348,15 +348,16 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  OffsetPtr<>Minimum(AllocT *alloc, OffsetPtr<> node_off) const {
-    while (!node_off.IsNull()) {
-      FullPtr<NodeT> node(alloc, OffsetPtr<NodeT>(node_off.load()));
+  OffsetPtr<NodeT> Minimum(AllocT *alloc, OffsetPtr<> node_off) const {
+    OffsetPtr<NodeT> curr_off(node_off);
+    while (!curr_off.IsNull()) {
+      FullPtr<NodeT> node(alloc, curr_off);
       if (node.ptr_->left_.IsNull()) {
         break;
       }
-      node_off = node.ptr_->left_;
+      curr_off = OffsetPtr<NodeT>(node.ptr_->left_);
     }
-    return node_off;
+    return curr_off;
   }
 
   /**
@@ -364,11 +365,11 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  void Transplant(AllocT *alloc, OffsetPtr<> u_off, OffsetPtr<> v_off) {
-    FullPtr<NodeT> u(alloc, OffsetPtr<NodeT>(u_off.load()));
+  void Transplant(AllocT *alloc, OffsetPtr<NodeT> u_off, OffsetPtr<> v_off) {
+    FullPtr<NodeT> u(alloc, u_off);
 
     if (u.ptr_->parent_.IsNull()) {
-      root_ = v_off;
+      root_ = OffsetPtr<NodeT>(v_off);
     } else {
       FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(u.ptr_->parent_.load()));
       if (u_off.load() == parent.ptr_->left_.load()) {
@@ -389,15 +390,15 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  void RotateLeft(AllocT *alloc, OffsetPtr<> x_off) {
-    FullPtr<NodeT> x(alloc, OffsetPtr<NodeT>(x_off.load()));
-    OffsetPtr<>y_off = x.ptr_->right_;
-    FullPtr<NodeT> y(alloc, OffsetPtr<NodeT>(y_off.load()));
+  void RotateLeft(AllocT *alloc, OffsetPtr<NodeT> x_off) {
+    FullPtr<NodeT> x(alloc, x_off);
+    OffsetPtr<NodeT> y_off(x.ptr_->right_);
+    FullPtr<NodeT> y(alloc, y_off);
 
     x.ptr_->right_ = y.ptr_->left_;
     if (!y.ptr_->left_.IsNull()) {
       FullPtr<NodeT> left_child(alloc, OffsetPtr<NodeT>(y.ptr_->left_.load()));
-      left_child.ptr_->parent_ = x_off;
+      left_child.ptr_->parent_ = x_off.template Cast<void>();
     }
 
     y.ptr_->parent_ = x.ptr_->parent_;
@@ -406,14 +407,14 @@ class rb_tree {
     } else {
       FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(x.ptr_->parent_.load()));
       if (x_off.load() == parent.ptr_->left_.load()) {
-        parent.ptr_->left_ = y_off;
+        parent.ptr_->left_ = y_off.template Cast<void>();
       } else {
-        parent.ptr_->right_ = y_off;
+        parent.ptr_->right_ = y_off.template Cast<void>();
       }
     }
 
-    y.ptr_->left_ = x_off;
-    x.ptr_->parent_ = y_off;
+    y.ptr_->left_ = x_off.template Cast<void>();
+    x.ptr_->parent_ = y_off.template Cast<void>();
   }
 
   /**
@@ -421,15 +422,15 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  void RotateRight(AllocT *alloc, OffsetPtr<> y_off) {
-    FullPtr<NodeT> y(alloc, OffsetPtr<NodeT>(y_off.load()));
-    OffsetPtr<>x_off = y.ptr_->left_;
-    FullPtr<NodeT> x(alloc, OffsetPtr<NodeT>(x_off.load()));
+  void RotateRight(AllocT *alloc, OffsetPtr<NodeT> y_off) {
+    FullPtr<NodeT> y(alloc, y_off);
+    OffsetPtr<NodeT> x_off(y.ptr_->left_);
+    FullPtr<NodeT> x(alloc, x_off);
 
     y.ptr_->left_ = x.ptr_->right_;
     if (!x.ptr_->right_.IsNull()) {
       FullPtr<NodeT> right_child(alloc, OffsetPtr<NodeT>(x.ptr_->right_.load()));
-      right_child.ptr_->parent_ = y_off;
+      right_child.ptr_->parent_ = y_off.template Cast<void>();
     }
 
     x.ptr_->parent_ = y.ptr_->parent_;
@@ -438,14 +439,14 @@ class rb_tree {
     } else {
       FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(y.ptr_->parent_.load()));
       if (y_off.load() == parent.ptr_->left_.load()) {
-        parent.ptr_->left_ = x_off;
+        parent.ptr_->left_ = x_off.template Cast<void>();
       } else {
-        parent.ptr_->right_ = x_off;
+        parent.ptr_->right_ = x_off.template Cast<void>();
       }
     }
 
-    x.ptr_->right_ = y_off;
-    y.ptr_->parent_ = x_off;
+    x.ptr_->right_ = y_off.template Cast<void>();
+    y.ptr_->parent_ = x_off.template Cast<void>();
   }
 
   /**
@@ -454,7 +455,7 @@ class rb_tree {
   template<typename AllocT>
   HSHM_CROSS_FUN
   void FixInsert(AllocT *alloc, FullPtr<NodeT> node) {
-    OffsetPtr<>node_off = node.shm_.off_;
+    OffsetPtr<NodeT> node_off = node.shm_.off_;
 
     while (!node.ptr_->parent_.IsNull()) {
       FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(node.ptr_->parent_.load()));
@@ -470,7 +471,7 @@ class rb_tree {
 
       if (node.ptr_->parent_.load() == grandparent.ptr_->left_.load()) {
         // Parent is left child
-        OffsetPtr<>uncle_off = grandparent.ptr_->right_;
+        OffsetPtr<> uncle_off = grandparent.ptr_->right_;
 
         if (!uncle_off.IsNull()) {
           FullPtr<NodeT> uncle(alloc, OffsetPtr<NodeT>(uncle_off.load()));
@@ -479,17 +480,17 @@ class rb_tree {
             parent.ptr_->color_ = RBColor::BLACK;
             uncle.ptr_->color_ = RBColor::BLACK;
             grandparent.ptr_->color_ = RBColor::RED;
-            node_off = parent.ptr_->parent_;
-            node = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node_off.load()));
+            node_off = OffsetPtr<NodeT>(parent.ptr_->parent_);
+            node = FullPtr<NodeT>(alloc, node_off);
             continue;
           }
         }
 
         if (node_off.load() == parent.ptr_->right_.load()) {
           // Case 2: Node is right child
-          node_off = node.ptr_->parent_;
+          node_off = OffsetPtr<NodeT>(node.ptr_->parent_.load());
           RotateLeft(alloc, node_off);
-          node = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node_off.load()));
+          node = FullPtr<NodeT>(alloc, node_off);
           parent = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node.ptr_->parent_.load()));
           grandparent = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(parent.ptr_->parent_.load()));
         }
@@ -497,10 +498,10 @@ class rb_tree {
         // Case 3: Node is left child
         parent.ptr_->color_ = RBColor::BLACK;
         grandparent.ptr_->color_ = RBColor::RED;
-        RotateRight(alloc, parent.ptr_->parent_);
+        RotateRight(alloc, OffsetPtr<NodeT>(parent.ptr_->parent_));
       } else {
         // Parent is right child (symmetric)
-        OffsetPtr<>uncle_off = grandparent.ptr_->left_;
+        OffsetPtr<> uncle_off = grandparent.ptr_->left_;
 
         if (!uncle_off.IsNull()) {
           FullPtr<NodeT> uncle(alloc, OffsetPtr<NodeT>(uncle_off.load()));
@@ -508,29 +509,29 @@ class rb_tree {
             parent.ptr_->color_ = RBColor::BLACK;
             uncle.ptr_->color_ = RBColor::BLACK;
             grandparent.ptr_->color_ = RBColor::RED;
-            node_off = parent.ptr_->parent_;
-            node = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node_off.load()));
+            node_off = OffsetPtr<NodeT>(parent.ptr_->parent_);
+            node = FullPtr<NodeT>(alloc, node_off);
             continue;
           }
         }
 
         if (node_off.load() == parent.ptr_->left_.load()) {
-          node_off = node.ptr_->parent_;
+          node_off = OffsetPtr<NodeT>(node.ptr_->parent_.load());
           RotateRight(alloc, node_off);
-          node = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node_off.load()));
+          node = FullPtr<NodeT>(alloc, node_off);
           parent = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(node.ptr_->parent_.load()));
           grandparent = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(parent.ptr_->parent_.load()));
         }
 
         parent.ptr_->color_ = RBColor::BLACK;
         grandparent.ptr_->color_ = RBColor::RED;
-        RotateLeft(alloc, parent.ptr_->parent_);
+        RotateLeft(alloc, OffsetPtr<NodeT>(parent.ptr_->parent_));
       }
     }
 
     // Ensure root is black
     if (!root_.IsNull()) {
-      FullPtr<NodeT> root(alloc, OffsetPtr<NodeT>(root_.load()));
+      FullPtr<NodeT> root(alloc, root_);
       root.ptr_->color_ = RBColor::BLACK;
     }
   }
@@ -540,9 +541,10 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  void FixDelete(AllocT *alloc, OffsetPtr<> node_off) {
+  void FixDelete(AllocT *alloc, OffsetPtr<> node_off_raw) {
+    OffsetPtr<NodeT> node_off(node_off_raw);
     while (node_off.load() != root_.load()) {
-      FullPtr<NodeT> node(alloc, OffsetPtr<NodeT>(node_off.load()));
+      FullPtr<NodeT> node(alloc, node_off);
       if (node.ptr_->color_ == RBColor::RED) {
         break;
       }
@@ -554,19 +556,19 @@ class rb_tree {
       FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(node.ptr_->parent_.load()));
 
       if (node_off.load() == parent.ptr_->left_.load()) {
-        OffsetPtr<>sibling_off = parent.ptr_->right_;
+        OffsetPtr<NodeT> sibling_off(parent.ptr_->right_);
         if (sibling_off.IsNull()) {
-          node_off = node.ptr_->parent_;
+          node_off = OffsetPtr<NodeT>(node.ptr_->parent_.load());
           continue;
         }
 
-        FullPtr<NodeT> sibling(alloc, OffsetPtr<NodeT>(sibling_off.load()));
+        FullPtr<NodeT> sibling(alloc, sibling_off);
 
         if (sibling.ptr_->color_ == RBColor::RED) {
           sibling.ptr_->color_ = RBColor::BLACK;
           parent.ptr_->color_ = RBColor::RED;
-          RotateLeft(alloc, node.ptr_->parent_);
-          sibling_off = parent.ptr_->right_;
+          RotateLeft(alloc, OffsetPtr<NodeT>(node.ptr_->parent_));
+          sibling_off = OffsetPtr<NodeT>(parent.ptr_->right_.load());
           sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
         }
 
@@ -584,7 +586,7 @@ class rb_tree {
 
         if (left_black && right_black) {
           sibling.ptr_->color_ = RBColor::RED;
-          node_off = node.ptr_->parent_;
+          node_off = OffsetPtr<NodeT>(node.ptr_->parent_.load());
         } else {
           if (right_black) {
             if (!sibling.ptr_->left_.IsNull()) {
@@ -592,8 +594,8 @@ class rb_tree {
               left.ptr_->color_ = RBColor::BLACK;
             }
             sibling.ptr_->color_ = RBColor::RED;
-            RotateRight(alloc, sibling_off);
-            sibling_off = parent.ptr_->right_;
+            RotateRight(alloc, OffsetPtr<NodeT>(sibling_off));
+            sibling_off = OffsetPtr<NodeT>(parent.ptr_->right_.load());
             sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
           }
 
@@ -603,24 +605,24 @@ class rb_tree {
             FullPtr<NodeT> right(alloc, OffsetPtr<NodeT>(sibling.ptr_->right_.load()));
             right.ptr_->color_ = RBColor::BLACK;
           }
-          RotateLeft(alloc, node.ptr_->parent_);
+          RotateLeft(alloc, OffsetPtr<NodeT>(node.ptr_->parent_));
           node_off = root_;
         }
       } else {
         // Symmetric case
-        OffsetPtr<>sibling_off = parent.ptr_->left_;
+        OffsetPtr<NodeT> sibling_off(parent.ptr_->left_);
         if (sibling_off.IsNull()) {
-          node_off = node.ptr_->parent_;
+          node_off = OffsetPtr<NodeT>(node.ptr_->parent_.load());
           continue;
         }
 
-        FullPtr<NodeT> sibling(alloc, OffsetPtr<NodeT>(sibling_off.load()));
+        FullPtr<NodeT> sibling(alloc, sibling_off);
 
         if (sibling.ptr_->color_ == RBColor::RED) {
           sibling.ptr_->color_ = RBColor::BLACK;
           parent.ptr_->color_ = RBColor::RED;
-          RotateRight(alloc, node.ptr_->parent_);
-          sibling_off = parent.ptr_->left_;
+          RotateRight(alloc, OffsetPtr<NodeT>(node.ptr_->parent_));
+          sibling_off = OffsetPtr<NodeT>(parent.ptr_->left_.load());
           sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
         }
 
@@ -638,7 +640,7 @@ class rb_tree {
 
         if (left_black && right_black) {
           sibling.ptr_->color_ = RBColor::RED;
-          node_off = node.ptr_->parent_;
+          node_off = OffsetPtr<NodeT>(node.ptr_->parent_.load());
         } else {
           if (left_black) {
             if (!sibling.ptr_->right_.IsNull()) {
@@ -646,8 +648,8 @@ class rb_tree {
               right.ptr_->color_ = RBColor::BLACK;
             }
             sibling.ptr_->color_ = RBColor::RED;
-            RotateLeft(alloc, sibling_off);
-            sibling_off = parent.ptr_->left_;
+            RotateLeft(alloc, OffsetPtr<NodeT>(sibling_off));
+            sibling_off = OffsetPtr<NodeT>(parent.ptr_->left_.load());
             sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
           }
 
@@ -657,7 +659,7 @@ class rb_tree {
             FullPtr<NodeT> left(alloc, OffsetPtr<NodeT>(sibling.ptr_->left_.load()));
             left.ptr_->color_ = RBColor::BLACK;
           }
-          RotateRight(alloc, node.ptr_->parent_);
+          RotateRight(alloc, OffsetPtr<NodeT>(node.ptr_->parent_));
           node_off = root_;
         }
       }
@@ -675,23 +677,23 @@ class rb_tree {
    */
   template<typename AllocT>
   HSHM_CROSS_FUN
-  void FixDeleteFromParent(AllocT *alloc, OffsetPtr<> parent_off, bool deleted_was_left) {
+  void FixDeleteFromParent(AllocT *alloc, OffsetPtr<NodeT> parent_off, bool deleted_was_left) {
     while (true) {
-      FullPtr<NodeT> parent(alloc, OffsetPtr<NodeT>(parent_off.load()));
+      FullPtr<NodeT> parent(alloc, parent_off);
 
       if (deleted_was_left) {
         // Deleted node was left child
-        OffsetPtr<>sibling_off = parent.ptr_->right_;
+        OffsetPtr<NodeT> sibling_off(parent.ptr_->right_);
         if (sibling_off.IsNull()) break;  // Shouldn't happen in valid RB tree
 
-        FullPtr<NodeT> sibling(alloc, OffsetPtr<NodeT>(sibling_off.load()));
+        FullPtr<NodeT> sibling(alloc, sibling_off);
 
         // Case 1: Red sibling
         if (sibling.ptr_->color_ == RBColor::RED) {
           sibling.ptr_->color_ = RBColor::BLACK;
           parent.ptr_->color_ = RBColor::RED;
           RotateLeft(alloc, parent_off);
-          sibling_off = parent.ptr_->right_;
+          sibling_off = OffsetPtr<NodeT>(parent.ptr_->right_.load());
           if (sibling_off.IsNull()) break;
           sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
         }
@@ -721,8 +723,8 @@ class rb_tree {
           }
           // Continue fixing from parent
           if (parent.ptr_->parent_.IsNull()) break;
-          OffsetPtr<>grandparent_off = parent.ptr_->parent_;
-          FullPtr<NodeT> grandparent(alloc, OffsetPtr<NodeT>(grandparent_off.load()));
+          OffsetPtr<NodeT> grandparent_off(parent.ptr_->parent_.load());
+          FullPtr<NodeT> grandparent(alloc, grandparent_off);
           deleted_was_left = (grandparent.ptr_->left_.load() == parent_off.load());
           parent_off = grandparent_off;
         } else {
@@ -733,8 +735,8 @@ class rb_tree {
               left.ptr_->color_ = RBColor::BLACK;
             }
             sibling.ptr_->color_ = RBColor::RED;
-            RotateRight(alloc, sibling_off);
-            sibling_off = parent.ptr_->right_;
+            RotateRight(alloc, OffsetPtr<NodeT>(sibling_off));
+            sibling_off = OffsetPtr<NodeT>(parent.ptr_->right_.load());
             sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
           }
 
@@ -750,16 +752,16 @@ class rb_tree {
         }
       } else {
         // Deleted node was right child (symmetric)
-        OffsetPtr<>sibling_off = parent.ptr_->left_;
+        OffsetPtr<NodeT> sibling_off(parent.ptr_->left_);
         if (sibling_off.IsNull()) break;
 
-        FullPtr<NodeT> sibling(alloc, OffsetPtr<NodeT>(sibling_off.load()));
+        FullPtr<NodeT> sibling(alloc, sibling_off);
 
         if (sibling.ptr_->color_ == RBColor::RED) {
           sibling.ptr_->color_ = RBColor::BLACK;
           parent.ptr_->color_ = RBColor::RED;
           RotateRight(alloc, parent_off);
-          sibling_off = parent.ptr_->left_;
+          sibling_off = OffsetPtr<NodeT>(parent.ptr_->left_.load());
           if (sibling_off.IsNull()) break;
           sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
         }
@@ -786,8 +788,8 @@ class rb_tree {
             return;
           }
           if (parent.ptr_->parent_.IsNull()) break;
-          OffsetPtr<>grandparent_off = parent.ptr_->parent_;
-          FullPtr<NodeT> grandparent(alloc, OffsetPtr<NodeT>(grandparent_off.load()));
+          OffsetPtr<NodeT> grandparent_off(parent.ptr_->parent_.load());
+          FullPtr<NodeT> grandparent(alloc, grandparent_off);
           deleted_was_left = (grandparent.ptr_->left_.load() == parent_off.load());
           parent_off = grandparent_off;
         } else {
@@ -797,8 +799,8 @@ class rb_tree {
               right.ptr_->color_ = RBColor::BLACK;
             }
             sibling.ptr_->color_ = RBColor::RED;
-            RotateLeft(alloc, sibling_off);
-            sibling_off = parent.ptr_->left_;
+            RotateLeft(alloc, OffsetPtr<NodeT>(sibling_off));
+            sibling_off = OffsetPtr<NodeT>(parent.ptr_->left_.load());
             sibling = FullPtr<NodeT>(alloc, OffsetPtr<NodeT>(sibling_off.load()));
           }
 

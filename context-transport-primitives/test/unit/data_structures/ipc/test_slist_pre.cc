@@ -19,10 +19,9 @@
 using namespace hshm::ipc;
 
 /**
- * Test node structure that embeds slist_node
+ * Test node structure that inherits from slist_node
  */
-struct TestNode {
-  pre::slist_node link_;  // List linkage
+struct TestNode : public pre::slist_node {
   int value_;             // Test data
 
   TestNode() : value_(0) {}
@@ -42,12 +41,12 @@ ArenaAllocator<ATOMIC>* CreateTestAllocator(MallocBackend &backend, size_t arena
 
 TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
   MallocBackend backend;
-  size_t arena_size = 1024 * 1024;  // 1 MB
+  size_t arena_size = 1024UL * 1024;  // 1 MB
   auto *alloc = CreateTestAllocator<false>(backend, arena_size);
   
 
   SECTION("Initialization") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     REQUIRE(list.size() == 0);
@@ -56,17 +55,15 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
   }
 
   SECTION("Single element emplace and pop") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Allocate a test node
     auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
     node_ptr.ptr_->value_ = 42;
 
-    // Emplace the node (cast to slist_node*)
-    auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-    FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-    list.emplace(alloc, link_ptr);
+    // Emplace the node
+    list.emplace(alloc, node_ptr);
 
     REQUIRE(list.size() == 1);
     REQUIRE_FALSE(list.empty());
@@ -79,12 +76,12 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
     REQUIRE(list.empty());
 
     // Verify the data
-    auto popped_node = reinterpret_cast<TestNode*>(popped.ptr_);
+    auto *popped_node = reinterpret_cast<TestNode*>(popped.ptr_);
     REQUIRE(popped_node->value_ == 42);
   }
 
   SECTION("Multiple elements - LIFO order") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Allocate and emplace 5 nodes
@@ -93,9 +90,7 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
       auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
 
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     REQUIRE(list.size() == NUM_NODES);
@@ -105,7 +100,7 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
       auto popped = list.pop(alloc);
       REQUIRE_FALSE(popped.IsNull());
 
-      auto popped_node = reinterpret_cast<TestNode*>(popped.ptr_);
+      auto *popped_node = reinterpret_cast<TestNode*>(popped.ptr_);
       REQUIRE(popped_node->value_ == i);
     }
 
@@ -114,7 +109,7 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
   }
 
   SECTION("Pop from empty list") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     auto popped = list.pop(alloc);
@@ -123,7 +118,7 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
   }
 
   SECTION("Peek operation") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Peek empty list
@@ -133,30 +128,26 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
     // Add a node
     auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
     node_ptr.ptr_->value_ = 100;
-    auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-    list.emplace(alloc, link_ptr);
+    list.emplace(alloc, node_ptr);
 
     // Peek should return the head without removing it
     peeked = list.peek(alloc);
     REQUIRE_FALSE(peeked.IsNull());
     REQUIRE(list.size() == 1);  // Size unchanged
 
-    auto peeked_node = reinterpret_cast<TestNode*>(peeked.ptr_);
+    auto *peeked_node = reinterpret_cast<TestNode*>(peeked.ptr_);
     REQUIRE(peeked_node->value_ == 100);
   }
 
   SECTION("Interleaved emplace and pop") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Emplace 3 nodes
     for (int i = 0; i < 3; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
     REQUIRE(list.size() == 3);
 
@@ -169,9 +160,7 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
     for (int i = 10; i < 12; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
     REQUIRE(list.size() == 3);
 
@@ -189,12 +178,12 @@ TEST_CASE("slist_pre - Basic Operations", "[slist_pre]") {
 
 TEST_CASE("slist_pre - Atomic Version", "[slist_pre][atomic]") {
   MallocBackend backend;
-  size_t arena_size = 1024 * 1024;
+  size_t arena_size = 1024UL * 1024;
   auto *alloc = CreateTestAllocator<true>(backend, arena_size);
   
 
   SECTION("Basic atomic operations") {
-    pre::slist<true> list;
+    pre::slist<TestNode, true> list;
     list.Init();
 
     // Allocate and emplace nodes
@@ -202,9 +191,7 @@ TEST_CASE("slist_pre - Atomic Version", "[slist_pre][atomic]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     REQUIRE(list.size() == NUM_NODES);
@@ -224,12 +211,12 @@ TEST_CASE("slist_pre - Atomic Version", "[slist_pre][atomic]") {
 
 TEST_CASE("slist_pre - Node Reuse", "[slist_pre]") {
   MallocBackend backend;
-  size_t arena_size = 1024 * 1024;
+  size_t arena_size = 1024UL * 1024;
   auto *alloc = CreateTestAllocator<false>(backend, arena_size);
   
 
   SECTION("Reuse popped nodes") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Allocate a node
@@ -237,16 +224,14 @@ TEST_CASE("slist_pre - Node Reuse", "[slist_pre]") {
     node_ptr.ptr_->value_ = 1;
 
     // Emplace, pop, modify, and re-emplace
-    auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-    list.emplace(alloc, link_ptr);
+    list.emplace(alloc, node_ptr);
 
     auto popped = list.pop(alloc);
     REQUIRE_FALSE(popped.IsNull());
     REQUIRE(list.size() == 0);
 
     // Modify the node
-    auto reused_node = reinterpret_cast<TestNode*>(popped.ptr_);
+    auto *reused_node = reinterpret_cast<TestNode*>(popped.ptr_);
     reused_node->value_ = 999;
 
     // Re-emplace the same node
@@ -262,12 +247,12 @@ TEST_CASE("slist_pre - Node Reuse", "[slist_pre]") {
 
 TEST_CASE("slist_pre - Large List", "[slist_pre]") {
   MallocBackend backend;
-  size_t arena_size = 10 * 1024 * 1024;  // 10 MB for large test
+  size_t arena_size = 10UL * 1024UL * 1024;  // 10 MB for large test
   auto *alloc = CreateTestAllocator<false>(backend, arena_size);
 
 
   SECTION("1000 elements") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 1000;
@@ -276,9 +261,7 @@ TEST_CASE("slist_pre - Large List", "[slist_pre]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>( sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     REQUIRE(list.size() == NUM_NODES);
@@ -299,12 +282,12 @@ TEST_CASE("slist_pre - Large List", "[slist_pre]") {
 
 TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   MallocBackend backend;
-  size_t arena_size = 1024 * 1024;  // 1 MB
+  size_t arena_size = 1024UL * 1024;  // 1 MB
   auto *alloc = CreateTestAllocator<false>(backend, arena_size);
 
 
   SECTION("Empty list iteration") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     auto it = list.begin(alloc);
@@ -313,15 +296,13 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Single element iteration") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Allocate and emplace a single node
     auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
     node_ptr.ptr_->value_ = 42;
-    auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-    FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-    list.emplace(alloc, link_ptr);
+    list.emplace(alloc, node_ptr);
 
     // Iterate and verify
     auto it = list.begin(alloc);
@@ -339,7 +320,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Multiple elements forward iteration") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 5;
@@ -347,9 +328,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     // Iterate through list using operator++()
@@ -364,16 +343,14 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator equality comparison") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Allocate and emplace two nodes
     for (int i = 0; i < 2; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     auto it1 = list.begin(alloc);
@@ -388,7 +365,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator position tracking") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 3;
@@ -396,9 +373,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     // Test IsAtHead for first iterator
@@ -419,7 +394,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Empty list loop behavior") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Verify loop with empty list doesn't execute
@@ -431,15 +406,13 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Single element Next() returns null") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Allocate and emplace a single node
     auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
     node_ptr.ptr_->value_ = 100;
-    auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-    FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-    list.emplace(alloc, link_ptr);
+    list.emplace(alloc, node_ptr);
 
     auto it = list.begin(alloc);
     REQUIRE_FALSE(it.IsNull());
@@ -457,7 +430,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator traversal with exact count") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 10;
@@ -465,9 +438,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     // Count elements during traversal
@@ -482,7 +453,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator GetCurrent() consistency") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 5;
@@ -490,9 +461,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i * 10;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     // Verify GetCurrent() returns correct offset at each position
@@ -511,7 +480,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator comparison - null iterators") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     auto it1 = list.end();
@@ -522,20 +491,18 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     REQUIRE_FALSE(it1 != it2);
 
     // Null iterator should equal default constructed iterator
-    pre::slist<false>::Iterator it3;
+    pre::slist<TestNode, false>::Iterator it3;
     REQUIRE(it1 == it3);
   }
 
   SECTION("Iterator comparison - null vs non-null") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Add a node
     auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
     node_ptr.ptr_->value_ = 1;
-    auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-    FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-    list.emplace(alloc, link_ptr);
+    list.emplace(alloc, node_ptr);
 
     auto it_begin = list.begin(alloc);
     auto it_end = list.end();
@@ -546,7 +513,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Large list iteration - 1000 elements") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 1000;
@@ -555,9 +522,7 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     // Iterate and verify all elements are visited
@@ -575,16 +540,14 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator IsAtHead tracking through iteration") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     const int NUM_NODES = 5;
     for (int i = 0; i < NUM_NODES; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     int position = 0;
@@ -603,16 +566,14 @@ TEST_CASE("slist_pre - Iterator Forward Traversal", "[slist_pre][iterator]") {
   }
 
   SECTION("Iterator with interleaved operations") {
-    pre::slist<false> list;
+    pre::slist<TestNode, false> list;
     list.Init();
 
     // Add initial nodes
     for (int i = 0; i < 3; ++i) {
       auto node_ptr = alloc->Allocate<TestNode>(sizeof(TestNode));
       node_ptr.ptr_->value_ = i;
-      auto *link_node_ptr = reinterpret_cast<pre::slist_node*>(node_ptr.ptr_);
-      FullPtr<pre::slist_node> link_ptr(link_node_ptr, static_cast<ShmPtr<>>(node_ptr.shm_));
-      list.emplace(alloc, link_ptr);
+      list.emplace(alloc, node_ptr);
     }
 
     // Take iterator snapshot
