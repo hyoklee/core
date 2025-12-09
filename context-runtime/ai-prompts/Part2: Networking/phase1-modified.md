@@ -101,7 +101,7 @@ struct NetworkForwardTask : public SerializableTask<NetworkForwardTask> {
   // Network-specific fields
   IN chi::u32 dest_node_rank_;     // Target node in cluster
   IN chi::u64 net_key_;            // Unique network identifier
-  INOUT hshm::priv::string task_data_;   // Serialized task data
+  INOUT chi::priv::string task_data_;   // Serialized task data
   IN chi::u32 original_method_;    // Original task's method ID
   OUT chi::u32 result_code_;       // Execution result
   

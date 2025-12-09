@@ -45,8 +45,9 @@ struct TaskStat {
  * All tasks represent C++ functions similar to RPCs that can be executed
  * across the distributed system.
  */
-class Task : public hipc::ShmContainer {
-public:
+class Task : public hipc::ShmContainer<CHI_MAIN_ALLOC_T> {
+ public:
+  typedef CHI_MAIN_ALLOC_T AllocT;
   IN PoolId pool_id_;       /**< Pool identifier for task execution */
   IN TaskId task_id_;       /**< Task identifier for task routing */
   IN PoolQuery pool_query_; /**< Pool query for execution location */
@@ -65,7 +66,7 @@ public:
    * SHM default constructor
    */
   explicit Task(AllocT* alloc)
-      : hipc::ShmContainer(alloc) {
+      : hipc::ShmContainer<AllocT>(alloc) {
     SetNull();
   }
 
@@ -75,7 +76,7 @@ public:
   explicit Task(AllocT* alloc,
                 const TaskId &task_id, const PoolId &pool_id,
                 const PoolQuery &pool_query, const MethodId &method)
-      : hipc::ShmContainer(alloc) {
+      : hipc::ShmContainer<AllocT>(alloc) {
     // Initialize task
     task_id_ = task_id;
     pool_id_ = pool_id;
@@ -213,13 +214,13 @@ public:
    */
   template <typename... Args>
   static void Serialize(AllocT* alloc,
-                        hshm::priv::string &output_str, const Args &...args) {
+                        chi::priv::string &output_str, const Args &...args) {
     std::ostringstream os;
     cereal::BinaryOutputArchive archive(os);
     archive(args...);
 
     std::string serialized = os.str();
-    output_str = hshm::priv::string(alloc, serialized);
+    output_str = chi::priv::string(alloc, serialized);
   }
 
   /**
@@ -228,7 +229,7 @@ public:
    * @return The deserialized object
    */
   template <typename OutT>
-  static OutT Deserialize(const hshm::priv::string &input_str) {
+  static OutT Deserialize(const chi::priv::string &input_str) {
     std::string data = input_str.str();
     std::istringstream is(data);
     cereal::BinaryInputArchive archive(is);

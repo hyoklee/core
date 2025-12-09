@@ -59,14 +59,14 @@ template <typename CreateParamsT, chi::u32 MethodId = Method::kCreate,
           bool IS_ADMIN = false, bool DO_COMPOSE = false>
 struct BaseCreateTask : public chi::Task {
   // Pool operation parameters
-  INOUT hshm::priv::string chimod_name_;
-  IN hshm::priv::string pool_name_;
-  INOUT hshm::priv::string
+  INOUT chi::priv::string chimod_name_;
+  IN chi::priv::string pool_name_;
+  INOUT chi::priv::string
       chimod_params_; // Serialized parameters for the specific ChiMod
   INOUT chi::PoolId new_pool_id_;
 
   // Results for pool operations
-  OUT hshm::priv::string error_message_;
+  OUT chi::priv::string error_message_;
 
   // Volatile flags set by template parameters
   volatile bool is_admin_;
@@ -231,7 +231,7 @@ struct DestroyPoolTask : public chi::Task {
   IN chi::u32 destruction_flags_; ///< Flags controlling destruction behavior
 
   // Output results
-  OUT hshm::priv::string error_message_; ///< Error description if destruction failed
+  OUT chi::priv::string error_message_; ///< Error description if destruction failed
 
   /** SHM default constructor */
   explicit DestroyPoolTask(AllocT* alloc)
@@ -295,7 +295,7 @@ struct StopRuntimeTask : public chi::Task {
   IN chi::u32 grace_period_ms_; ///< Grace period for clean shutdown
 
   // Output results
-  OUT hshm::priv::string error_message_; ///< Error description if shutdown failed
+  OUT chi::priv::string error_message_; ///< Error description if shutdown failed
 
   /** SHM default constructor */
   explicit StopRuntimeTask(AllocT* alloc)
@@ -429,7 +429,7 @@ struct SendTask : public chi::Task {
   IN chi::u32 transfer_flags_; ///< Flags controlling transfer behavior
 
   // Results
-  OUT hshm::priv::string error_message_; ///< Error description if transfer failed
+  OUT chi::priv::string error_message_; ///< Error description if transfer failed
 
   /** SHM default constructor */
   explicit SendTask(AllocT* alloc)
@@ -495,7 +495,7 @@ struct RecvTask : public chi::Task {
   IN chi::u32 transfer_flags_; ///< Flags controlling transfer behavior
 
   // Results
-  OUT hshm::priv::string error_message_; ///< Error description if transfer failed
+  OUT chi::priv::string error_message_; ///< Error description if transfer failed
 
   /** SHM default constructor */
   explicit RecvTask(AllocT* alloc)

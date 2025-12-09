@@ -432,7 +432,7 @@ class Container : public chi::Container {
     // Process the operation
     std::string result = processData(task->data_.str(),
                                     task->operation_id_);
-    task->data_ = hshm::priv::string(main_allocator_, result);
+    task->data_ = chi::priv::string(main_allocator_, result);
     task->result_code_ = 0;
     // Task completion is handled by the framework
   }
@@ -566,7 +566,7 @@ void Runtime::GetOrCreatePool(
 
   } catch (const std::exception &e) {
     task->return_code_ = 99;
-    task->error_message_ = hshm::priv::string(
+    task->error_message_ = chi::priv::string(
         task->GetCtxAllocator(),
         std::string("Exception during pool creation: ") + e.what());
     HELOG(kError, "Admin: Pool creation failed with exception: {}", e.what());
@@ -2142,15 +2142,15 @@ chi::ipc::string task_string(ctx_alloc, "persistent data");
 For task definitions and any data that needs to be shared between client and runtime processes, always use shared-memory compatible types instead of standard C++ containers.
 
 #### chi::ipc::string
-Use `chi::ipc::string` or `hshm::priv::string` instead of `std::string` in task definitions:
+Use `chi::ipc::string` or `chi::priv::string` instead of `std::string` in task definitions:
 
 ```cpp
 #include <[namespace]/types.h>
 
 // Task definition using shared-memory string
 struct CustomTask : public chi::Task {
-  INOUT hshm::priv::string input_data_;     // Shared-memory compatible string
-  INOUT hshm::priv::string output_data_;    // Results stored in shared memory
+  INOUT chi::priv::string input_data_;     // Shared-memory compatible string
+  INOUT chi::priv::string output_data_;    // Results stored in shared memory
   
   CustomTask(const hipc::CtxAllocator<CHI_MAIN_ALLOC_T>& alloc,
              const std::string& input) 
@@ -2186,7 +2186,7 @@ struct ProcessArrayTask : public chi::Task {
 
 #### When to Use Each Type
 
-**Use shared-memory types (chi::ipc::string, hshm::priv::string, chi::ipc::vector, etc.) for:**
+**Use shared-memory types (chi::ipc::string, chi::priv::string, chi::ipc::vector, etc.) for:**
 - Task input/output parameters
 - Data that persists across task execution
 - Any data structure that needs serialization
@@ -2201,7 +2201,7 @@ struct ProcessArrayTask : public chi::Task {
 ```cpp
 // Converting between std::string and shared-memory string types
 std::string std_str = "example data";
-hshm::priv::string shm_str(ctx_alloc, std_str);          // std -> shared memory
+chi::priv::string shm_str(ctx_alloc, std_str);          // std -> shared memory
 std::string result = std::string(shm_str);         // shared memory -> std
 
 // Converting between std::vector and shared-memory vector types
@@ -2218,7 +2218,7 @@ Both `chi::ipc::string` and `chi::ipc::vector` automatically support serializati
 ```cpp
 // Task definition - no manual serialization needed
 struct SerializableTask : public chi::Task {
-  INOUT hshm::priv::string message_;
+  INOUT chi::priv::string message_;
   INOUT chi::ipc::vector<chi::u64> timestamps_;
 
   // Cereal automatically handles chi::ipc types

@@ -210,7 +210,7 @@ struct CompressTask : public chi::Task {
 
 IN, INOUT, and OUT are empty macros used just for helping visualize which parameters are inputs and which are outputs.
 
-Tasks should be compatible with shared memory. Use hshm::priv::strings and vectors for storing information within tasks.
+Tasks should be compatible with shared memory. Use chi::priv::strings and vectors for storing information within tasks.
 
 #### include/mod_name/mod_name_client.h and cc
 This will expose methods for external programs to send tasks to the chimaera runtime. This includes tasks for creating a pool of this container type.

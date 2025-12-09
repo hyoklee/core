@@ -36,7 +36,7 @@ struct DataTransfer {
   DataTransfer(const hipc::FullPtr<char> &d, size_t s, uint32_t f)
       : data(d), size(s), flags(f) {}
   DataTransfer(hipc::ShmPtr<> ptr, size_t s, uint32_t f)
-      : data(hipc::FullPtr<char>(ptr)), size(s), flags(f) {}
+      : data(hipc::FullPtr<char>(CHI_IPC->GetMainAllocator(), ptr)), size(s), flags(f) {}
 
   // Serialization support for cereal
   template <class Archive> void serialize(Archive &ar) {

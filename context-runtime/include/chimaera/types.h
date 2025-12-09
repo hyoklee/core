@@ -315,11 +315,14 @@ TaskId CreateTaskId();
 // Template aliases for full pointers using HSHM
 template <typename T> using FullPtr = hipc::FullPtr<T>;
 
-} // namespace chi
+}  // namespace chi
 
-// Create HSHM data structures template for chi namespace
-// TODO: HSHM_DATA_STRUCTURES_TEMPLATE macro has been removed
-// HSHM_DATA_STRUCTURES_TEMPLATE(chi, CHI_MAIN_ALLOC_T);
+namespace chi::priv {
+typedef hshm::priv::string<CHI_MAIN_ALLOC_T> string;
+
+template<typename T>
+using vector = hshm::priv::vector<T, CHI_MAIN_ALLOC_T>;
+}  // namespace chi
 
 // Hash function specializations for std::unordered_map
 namespace std {
