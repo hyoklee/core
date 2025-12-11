@@ -38,7 +38,7 @@ int main(int argc, char* argv[]) {
 
     // Additional validation: check if TaskQueue is accessible
     auto* task_queue = ipc_manager->GetTaskQueue();
-    if (!task_queue || task_queue->IsNull()) {
+    if (!task_queue) {
       HELOG(kError, "TaskQueue not available - runtime may not be properly initialized");
       return 1;
     }

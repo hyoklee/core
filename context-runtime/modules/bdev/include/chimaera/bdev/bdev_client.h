@@ -30,12 +30,12 @@ class Client : public chi::ContainerClient {
    * @param perf_metrics Optional user-defined performance characteristics (uses defaults if not provided)
    * @return true if creation succeeded, false if it failed
    */
-  bool Create(const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  bool Create(const chi::PoolQuery& pool_query,
               const std::string& pool_name, const chi::PoolId& custom_pool_id,
               BdevType bdev_type, chi::u64 total_size = 0, chi::u32 io_depth = 32,
               chi::u32 alignment = 4096,
               const PerfMetrics* perf_metrics = nullptr) {
-    auto task = AsyncCreate(mctx, pool_query, pool_name, custom_pool_id, bdev_type, total_size,
+    auto task = AsyncCreate(pool_query, pool_name, custom_pool_id, bdev_type, total_size,
                             io_depth, alignment, perf_metrics);
     task->Wait();
 
@@ -59,7 +59,7 @@ class Client : public chi::ContainerClient {
    * @param perf_metrics Optional user-defined performance characteristics (uses defaults if not provided)
    */
   hipc::FullPtr<chimaera::bdev::CreateTask> AsyncCreate(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       const std::string& pool_name, const chi::PoolId& custom_pool_id,
       BdevType bdev_type, chi::u64 total_size = 0,
       chi::u32 io_depth = 32, chi::u32 alignment = 4096,
@@ -91,10 +91,9 @@ class Client : public chi::ContainerClient {
   /**
    * Allocate multiple blocks - synchronous
    */
-  std::vector<Block> AllocateBlocks(const hipc::MemContext& mctx,
-                                     const chi::PoolQuery& pool_query,
+  std::vector<Block> AllocateBlocks(const chi::PoolQuery& pool_query,
                                      chi::u64 size) {
-    auto task = AsyncAllocateBlocks(mctx, pool_query, size);
+    auto task = AsyncAllocateBlocks(pool_query, size);
     task->Wait();
     std::vector<Block> result;
     for (size_t i = 0; i < task->blocks_.size(); ++i) {
@@ -108,7 +107,7 @@ class Client : public chi::ContainerClient {
    * Allocate data blocks - asynchronous
    */
   hipc::FullPtr<AllocateBlocksTask> AsyncAllocateBlocks(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       chi::u64 size) {
     auto* ipc_manager = CHI_IPC;
 
@@ -122,10 +121,9 @@ class Client : public chi::ContainerClient {
   /**
    * Free multiple blocks - synchronous
    */
-  chi::u32 FreeBlocks(const hipc::MemContext& mctx,
-                      const chi::PoolQuery& pool_query,
+  chi::u32 FreeBlocks(const chi::PoolQuery& pool_query,
                       const std::vector<Block>& blocks) {
-    auto task = AsyncFreeBlocks(mctx, pool_query, blocks);
+    auto task = AsyncFreeBlocks(pool_query, blocks);
     task->Wait();
     chi::u32 result = task->return_code_;
     CHI_IPC->DelTask(task);
@@ -136,7 +134,7 @@ class Client : public chi::ContainerClient {
    * Free multiple blocks - asynchronous
    */
   hipc::FullPtr<chimaera::bdev::FreeBlocksTask> AsyncFreeBlocks(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       const std::vector<Block>& blocks) {
     auto* ipc_manager = CHI_IPC;
 
@@ -151,10 +149,10 @@ class Client : public chi::ContainerClient {
   /**
    * Write data to blocks - synchronous
    */
-  chi::u64 Write(const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  chi::u64 Write(const chi::PoolQuery& pool_query,
                  const ArrayVector<Block, 16>& blocks, hipc::ShmPtr<> data,
                  size_t length) {
-    auto task = AsyncWrite(mctx, pool_query, blocks, data, length);
+    auto task = AsyncWrite(pool_query, blocks, data, length);
     task->Wait();
     chi::u64 bytes_written = task->bytes_written_;
     CHI_IPC->DelTask(task);
@@ -165,7 +163,7 @@ class Client : public chi::ContainerClient {
    * Write data to blocks - asynchronous
    */
   hipc::FullPtr<chimaera::bdev::WriteTask> AsyncWrite(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       const ArrayVector<Block, 16>& blocks, hipc::ShmPtr<> data, size_t length) {
     auto* ipc_manager = CHI_IPC;
 
@@ -180,10 +178,10 @@ class Client : public chi::ContainerClient {
    * Read data from blocks - synchronous
    * Allocates buffer and returns pointer and size via output parameters
    */
-  chi::u64 Read(const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  chi::u64 Read(const chi::PoolQuery& pool_query,
                 const ArrayVector<Block, 16>& blocks, hipc::ShmPtr<>& data_out,
                 size_t buffer_size) {
-    auto task = AsyncRead(mctx, pool_query, blocks, data_out, buffer_size);
+    auto task = AsyncRead(pool_query, blocks, data_out, buffer_size);
     task->Wait();
     chi::u64 bytes_read = task->bytes_read_;
     CHI_IPC->DelTask(task);
@@ -194,7 +192,7 @@ class Client : public chi::ContainerClient {
    * Read data from blocks - asynchronous
    */
   hipc::FullPtr<chimaera::bdev::ReadTask> AsyncRead(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       const ArrayVector<Block, 16>& blocks, hipc::ShmPtr<> data,
       size_t buffer_size) {
     auto* ipc_manager = CHI_IPC;
@@ -209,8 +207,8 @@ class Client : public chi::ContainerClient {
   /**
    * Get performance statistics - synchronous
    */
-  PerfMetrics GetStats(const hipc::MemContext& mctx, chi::u64& remaining_size) {
-    auto task = AsyncGetStats(mctx);
+  PerfMetrics GetStats(chi::u64& remaining_size) {
+    auto task = AsyncGetStats();
     task->Wait();
     PerfMetrics metrics = task->metrics_;
     remaining_size = task->remaining_size_;
@@ -221,8 +219,7 @@ class Client : public chi::ContainerClient {
   /**
    * Get performance statistics - asynchronous
    */
-  hipc::FullPtr<chimaera::bdev::GetStatsTask> AsyncGetStats(
-      const hipc::MemContext& mctx) {
+  hipc::FullPtr<chimaera::bdev::GetStatsTask> AsyncGetStats() {
     auto* ipc_manager = CHI_IPC;
 
     auto task = ipc_manager->NewTask<chimaera::bdev::GetStatsTask>(

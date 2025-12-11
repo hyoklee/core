@@ -33,13 +33,14 @@
 #include <cereal/types/string.hpp>
 #include <cereal/types/vector.hpp>
 
-namespace {
+using namespace chi;
+
 // Test constants
 constexpr chi::u32 kTestWriteFlag = 0x1;  // BULK_XFER
 constexpr chi::u32 kTestExposeFlag = 0x2; // BULK_EXPOSE
 
-// Helper allocator for tests
-AllocT* GetTestAllocator() {
+// Helper allocator for tests - returns main allocator for task construction
+Task::AllocT* GetTestAllocator() {
   return CHI_IPC->GetMainAllocator();
 }
 
@@ -61,7 +62,7 @@ std::unique_ptr<chimaera::admin::CreateTask> CreateTestAdminTask() {
       alloc, chi::TaskId(2, 2, 2, 0, 2), chi::PoolId(200, 0), chi::PoolQuery(),
       "test_chimod", "test_pool", chi::PoolId(300, 0));
   task->return_code_ = 42;
-  task->error_message_ = chi::priv::string(alloc, "test error message");
+  task->error_message_ = chi::priv::string("test error message", alloc);
   return task;
 }
 
@@ -85,7 +86,6 @@ struct TestData {
 TestData CreateTestData() {
   return TestData{42, "hello world", {1.5, 2.7, 3.14159}};
 }
-} // namespace
 
 TEST_CASE("TaskLoadInArchive - Basic Construction",
           "[task_archive][input_in]") {
@@ -339,8 +339,8 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     size_t task_count_in;
     in_archive_in.GetArchive()(task_count_in);
     auto new_task_in = CreateTestAdminTask();
-    new_task_in->chimod_name_ = chi::priv::string(GetTestAllocator(), ""); // Clear
-    new_task_in->pool_name_ = chi::priv::string(GetTestAllocator(), "");
+    new_task_in->chimod_name_ = chi::priv::string("", GetTestAllocator()); // Clear
+    new_task_in->pool_name_ = chi::priv::string("", GetTestAllocator());
     REQUIRE_NOTHROW(in_archive_in >> *new_task_in);
 
     // Verify IN/INOUT parameters were preserved
@@ -357,7 +357,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     chi::TaskLoadOutArchive in_archive_out(out_data);
     auto new_task_out = CreateTestAdminTask();
     new_task_out->return_code_ = 0; // Clear
-    new_task_out->error_message_ = chi::priv::string(GetTestAllocator(), "");
+    new_task_out->error_message_ = chi::priv::string("", GetTestAllocator());
     REQUIRE_NOTHROW(in_archive_out >> *new_task_out);
 
     // Verify OUT/INOUT parameters were preserved
@@ -374,7 +374,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
         alloc, chi::TaskId(3, 3, 3, 0, 3), chi::PoolId(400, 0),
         chi::PoolQuery(), chi::PoolId(500, 0), 0x123);
     original_task.return_code_ = 99;
-    original_task.error_message_ = chi::priv::string(alloc, "destroy error");
+    original_task.error_message_ = chi::priv::string("destroy error", alloc);
 
     // Test round-trip IN parameters
     chi::TaskSaveInArchive out_archive_in(1);
@@ -408,7 +408,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
         alloc, chi::TaskId(4, 4, 4, 0, 4), chi::PoolId(600, 0),
         chi::PoolQuery(), 0x456, 10000);
     original_task.return_code_ = 777;
-    original_task.error_message_ = chi::priv::string(alloc, "shutdown error");
+    original_task.error_message_ = chi::priv::string("shutdown error", alloc);
 
     // Test IN parameters
     chi::TaskSaveInArchive out_archive_in(1);
@@ -530,7 +530,7 @@ public:
     if (ipc_manager) {
       dup_task = ipc_manager->NewTask<chi::Task>();
       if (!dup_task.IsNull()) {
-        dup_task->shm_strong_copy_main(*orig_task);
+        dup_task->Copy(orig_task);
       }
     }
   }
@@ -548,7 +548,8 @@ TEST_CASE("Container Serialization Methods", "[task_archive][container]") {
   SECTION("Container SaveTask/LoadTask with SerializeIn mode") {
     TestContainer container;
     auto original_task = CreateTestTask();
-    hipc::FullPtr<chi::Task> task_ptr(original_task.get());
+    auto alloc = GetTestAllocator();
+    hipc::FullPtr<chi::Task> task_ptr(alloc, original_task.get());
 
     // Test SaveTask with SerializeIn mode (inputs)
     chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeIn);
@@ -560,7 +561,8 @@ TEST_CASE("Container Serialization Methods", "[task_archive][container]") {
     // Test LoadTask with SerializeIn mode (inputs)
     auto new_task = CreateTestTask();
     new_task->SetNull();
-    hipc::FullPtr<chi::Task> new_task_ptr(new_task.get());
+    auto alloc_in = GetTestAllocator();
+    hipc::FullPtr<chi::Task> new_task_ptr(alloc_in, new_task.get());
     new_task_ptr->method_ =
         original_task->method_; // LoadTask needs method for switch-case
     chi::LoadTaskArchive load_archive(serialized_data);
@@ -575,7 +577,8 @@ TEST_CASE("Container Serialization Methods", "[task_archive][container]") {
   SECTION("Container SaveTask/LoadTask with SerializeOut mode") {
     TestContainer container;
     auto original_task = CreateTestTask();
-    hipc::FullPtr<chi::Task> task_ptr(original_task.get());
+    auto alloc = GetTestAllocator();
+    hipc::FullPtr<chi::Task> task_ptr(alloc, original_task.get());
 
     // Test SaveTask with SerializeOut mode (outputs)
     chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeOut);
@@ -587,7 +590,8 @@ TEST_CASE("Container Serialization Methods", "[task_archive][container]") {
     // Test LoadTask with SerializeOut mode (outputs)
     auto new_task = CreateTestTask();
     new_task->SetNull();
-    hipc::FullPtr<chi::Task> new_task_ptr(new_task.get());
+    auto alloc_out = GetTestAllocator();
+    hipc::FullPtr<chi::Task> new_task_ptr(alloc_out, new_task.get());
     new_task_ptr->method_ =
         original_task->method_; // LoadTask needs method for switch-case
     chi::LoadTaskArchive load_archive(serialized_data);
@@ -709,8 +713,8 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     size_t task_count_in;
     recv_in_archive.GetArchive()(task_count_in);
     auto remote_task = CreateTestAdminTask();
-    remote_task->chimod_name_ = chi::priv::string(GetTestAllocator(), ""); // Clear
-    remote_task->pool_name_ = chi::priv::string(GetTestAllocator(), "");
+    remote_task->chimod_name_ = chi::priv::string("", GetTestAllocator()); // Clear
+    remote_task->pool_name_ = chi::priv::string("", GetTestAllocator());
     recv_in_archive >> *remote_task;
 
     // Verify IN parameters were transferred
@@ -722,7 +726,7 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     // Step 3: Simulate task execution and result generation on remote node
     remote_task->return_code_ = 123;
     remote_task->error_message_ =
-        chi::priv::string(GetTestAllocator(), "remote execution result");
+        chi::priv::string("remote execution result", GetTestAllocator());
 
     // Step 4: Serialize OUT parameters (for sending results back)
     chi::TaskSaveOutArchive out_archive;
@@ -734,7 +738,7 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     chi::TaskLoadOutArchive recv_out_archive(out_data);
     auto final_task = CreateTestAdminTask();
     final_task->return_code_ = 0; // Clear
-    final_task->error_message_ = chi::priv::string(GetTestAllocator(), "");
+    final_task->error_message_ = chi::priv::string("", GetTestAllocator());
     recv_out_archive >> *final_task;
 
     // Verify OUT parameters were transferred back

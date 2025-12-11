@@ -28,20 +28,10 @@ Worker::Worker(u32 worker_id, ThreadType thread_type)
     : worker_id_(worker_id), thread_type_(thread_type), is_running_(false),
       is_initialized_(false), did_work_(false), task_did_work_(false),
       current_run_context_(nullptr), assigned_lane_(nullptr),
-      stack_cache_(64), // Initial capacity for stack cache (64 entries)
       last_long_queue_check_(0), iteration_count_(0), idle_iterations_(0),
       current_sleep_us_(0), sleep_count_(0) {
-  // Initialize all 4 blocked queues with capacity 1024 each
-  for (u32 i = 0; i < NUM_BLOCKED_QUEUES; ++i) {
-    blocked_queues_[i] =
-        std::queue<RunContext *>(BLOCKED_QUEUE_SIZE);
-  }
-
-  // Initialize all 4 periodic queues with capacity 1024 each
-  for (u32 i = 0; i < NUM_PERIODIC_QUEUES; ++i) {
-    periodic_queues_[i] =
-        std::queue<RunContext *>(PERIODIC_QUEUE_SIZE);
-  }
+  // std::queue is initialized with default constructors in member initialization
+  // No pre-allocation of capacity is needed or possible with std::queue
 
   // Record worker spawn time
   spawn_time_.Now();
@@ -78,9 +68,10 @@ void Worker::Finalize() {
   Stop();
 
   // Clean up cached stacks and RunContexts
-  StackAndContext cached_entry;
-  hshm::qtok_t token = stack_cache_.pop(cached_entry);
-  while (!token.IsNull()) {
+  while (!stack_cache_.empty()) {
+    StackAndContext cached_entry = stack_cache_.front();
+    stack_cache_.pop();
+
     // Free the cached stack
     if (cached_entry.stack_base_for_free) {
       free(cached_entry.stack_base_for_free);
@@ -91,19 +82,16 @@ void Worker::Finalize() {
       cached_entry.run_ctx->~RunContext();
       free(cached_entry.run_ctx);
     }
-
-    // Get next cached entry
-    token = stack_cache_.pop(cached_entry);
   }
 
   // Clean up all blocked queues (2 queues)
   for (u32 i = 0; i < NUM_BLOCKED_QUEUES; ++i) {
-    RunContext *run_ctx;
-    hshm::qtok_t queue_token = blocked_queues_[i].pop(run_ctx);
-    while (!queue_token.IsNull()) {
+    while (!blocked_queues_[i].empty()) {
+      RunContext *run_ctx = blocked_queues_[i].front();
+      blocked_queues_[i].pop();
       // RunContexts in blocked queues are still in use - don't free them
       // They will be cleaned up when the tasks complete or by stack cache
-      queue_token = blocked_queues_[i].pop(run_ctx);
+      (void)run_ctx;  // Suppress unused variable warning
     }
   }
 
@@ -169,8 +157,7 @@ u32 Worker::ProcessNewTasks() {
     hipc::ShmPtr<Task> task_typed_ptr;
 
     // Pop task from assigned lane
-    hipc::FullPtr<TaskLane> lane_full_ptr(assigned_lane_);
-    if (::chi::TaskQueue::PopTask(lane_full_ptr, task_typed_ptr)) {
+    if (assigned_lane_ && ::chi::TaskQueue_PopTask(assigned_lane_, task_typed_ptr)) {
       tasks_processed++;
       // Convert TypedPointer to FullPtr for consistent API usage
       hipc::FullPtr<Task> task_full_ptr(CHI_IPC->GetMainAllocator(), task_typed_ptr);
@@ -455,12 +442,8 @@ bool Worker::RouteGlobal(const FullPtr<Task> &task_ptr,
     // Create admin client to send task to target node
     chimaera::admin::Client admin_client(kAdminPoolId);
 
-    // Create memory context
-    hipc::MemContext mctx;
-
     // Send task using unified Send API with SerializeIn mode
     admin_client.AsyncSend(
-        mctx,
         chi::MsgType::kSerializeIn, // SerializeIn - sending inputs
         task_ptr,                   // Task pointer to send
         pool_queries                // Pool queries vector for target nodes
@@ -693,14 +676,15 @@ Worker::ResolvePhysicalQuery(const PoolQuery &query, PoolId pool_id,
 
 RunContext *Worker::AllocateStackAndContext(size_t size) {
   // Try to get from cache first
-  StackAndContext cached_entry;
-  hshm::qtok_t token = stack_cache_.pop(cached_entry);
+  if (!stack_cache_.empty()) {
+    StackAndContext cached_entry = stack_cache_.front();
+    stack_cache_.pop();
 
-  if (!token.IsNull() && cached_entry.run_ctx &&
-      cached_entry.stack_base_for_free) {
-    RunContext *run_ctx = cached_entry.run_ctx;
-    run_ctx->Clear();
-    return run_ctx;
+    if (cached_entry.run_ctx && cached_entry.stack_base_for_free) {
+      RunContext *run_ctx = cached_entry.run_ctx;
+      run_ctx->Clear();
+      return run_ctx;
+    }
   }
 
   // Normalize size to page-aligned
@@ -759,16 +743,9 @@ void Worker::DeallocateStackAndContext(RunContext *run_ctx) {
   StackAndContext cache_entry(run_ctx->stack_base_for_free, run_ctx->stack_size,
                               run_ctx);
 
-  // Try to add to cache
-  hshm::qtok_t token = stack_cache_.push(cache_entry);
-
-  // If cache is full (null token), free the resources
-  if (token.IsNull()) {
-    HELOG(kError,
-          "Worker {}: Failed to add RunContext to stack cache. Stack base for "
-          "free: {}, Stack size: {}",
-          worker_id_, run_ctx->stack_base_for_free, run_ctx->stack_size);
-  }
+  // Add to cache
+  stack_cache_.push(cache_entry);
+  // std::queue always succeeds in pushing (will grow dynamically)
 }
 
 void Worker::BeginTask(const FullPtr<Task> &task_ptr, Container *container,
@@ -980,11 +957,9 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
 
     // Create admin client to send task outputs back
     chimaera::admin::Client admin_client(kAdminPoolId);
-    hipc::MemContext mctx;
 
     // Send task outputs using SerializeOut mode
     admin_client.AsyncSend(
-        mctx,
         chi::MsgType::kSerializeOut, // SerializeOut - sending outputs
         task_ptr,                    // Task pointer with results
         return_queries               // Send back to return node
@@ -1029,17 +1004,16 @@ void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
 void Worker::ProcessBlockedQueue(std::queue<RunContext *> &queue,
                                  u32 queue_idx) {
   // Process only first 8 tasks in the queue
-  size_t queue_size = queue.GetSize();
+  size_t queue_size = queue.size();
   size_t check_limit = std::min(queue_size, size_t(8));
 
   for (size_t i = 0; i < check_limit; i++) {
-    RunContext *run_ctx;
-    hshm::qtok_t token = queue.pop(run_ctx);
-
-    if (token.IsNull()) {
-      // Queue is empty
+    if (queue.empty()) {
       break;
     }
+
+    RunContext *run_ctx = queue.front();
+    queue.pop();
 
     if (!run_ctx || run_ctx->task.IsNull()) {
       // Invalid entry, don't re-add
@@ -1077,18 +1051,17 @@ void Worker::ProcessPeriodicQueue(std::queue<RunContext *> &queue,
 
   // Check up to 8 tasks from the queue
   size_t check_limit = 8;
-  size_t queue_size = queue.GetSize();
+  size_t queue_size = queue.size();
   size_t actual_limit = std::min(queue_size, check_limit);
 
   // Get current time for all checks
   for (size_t i = 0; i < actual_limit; i++) {
-    RunContext *run_ctx;
-    hshm::qtok_t token = queue.pop(run_ctx);
-
-    if (token.IsNull()) {
-      // Queue is empty
+    if (queue.empty()) {
       break;
     }
+
+    RunContext *run_ctx = queue.front();
+    queue.pop();
 
     if (!run_ctx || run_ctx->task.IsNull()) {
       // Invalid entry, don't re-add

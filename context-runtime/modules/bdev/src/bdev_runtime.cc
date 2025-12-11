@@ -204,7 +204,7 @@ Runtime::~Runtime() {
 
 void Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext &ctx) {
   // Get the creation parameters using task's allocator
-  auto alloc = task->GetCtxAllocator();
+  auto alloc = task->GetAllocator();
   CreateParams params = task->GetParams(alloc);
 
   // Get the pool name which serves as the file path for file-based operations
@@ -573,7 +573,8 @@ chi::u32 Runtime::PerformAsyncIO(bool is_write, chi::u64 offset, void *buffer,
 // Backend-specific write operations
 void Runtime::WriteToFile(hipc::FullPtr<WriteTask> task) {
   // Convert hipc::ShmPtr<> to hipc::FullPtr<char> for data access
-  hipc::FullPtr<char> data_ptr(task->data_);
+  auto *ipc_mgr = CHI_IPC;
+  hipc::FullPtr<char> data_ptr = ipc_mgr->ToFullPtr(task->data_).Cast<char>();
 
   chi::u64 total_bytes_written = 0;
   chi::u64 data_offset = 0;
@@ -658,7 +659,8 @@ void Runtime::WriteToFile(hipc::FullPtr<WriteTask> task) {
 
 void Runtime::WriteToRam(hipc::FullPtr<WriteTask> task) {
   // Convert hipc::ShmPtr<> to hipc::FullPtr<char> for data access
-  hipc::FullPtr<char> data_ptr(task->data_);
+  auto *ipc_mgr = CHI_IPC;
+  hipc::FullPtr<char> data_ptr = ipc_mgr->ToFullPtr(task->data_).Cast<char>();
 
   chi::u64 total_bytes_written = 0;
   chi::u64 data_offset = 0;
@@ -705,7 +707,8 @@ void Runtime::WriteToRam(hipc::FullPtr<WriteTask> task) {
 // Backend-specific read operations
 void Runtime::ReadFromFile(hipc::FullPtr<ReadTask> task) {
   // Convert hipc::ShmPtr<> to hipc::FullPtr<char> for data access
-  hipc::FullPtr<char> data_ptr(task->data_);
+  auto *ipc_mgr = CHI_IPC;
+  hipc::FullPtr<char> data_ptr = ipc_mgr->ToFullPtr(task->data_).Cast<char>();
 
   chi::u64 total_bytes_read = 0;
   chi::u64 data_offset = 0;
@@ -788,7 +791,8 @@ void Runtime::ReadFromFile(hipc::FullPtr<ReadTask> task) {
 
 void Runtime::ReadFromRam(hipc::FullPtr<ReadTask> task) {
   // Convert hipc::ShmPtr<> to hipc::FullPtr<char> for data access
-  hipc::FullPtr<char> data_ptr(task->data_);
+  auto *ipc_mgr = CHI_IPC;
+  hipc::FullPtr<char> data_ptr = ipc_mgr->ToFullPtr(task->data_).Cast<char>();
 
   chi::u64 total_bytes_read = 0;
   chi::u64 data_offset = 0;

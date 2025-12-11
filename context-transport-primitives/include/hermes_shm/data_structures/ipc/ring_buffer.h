@@ -207,6 +207,7 @@ class ring_buffer : public ShmContainer<AllocT> {
   entry_vector queue_;      /**< Internal vector storing entries */
   head_type head_;           /**< Consumer head pointer */
   tail_type tail_;           /**< Producer tail pointer */
+  u32 assigned_worker_id_;   /**< Assigned worker ID for this lane (set by orchestrator) */
 
  public:
   /**
@@ -225,11 +226,22 @@ class ring_buffer : public ShmContainer<AllocT> {
   }
 
   /**
-   * Copy constructor (deleted)
+   * Copy constructor
    *
-   * IPC data structures must be allocated via allocator, not copied on stack.
+   * Creates a new ring_buffer with the same configuration and contents as another.
+   * Used when ring_buffers are stored in shared memory containers like vector.
    */
-  ring_buffer(const ring_buffer &other) = delete;
+  HSHM_CROSS_FUN
+  ring_buffer(const ring_buffer &other)
+      : ShmContainer<AllocT>(other.GetAllocator()),
+        queue_(other.GetAllocator(), other.queue_.size() - 1),
+        head_(other.head_),
+        tail_(other.tail_) {
+    // Copy the contents of the queue from other
+    for (size_t i = 0; i < other.queue_.size(); ++i) {
+      queue_[i] = other.queue_[i];
+    }
+  }
 
   /**
    * Move constructor (deleted)
@@ -247,13 +259,23 @@ class ring_buffer : public ShmContainer<AllocT> {
   }
 
   /**
-   * Get allocator
+   * Get assigned worker ID for this lane
    *
-   * @return Pointer to the allocator
+   * @return The worker ID assigned to this lane
    */
   HSHM_INLINE_CROSS_FUN
-  AllocT* GetAllocator() const {
-    return this->GetAllocator();
+  u32 GetAssignedWorkerId() const {
+    return assigned_worker_id_;
+  }
+
+  /**
+   * Set assigned worker ID for this lane
+   *
+   * @param worker_id The worker ID to assign
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetAssignedWorkerId(u32 worker_id) {
+    assigned_worker_id_ = worker_id;
   }
 
   /**

@@ -29,15 +29,14 @@ class Client : public chi::ContainerClient {
 
   /**
    * Create the container (synchronous)
-   * @param mctx Memory context for the operation
    * @param pool_query Pool routing information
    * @param pool_name Unique name for the pool (user-provided)
    * @param custom_pool_id Explicit pool ID for the pool being created
    * @return true if creation succeeded, false if it failed
    */
-  bool Create(const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+  bool Create(const chi::PoolQuery& pool_query,
               const std::string& pool_name, const chi::PoolId& custom_pool_id) {
-    auto task = AsyncCreate(mctx, pool_query, pool_name, custom_pool_id);
+    auto task = AsyncCreate(pool_query, pool_name, custom_pool_id);
     task->Wait();
 
     // CRITICAL: Update client pool_id_ with the actual pool ID from the task
@@ -56,13 +55,11 @@ class Client : public chi::ContainerClient {
 
   /**
    * Create the container (asynchronous)
-   * @param mctx Memory context for the operation
    * @param pool_query Pool routing information
    * @param pool_name Unique name for the pool (user-provided)
    * @param custom_pool_id Explicit pool ID for the pool being created
    */
-  hipc::FullPtr<CreateTask> AsyncCreate(const hipc::MemContext& mctx,
-                                        const chi::PoolQuery& pool_query,
+  hipc::FullPtr<CreateTask> AsyncCreate(const chi::PoolQuery& pool_query,
                                         const std::string& pool_name,
                                         const chi::PoolId& custom_pool_id) {
     auto* ipc_manager = CHI_IPC;
@@ -88,11 +85,10 @@ class Client : public chi::ContainerClient {
   /**
    * Execute custom operation (synchronous)
    */
-  chi::u32 Custom(const hipc::MemContext& mctx,
-                  const chi::PoolQuery& pool_query,
+  chi::u32 Custom(const chi::PoolQuery& pool_query,
                   const std::string& input_data, chi::u32 operation_id,
                   std::string& output_data) {
-    auto task = AsyncCustom(mctx, pool_query, input_data, operation_id);
+    auto task = AsyncCustom(pool_query, input_data, operation_id);
     task->Wait();
 
     // Get results
@@ -109,8 +105,7 @@ class Client : public chi::ContainerClient {
   /**
    * Execute custom operation (asynchronous)
    */
-  hipc::FullPtr<CustomTask> AsyncCustom(const hipc::MemContext& mctx,
-                                        const chi::PoolQuery& pool_query,
+  hipc::FullPtr<CustomTask> AsyncCustom(const chi::PoolQuery& pool_query,
                                         const std::string& input_data,
                                         chi::u32 operation_id) {
     auto* ipc_manager = CHI_IPC;
@@ -128,10 +123,9 @@ class Client : public chi::ContainerClient {
   /**
    * Execute CoMutex test (synchronous)
    */
-  chi::u32 CoMutexTest(const hipc::MemContext& mctx,
-                       const chi::PoolQuery& pool_query, chi::u32 test_id,
+  chi::u32 CoMutexTest(const chi::PoolQuery& pool_query, chi::u32 test_id,
                        chi::u32 hold_duration_ms) {
-    auto task = AsyncCoMutexTest(mctx, pool_query, test_id, hold_duration_ms);
+    auto task = AsyncCoMutexTest(pool_query, test_id, hold_duration_ms);
     task->Wait();
 
     // Get result
@@ -148,7 +142,7 @@ class Client : public chi::ContainerClient {
    * Execute CoMutex test (asynchronous)
    */
   hipc::FullPtr<CoMutexTestTask> AsyncCoMutexTest(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       chi::u32 test_id, chi::u32 hold_duration_ms) {
     auto* ipc_manager = CHI_IPC;
 
@@ -165,10 +159,9 @@ class Client : public chi::ContainerClient {
   /**
    * Execute CoRwLock test (synchronous)
    */
-  chi::u32 CoRwLockTest(const hipc::MemContext& mctx,
-                        const chi::PoolQuery& pool_query, chi::u32 test_id,
+  chi::u32 CoRwLockTest(const chi::PoolQuery& pool_query, chi::u32 test_id,
                         bool is_writer, chi::u32 hold_duration_ms) {
-    auto task = AsyncCoRwLockTest(mctx, pool_query, test_id, is_writer,
+    auto task = AsyncCoRwLockTest(pool_query, test_id, is_writer,
                                   hold_duration_ms);
     task->Wait();
 
@@ -186,7 +179,7 @@ class Client : public chi::ContainerClient {
    * Execute CoRwLock test (asynchronous)
    */
   hipc::FullPtr<CoRwLockTestTask> AsyncCoRwLockTest(
-      const hipc::MemContext& mctx, const chi::PoolQuery& pool_query,
+      const chi::PoolQuery& pool_query,
       chi::u32 test_id, bool is_writer, chi::u32 hold_duration_ms) {
     auto* ipc_manager = CHI_IPC;
 
@@ -204,14 +197,12 @@ class Client : public chi::ContainerClient {
   /**
    * Submit Wait test task (asynchronous)
    * Tests recursive task->Wait() functionality with specified depth
-   * @param mctx Memory context for the operation
-   * @param pool_query Pool routing information  
+   * @param pool_query Pool routing information
    * @param depth Number of recursive calls to make
    * @param test_id Test identifier for tracking
    * @return Task handle for waiting and result retrieval
    */
-  hipc::FullPtr<WaitTestTask> AsyncWaitTest(const hipc::MemContext& mctx,
-                                           const chi::PoolQuery& pool_query,
+  hipc::FullPtr<WaitTestTask> AsyncWaitTest(const chi::PoolQuery& pool_query,
                                            chi::u32 depth,
                                            chi::u32 test_id) {
     auto* ipc_manager = CHI_IPC;
@@ -227,17 +218,15 @@ class Client : public chi::ContainerClient {
   /**
    * Submit Wait test task (synchronous)
    * Tests recursive task->Wait() functionality with specified depth
-   * @param mctx Memory context for the operation
    * @param pool_query Pool routing information
-   * @param depth Number of recursive calls to make  
+   * @param depth Number of recursive calls to make
    * @param test_id Test identifier for tracking
    * @return The final depth reached by the recursive calls
    */
-  chi::u32 WaitTest(const hipc::MemContext& mctx,
-                   const chi::PoolQuery& pool_query,
+  chi::u32 WaitTest(const chi::PoolQuery& pool_query,
                    chi::u32 depth,
                    chi::u32 test_id) {
-    auto task = AsyncWaitTest(mctx, pool_query, depth, test_id);
+    auto task = AsyncWaitTest(pool_query, depth, test_id);
     task->Wait();
     
     chi::u32 final_depth = task->current_depth_;

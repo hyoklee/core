@@ -110,6 +110,22 @@ typedef hipc::multi_mpsc_ring_buffer<hipc::ShmPtr<Task>, CHI_MAIN_ALLOC_T>
 
 // };
 
+/**
+ * Pop a task from a task lane (FullPtr overload)
+ * @param lane_ptr FullPtr to the task lane
+ * @param task_ptr Reference to store the popped task
+ * @return true if a task was popped, false otherwise
+ */
+bool TaskQueue_PopTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task>& task_ptr);
+
+/**
+ * Pop a task from a task lane (raw pointer overload)
+ * @param lane_ptr Raw pointer to the task lane
+ * @param task_ptr Reference to store the popped task
+ * @return true if a task was popped, false otherwise
+ */
+bool TaskQueue_PopTask(TaskLane *lane_ptr, hipc::ShmPtr<Task>& task_ptr);
+
 } // namespace chi
 
 #endif // CHIMAERA_INCLUDE_CHIMAERA_TASK_QUEUE_H_

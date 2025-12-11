@@ -355,9 +355,8 @@ bool WorkOrchestrator::SpawnWorkerThreads() {
       // Set the worker's assigned lane
       worker->SetLane(lane);
 
-      // Mark the lane header with the assigned worker ID
-      auto &lane_header = lane->GetHeader();
-      lane_header.assigned_worker_id = worker->GetId();
+      // Mark the lane with the assigned worker ID
+      lane->SetAssignedWorkerId(worker->GetId());
 
       HILOG(kDebug,
             "WorkOrchestrator: Mapped sched worker {} (ID {}) to external "
@@ -498,7 +497,7 @@ void WorkOrchestrator::AssignToWorkerType(ThreadType thread_type,
   if (lane) {
     // Emplace the task using its shared memory pointer (offset-based)
     // The lane expects TypedPointer<Task> which is the shm_ member of FullPtr
-    lane->emplace(task_ptr.shm_);
+    lane->Emplace(task_ptr.shm_);
   }
 }
 

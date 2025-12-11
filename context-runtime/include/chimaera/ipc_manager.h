@@ -331,7 +331,25 @@ public:
    * @return FullPtr with matching allocator and pointer, or null FullPtr if no match
    */
   template <typename T>
-  hipc::FullPtr<T> ToFullPtr(const hipc::ShmPtr<T> &shm_ptr);
+  hipc::FullPtr<T> ToFullPtr(const hipc::ShmPtr<T> &shm_ptr) {
+    // Check main allocator
+    if (main_allocator_ && shm_ptr.alloc_id_ == main_allocator_->GetId()) {
+      return hipc::FullPtr<T>(main_allocator_, shm_ptr);
+    }
+
+    // Check client data allocator
+    if (client_data_allocator_ && shm_ptr.alloc_id_ == client_data_allocator_->GetId()) {
+      return hipc::FullPtr<T>(client_data_allocator_, shm_ptr);
+    }
+
+    // Check runtime data allocator
+    if (runtime_data_allocator_ && shm_ptr.alloc_id_ == runtime_data_allocator_->GetId()) {
+      return hipc::FullPtr<T>(runtime_data_allocator_, shm_ptr);
+    }
+
+    // No matching allocator found
+    return hipc::FullPtr<T>();
+  }
 
   /**
    * Convert raw pointer to FullPtr by checking allocators
@@ -340,7 +358,25 @@ public:
    * @return FullPtr with matching allocator and pointer, or null FullPtr if no match
    */
   template <typename T>
-  hipc::FullPtr<T> ToFullPtr(T *ptr);
+  hipc::FullPtr<T> ToFullPtr(T *ptr) {
+    // Check main allocator
+    if (main_allocator_ && main_allocator_->ContainsPtr(ptr)) {
+      return hipc::FullPtr<T>(main_allocator_, ptr);
+    }
+
+    // Check client data allocator
+    if (client_data_allocator_ && client_data_allocator_->ContainsPtr(ptr)) {
+      return hipc::FullPtr<T>(client_data_allocator_, ptr);
+    }
+
+    // Check runtime data allocator
+    if (runtime_data_allocator_ && runtime_data_allocator_->ContainsPtr(ptr)) {
+      return hipc::FullPtr<T>(runtime_data_allocator_, ptr);
+    }
+
+    // No matching allocator found
+    return hipc::FullPtr<T>();
+  }
 
 private:
   /**

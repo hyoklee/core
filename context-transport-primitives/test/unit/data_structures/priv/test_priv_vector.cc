@@ -689,4 +689,217 @@ TEST_CASE("Vector: large capacity growth", "[priv_vector][stress]") {
   REQUIRE(vec[9999] == 9999);
 }
 
+// ============================================================================
+// Serialization Tests (Cereal)
+// ============================================================================
+
+#ifdef HSHM_ENABLE_CEREAL
+#include <cereal/archives/binary.hpp>
+#include <sstream>
+
+// Define a simple struct with cereal serialization for testing
+struct Point {
+  int x;
+  int y;
+
+  template<class Archive>
+  void serialize(Archive& ar) {
+    ar(x, y);
+  }
+
+  bool operator==(const Point& other) const {
+    return x == other.x && y == other.y;
+  }
+};
+
+TEST_CASE("Vector: serialize POD type (int)", "[priv_vector][serialization]") {
+  vector<int, SimpleHeapAllocator> original({1, 2, 3, 4, 5}, &g_allocator);
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<int, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == original.size());
+  REQUIRE(restored.size() == 5);
+  for (size_t i = 0; i < 5; ++i) {
+    REQUIRE(restored[i] == original[i]);
+  }
+}
+
+TEST_CASE("Vector: serialize POD type (double)", "[priv_vector][serialization]") {
+  vector<double, SimpleHeapAllocator> original(&g_allocator);
+  for (int i = 0; i < 10; ++i) {
+    original.push_back(i * 1.5);
+  }
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<double, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == original.size());
+  for (size_t i = 0; i < restored.size(); ++i) {
+    REQUIRE(restored[i] == original[i]);
+  }
+}
+
+TEST_CASE("Vector: serialize empty vector", "[priv_vector][serialization]") {
+  vector<int, SimpleHeapAllocator> original(&g_allocator);
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<int, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == 0);
+  REQUIRE(restored.empty());
+}
+
+TEST_CASE("Vector: serialize complex type (std::string)", "[priv_vector][serialization]") {
+  vector<std::string, SimpleHeapAllocator> original(&g_allocator);
+  original.push_back("hello");
+  original.push_back("world");
+  original.push_back("test");
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<std::string, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == original.size());
+  REQUIRE(restored.size() == 3);
+  REQUIRE(restored[0] == "hello");
+  REQUIRE(restored[1] == "world");
+  REQUIRE(restored[2] == "test");
+}
+
+TEST_CASE("Vector: serialize large vector", "[priv_vector][serialization]") {
+  vector<int, SimpleHeapAllocator> original(&g_allocator);
+  for (int i = 0; i < 1000; ++i) {
+    original.push_back(i);
+  }
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<int, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == original.size());
+  REQUIRE(restored.size() == 1000);
+  for (size_t i = 0; i < 1000; ++i) {
+    REQUIRE(restored[i] == static_cast<int>(i));
+  }
+}
+
+TEST_CASE("Vector: serialize single element", "[priv_vector][serialization]") {
+  vector<int, SimpleHeapAllocator> original(&g_allocator);
+  original.push_back(42);
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<int, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == 1);
+  REQUIRE(restored[0] == 42);
+}
+
+TEST_CASE("Vector: serialize struct type", "[priv_vector][serialization]") {
+  vector<Point, SimpleHeapAllocator> original(&g_allocator);
+  original.push_back({1, 2});
+  original.push_back({3, 4});
+  original.push_back({5, 6});
+
+  // Serialize
+  std::ostringstream os(std::ios::binary);
+  {
+    cereal::BinaryOutputArchive oarchive(os);
+    oarchive(original);
+  }
+
+  // Deserialize
+  vector<Point, SimpleHeapAllocator> restored(&g_allocator);
+  std::istringstream is(os.str(), std::ios::binary);
+  {
+    cereal::BinaryInputArchive iarchive(is);
+    iarchive(restored);
+  }
+
+  // Verify
+  REQUIRE(restored.size() == original.size());
+  REQUIRE(restored.size() == 3);
+  for (size_t i = 0; i < 3; ++i) {
+    REQUIRE(restored[i] == original[i]);
+  }
+}
+
+#endif  // HSHM_ENABLE_CEREAL
+
 SIMPLE_TEST_MAIN()

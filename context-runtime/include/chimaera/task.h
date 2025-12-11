@@ -18,6 +18,13 @@
 
 // TaskQueue types are now available via include
 
+// Forward declare chi::priv::string for cereal support
+namespace hshm::priv {
+template <typename T, typename AllocT, size_t SmallSize>
+class basic_string;
+}
+
+
 namespace chi {
 
 // Forward declarations

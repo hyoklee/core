@@ -19,29 +19,22 @@ namespace chimaera::MOD_NAME {
  * Contains configuration parameters for MOD_NAME container creation
  */
 struct CreateParams {
-  // MOD_NAME-specific parameters
-  std::string config_data_;
+  // MOD_NAME-specific parameters (primitives only for cereal compatibility)
   chi::u32 worker_count_;
-  
+  chi::u32 config_flags_;
+
   // Required: chimod library name for module manager
   static constexpr const char* chimod_lib_name = "chimaera_MOD_NAME";
-  
-  // Default constructor
-  CreateParams() : worker_count_(1) {}
-  
-  // Constructor with allocator and parameters
-  CreateParams(AllocT* alloc, 
-               const std::string& config_data = "", 
-               chi::u32 worker_count = 1)
-      : config_data_(config_data), worker_count_(worker_count) {
-    // MOD_NAME parameters use standard types, so allocator isn't needed directly
-    // but it's available for future use with HSHM containers
+
+  // Constructor with parameters (also serves as default)
+  CreateParams(chi::u32 worker_count = 1, chi::u32 config_flags = 0)
+      : worker_count_(worker_count), config_flags_(config_flags) {
   }
-  
+
   // Serialization support for cereal
   template<class Archive>
   void serialize(Archive& ar) {
-    ar(config_data_, worker_count_);
+    ar(worker_count_, config_flags_);
   }
 };
 
@@ -57,19 +50,19 @@ using CreateTask = chimaera::admin::GetOrCreatePoolTask<CreateParams>;
  */
 struct CustomTask : public chi::Task {
   // Task-specific data
-  INOUT chi::ipc::string data_;
+  INOUT chi::priv::string data_;
   IN chi::u32 operation_id_;
 
   /** SHM default constructor */
-  explicit CustomTask(AllocT* alloc) 
-      : chi::Task(alloc), 
+  explicit CustomTask(AllocT* alloc)
+      : chi::Task(alloc),
         data_(alloc), operation_id_(0) {}
 
   /** Emplace constructor */
   explicit CustomTask(
       AllocT* alloc,
       const chi::TaskId &task_node,
-      const chi::PoolId &pool_id, 
+      const chi::PoolId &pool_id,
       const chi::PoolQuery &pool_query,
       const std::string &data,
       chi::u32 operation_id)

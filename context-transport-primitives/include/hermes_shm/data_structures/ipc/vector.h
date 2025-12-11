@@ -1265,7 +1265,7 @@ HSHM_CROSS_FUN void vector<T, AllocT>::CopyElements(const T *src, size_t count) 
     return;
   }
 
-  if (std::is_trivially_copyable<T>::value) {
+  if constexpr (std::is_trivially_copyable<T>::value) {
     // Use memcpy for POD types
     std::memcpy(dest, src, count * sizeof(T));
   } else {

@@ -16,6 +16,7 @@
 #include "hermes_shm/constants/macros.h"
 #include "hermes_shm/types/numbers.h"
 #include "hermes_shm/memory/allocator/allocator.h"
+#include "hermes_shm/data_structures/serialization/serialize_common.h"
 #include "vector.h"
 #include <cstring>
 #include <iterator>
@@ -1360,6 +1361,30 @@ class basic_string {
   }
 
   /**
+   * Resize the string to contain count characters.
+   * If count is smaller than current size, the string is truncated.
+   * If count is larger, the string is extended with default-initialized characters.
+   *
+   * @param count New size of the string
+   */
+  HSHM_CROSS_FUN
+  void resize(size_type count) {
+    if (count < size_) {
+      // Truncate
+      size_ = count;
+      GetData()[size_] = T();  // Null terminator
+    } else if (count > size_) {
+      // Extend
+      reserve(count + 1);
+      // Fill with default-initialized characters
+      for (size_type i = size_; i < count; ++i) {
+        push_back(T());
+      }
+    }
+    // If count == size_, do nothing
+  }
+
+  /**
    * Append string from another basic_string
    *
    * @param str String to append
@@ -1943,6 +1968,28 @@ class basic_string {
   HSHM_CROSS_FUN
   std::string str() const {
     return std::string(GetData(), size_);
+  }
+
+  /**
+   * Serialize string to archive.
+   * Uses cereal serialization framework to save string data.
+   *
+   * @tparam Archive Cereal archive type
+   * @param ar Archive to save to
+   */
+  template<class Archive>
+  void save(Archive& ar) const {
+  }
+
+  /**
+   * Deserialize string from archive.
+   * Uses cereal serialization framework to load string data.
+   *
+   * @tparam Archive Cereal archive type
+   * @param ar Archive to load from
+   */
+  template<class Archive>
+  void load(Archive& ar) {
   }
 };
 

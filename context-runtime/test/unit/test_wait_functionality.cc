@@ -79,11 +79,11 @@ namespace {
      */
     bool createContainer(chi::PoolId pool_id) {
       chimaera::MOD_NAME::Client client(pool_id);
-      hipc::MemContext mctx;
+      
       
       try {
         std::string pool_name = "wait_test_pool_" + std::to_string(pool_id.ToU64());
-        bool success = client.Create(mctx, chi::PoolQuery::Dynamic(), pool_name, pool_id);
+        bool success = client.Create(chi::PoolQuery::Dynamic(), pool_name, pool_id);
         REQUIRE(success);
         
         // Give container time to initialize
@@ -162,7 +162,7 @@ TEST_CASE("wait_test_basic_functionality", "[wait_test][basic]") {
   
   SECTION("Basic WaitTest with depth 1") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 1;
@@ -170,7 +170,7 @@ TEST_CASE("wait_test_basic_functionality", "[wait_test][basic]") {
     auto start_time = std::chrono::steady_clock::now();
     
     // Call synchronous WaitTest method
-    chi::u32 final_depth = client.WaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+    chi::u32 final_depth = client.WaitTest(chi::PoolQuery::Local(), depth, test_id);
     
     auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start_time).count();
@@ -184,7 +184,7 @@ TEST_CASE("wait_test_basic_functionality", "[wait_test][basic]") {
   
   SECTION("Basic WaitTest with depth 3") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 3;
@@ -192,7 +192,7 @@ TEST_CASE("wait_test_basic_functionality", "[wait_test][basic]") {
     auto start_time = std::chrono::steady_clock::now();
     
     // Call synchronous WaitTest method
-    chi::u32 final_depth = client.WaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+    chi::u32 final_depth = client.WaitTest(chi::PoolQuery::Local(), depth, test_id);
     
     auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start_time).count();
@@ -218,7 +218,7 @@ TEST_CASE("wait_test_recursive_functionality", "[wait_test][recursive]") {
   
   SECTION("Recursive WaitTest with depth 5") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 5;
@@ -226,7 +226,7 @@ TEST_CASE("wait_test_recursive_functionality", "[wait_test][recursive]") {
     auto start_time = std::chrono::steady_clock::now();
     
     // Call synchronous WaitTest method
-    chi::u32 final_depth = client.WaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+    chi::u32 final_depth = client.WaitTest(chi::PoolQuery::Local(), depth, test_id);
     
     auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start_time).count();
@@ -240,7 +240,7 @@ TEST_CASE("wait_test_recursive_functionality", "[wait_test][recursive]") {
   
   SECTION("Deep recursive WaitTest with depth 10") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 10;
@@ -248,7 +248,7 @@ TEST_CASE("wait_test_recursive_functionality", "[wait_test][recursive]") {
     auto start_time = std::chrono::steady_clock::now();
     
     // Call synchronous WaitTest method
-    chi::u32 final_depth = client.WaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+    chi::u32 final_depth = client.WaitTest(chi::PoolQuery::Local(), depth, test_id);
     
     auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start_time).count();
@@ -274,7 +274,7 @@ TEST_CASE("wait_test_async_functionality", "[wait_test][async]") {
   
   SECTION("Async WaitTest with manual Wait() call") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 4;
@@ -282,7 +282,7 @@ TEST_CASE("wait_test_async_functionality", "[wait_test][async]") {
     auto start_time = std::chrono::steady_clock::now();
     
     // Call asynchronous WaitTest method
-    auto task = client.AsyncWaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+    auto task = client.AsyncWaitTest(chi::PoolQuery::Local(), depth, test_id);
     
     // Manually call Wait() - this tests the recursive Wait functionality
     task->Wait();
@@ -303,7 +303,7 @@ TEST_CASE("wait_test_async_functionality", "[wait_test][async]") {
   
   SECTION("Multiple concurrent async WaitTest tasks") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     const int num_tasks = 3;
     std::vector<chi::u32> depths = {2, 3, 4};
@@ -314,7 +314,7 @@ TEST_CASE("wait_test_async_functionality", "[wait_test][async]") {
     // Submit multiple async tasks
     for (int i = 0; i < num_tasks; ++i) {
       chi::u32 test_id = fixture.generateTestId();
-      auto task = client.AsyncWaitTest(mctx, chi::PoolQuery::Local(), depths[i], test_id);
+      auto task = client.AsyncWaitTest(chi::PoolQuery::Local(), depths[i], test_id);
       tasks.push_back(task);
     }
     
@@ -351,13 +351,13 @@ TEST_CASE("wait_test_edge_cases", "[wait_test][edge_cases]") {
   
   SECTION("WaitTest with depth 0") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 0;
     
     // Call with depth 0 - should complete immediately without recursion
-    chi::u32 final_depth = client.WaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+    chi::u32 final_depth = client.WaitTest(chi::PoolQuery::Local(), depth, test_id);
     
     // With depth 0, current_depth should be incremented to 1 but no recursion
     REQUIRE(final_depth >= depth);
@@ -367,14 +367,14 @@ TEST_CASE("wait_test_edge_cases", "[wait_test][edge_cases]") {
   
   SECTION("WaitTest with same test_id multiple times") {
     chimaera::MOD_NAME::Client client(kWaitTestPoolId);
-    hipc::MemContext mctx;
+    
     
     chi::u32 test_id = fixture.generateTestId();
     chi::u32 depth = 2;
     
     // Run the same test ID multiple times
     for (int i = 0; i < 3; ++i) {
-      chi::u32 final_depth = client.WaitTest(mctx, chi::PoolQuery::Local(), depth, test_id);
+      chi::u32 final_depth = client.WaitTest(chi::PoolQuery::Local(), depth, test_id);
       REQUIRE(final_depth == depth);
     }
     

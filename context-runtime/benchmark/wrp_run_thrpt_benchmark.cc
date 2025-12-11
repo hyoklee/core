@@ -283,17 +283,13 @@ void IOWorkerThread(size_t thread_id, const BenchmarkConfig &config,
       size_t bytes_remaining = config.io_size - bytes_written;
       size_t bytes_to_write = std::min(bytes_remaining, size_t(4096));
 
-      // Create pointer offset into write buffer
-      hipc::ShmPtr<> write_ptr = write_buffer.shm_;
-      write_ptr.off_ += bytes_written;
-
       // Create ArrayVector with single block for Write operation
       chimaera::bdev::ArrayVector<chimaera::bdev::Block, 16> single_block;
       single_block.push_back(blocks[block_idx]);
 
       chi::u64 ret =
           bdev_client.Write(chi::PoolQuery::Local(),
-                            single_block, write_ptr, bytes_to_write);
+                            single_block, write_buffer.shm_.template Cast<void>(), bytes_to_write);
       if (ret != bytes_to_write) {
         std::cerr << "ERROR: Thread " << thread_id
                   << " failed to write data to block " << block_idx << "\n";

@@ -1303,14 +1303,5 @@ struct BlobQueryTask : public chi::Task {
 
 } // namespace wrp_cte::core
 
-// Cereal serialization support for hipc::pair
-namespace cereal {
-
-template <class Archive, typename FirstT, typename SecondT>
-void serialize(Archive &ar, hipc::pair<FirstT, SecondT> &pair) {
-  ar(pair.first_, pair.second_);
-}
-
-} // namespace cereal
 
 #endif // WRPCTE_CORE_TASKS_H_

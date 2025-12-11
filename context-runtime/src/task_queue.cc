@@ -1,36 +1,54 @@
 /**
- * TaskQueue implementation - simple wrapper around hipc::multi_mpsc_ring_buffer
+ * TaskQueue implementation - helper functions for task queue operations
  */
 
 #include "chimaera/task_queue.h"
 
 namespace chi {
 
-TaskQueue::TaskQueue(AllocT* alloc,
-                     u32 num_lanes, u32 num_prios, u32 depth_per_lane)
-    : queue_(alloc, num_lanes, num_prios, depth_per_lane) {
-  // Headers are now managed automatically by the multi_mpsc_ring_buffer per lane
-}
-
-
-/*static*/ bool TaskQueue::EmplaceTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task> task_ptr) {
+/**
+ * Emplace a task into a task lane
+ * @param lane_ptr Pointer to the task lane
+ * @param task_ptr Pointer to the task to enqueue
+ * @return true if successful, false otherwise
+ */
+bool TaskQueue_EmplaceTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task> task_ptr) {
   if (lane_ptr.IsNull() || task_ptr.IsNull()) {
     return false;
   }
-  
+
   // Push to the lane
-  lane_ptr->push(task_ptr);
+  lane_ptr->Push(task_ptr);
 
   return true;
 }
 
-/*static*/ bool TaskQueue::PopTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task>& task_ptr) {
+/**
+ * Pop a task from a task lane
+ * @param lane_ptr Pointer to the task lane
+ * @param task_ptr Reference to store the popped task
+ * @return true if a task was popped, false otherwise
+ */
+bool TaskQueue_PopTask(hipc::FullPtr<TaskLane>& lane_ptr, hipc::ShmPtr<Task>& task_ptr) {
   if (lane_ptr.IsNull()) {
     return false;
   }
-  
-  auto token = lane_ptr->pop(task_ptr);
-  return !token.IsNull();
+
+  return lane_ptr->Pop(task_ptr);
+}
+
+/**
+ * Pop a task from a task lane (overload for raw pointer)
+ * @param lane_ptr Raw pointer to the task lane
+ * @param task_ptr Reference to store the popped task
+ * @return true if a task was popped, false otherwise
+ */
+bool TaskQueue_PopTask(TaskLane *lane_ptr, hipc::ShmPtr<Task>& task_ptr) {
+  if (!lane_ptr) {
+    return false;
+  }
+
+  return lane_ptr->Pop(task_ptr);
 }
 
 }  // namespace chi

@@ -44,8 +44,7 @@ void Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext &rctx) {
 
   // Spawn periodic Recv task with 25 microsecond period (default)
   // Worker will automatically reschedule periodic tasks
-  hipc::MemContext mctx;
-  client_.AsyncRecv(mctx, chi::PoolQuery::Local(), 0, 25);
+  client_.AsyncRecv(chi::PoolQuery::Local(), 0, 25);
 
   HILOG(kDebug,
         "Admin: Container created and initialized for pool: {} (ID: {}, count: "
@@ -119,9 +118,9 @@ void Runtime::GetOrCreatePool(
 
   } catch (const std::exception &e) {
     task->return_code_ = 99;
-    auto alloc = task->GetCtxAllocator();
-    task->error_message_ = chi::priv::string(
-        alloc, std::string("Exception during pool creation: ") + e.what());
+    auto alloc = task->GetAllocator();
+    std::string error_msg = std::string("Exception during pool creation: ") + e.what();
+    task->error_message_ = chi::priv::string(alloc, error_msg);
     HELOG(kError, "Admin: Pool creation failed with exception: {}", e.what());
   }
 }
@@ -169,8 +168,9 @@ void Runtime::DestroyPool(hipc::FullPtr<DestroyPoolTask> task,
 
   } catch (const std::exception &e) {
     task->return_code_ = 99;
-    task->error_message_ =
-        std::string("Exception during pool destruction: ") + e.what();
+    auto alloc = task->GetAllocator();
+    std::string error_msg = std::string("Exception during pool destruction: ") + e.what();
+    task->error_message_ = chi::priv::string(alloc, error_msg);
     HELOG(kError, "Admin: Pool destruction failed with exception: {}",
           e.what());
   }
@@ -199,8 +199,9 @@ void Runtime::StopRuntime(hipc::FullPtr<StopRuntimeTask> task,
 
   } catch (const std::exception &e) {
     task->return_code_ = 99;
-    task->error_message_ =
-        std::string("Exception during runtime shutdown: ") + e.what();
+    auto alloc = task->GetAllocator();
+    std::string error_msg = std::string("Exception during runtime shutdown: ") + e.what();
+    task->error_message_ = chi::priv::string(alloc, error_msg);
     HELOG(kError, "Admin: Runtime shutdown failed with exception: {}",
           e.what());
   }

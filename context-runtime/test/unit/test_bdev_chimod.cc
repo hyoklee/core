@@ -245,10 +245,9 @@ TEST_CASE("bdev_container_creation", "[bdev][create]") {
   SECTION("Create bdev container with default parameters") {
     chi::PoolId custom_pool_id(100, 0); // Custom pool ID for this container
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     bool success =
-        client.Create(mctx, chi::PoolQuery::Dynamic(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Dynamic(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
 
@@ -267,10 +266,9 @@ TEST_CASE("bdev_block_allocation_4kb", "[bdev][allocate][4kb]") {
   SECTION("Create container and allocate 4KB blocks") {
     chi::PoolId custom_pool_id(102, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     bool success =
-        client.Create(mctx, chi::PoolQuery::Dynamic(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Dynamic(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
 
@@ -282,7 +280,7 @@ TEST_CASE("bdev_block_allocation_4kb", "[bdev][allocate][4kb]") {
 
     for (int i = 0; i < 16; ++i) {
       auto pool_query = chi::PoolQuery::DirectHash(i);
-      auto alloc_task = client.AsyncAllocateBlocks(mctx, pool_query, k4KB);
+      auto alloc_task = client.AsyncAllocateBlocks(pool_query, k4KB);
       alloc_task->Wait();
       REQUIRE(alloc_task->return_code_ == 0);
       REQUIRE(alloc_task->blocks_.size() > 0);
@@ -325,10 +323,9 @@ TEST_CASE("bdev_write_read_basic", "[bdev][io][basic]") {
   SECTION("Write and read data verification") {
     chi::PoolId custom_pool_id(103, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     bool success =
-        client.Create(mctx, chi::PoolQuery::Dynamic(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Dynamic(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
 
@@ -344,7 +341,7 @@ TEST_CASE("bdev_write_read_basic", "[bdev][io][basic]") {
       chi::ContainerId expected_completer = static_cast<chi::ContainerId>(i % num_containers);
 
       // Allocate a block
-      auto alloc_task = client.AsyncAllocateBlocks(mctx, pool_query, k4KB);
+      auto alloc_task = client.AsyncAllocateBlocks(pool_query, k4KB);
       alloc_task->Wait();
       REQUIRE(alloc_task->return_code_ == 0);
       REQUIRE(alloc_task->blocks_.size() > 0);
@@ -365,8 +362,8 @@ TEST_CASE("bdev_write_read_basic", "[bdev][io][basic]") {
       REQUIRE_FALSE(write_buffer.IsNull());
       memcpy(write_buffer.ptr_, write_data.data(), write_data.size());
 
-      auto write_task = client.AsyncWrite(mctx, pool_query, WrapBlock(block),
-                                          write_buffer.shm_, write_data.size());
+      auto write_task = client.AsyncWrite(pool_query, WrapBlock(block),
+                                          write_buffer.shm_.template Cast<void>().template Cast<void>(), write_data.size());
       write_task->Wait();
       REQUIRE(write_task->return_code_ == 0);
       REQUIRE(write_task->bytes_written_ == write_data.size());
@@ -382,7 +379,7 @@ TEST_CASE("bdev_write_read_basic", "[bdev][io][basic]") {
       REQUIRE_FALSE(read_buffer.IsNull());
 
       auto read_task =
-          client.AsyncRead(mctx, pool_query, WrapBlock(block), read_buffer.shm_, k4KB);
+          client.AsyncRead(pool_query, WrapBlock(block), read_buffer.shm_.template Cast<void>().template Cast<void>(), k4KB);
       read_task->Wait();
       REQUIRE(read_task->return_code_ == 0);
       REQUIRE(read_task->bytes_read_ == write_data.size());
@@ -423,10 +420,9 @@ TEST_CASE("bdev_async_operations", "[bdev][async][io]") {
   SECTION("Async allocate, write, and read") {
     chi::PoolId custom_pool_id(104, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     bool success =
-        client.Create(mctx, chi::PoolQuery::Dynamic(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Dynamic(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
 
@@ -435,7 +431,7 @@ TEST_CASE("bdev_async_operations", "[bdev][async][io]") {
       auto pool_query = chi::PoolQuery::DirectHash(i);
 
       // Async allocate
-      auto alloc_task = client.AsyncAllocateBlocks(mctx, pool_query, k64KB);
+      auto alloc_task = client.AsyncAllocateBlocks(pool_query, k64KB);
       alloc_task->Wait();
       REQUIRE(alloc_task->return_code_ == 0);
       REQUIRE(alloc_task->blocks_.size() > 0);
@@ -452,7 +448,7 @@ TEST_CASE("bdev_async_operations", "[bdev][async][io]") {
       memcpy(async_write_buffer.ptr_, write_data.data(), write_data.size());
 
       auto write_task = client.AsyncWrite(
-          mctx, pool_query, WrapBlock(block), async_write_buffer.shm_, write_data.size());
+          pool_query, WrapBlock(block), async_write_buffer.shm_.template Cast<void>().template Cast<void>(), write_data.size());
       write_task->Wait();
       REQUIRE(write_task->return_code_ == 0);
       REQUIRE(write_task->bytes_written_ == write_data.size());
@@ -462,8 +458,8 @@ TEST_CASE("bdev_async_operations", "[bdev][async][io]") {
       auto async_read_buffer = CHI_IPC->AllocateBuffer(k64KB);
       REQUIRE_FALSE(async_read_buffer.IsNull());
 
-      auto read_task = client.AsyncRead(mctx, pool_query, WrapBlock(block),
-                                        async_read_buffer.shm_, k64KB);
+      auto read_task = client.AsyncRead(pool_query, WrapBlock(block),
+                                        async_read_buffer.shm_.template Cast<void>().template Cast<void>(), k64KB);
       read_task->Wait();
       REQUIRE(read_task->return_code_ == 0);
       REQUIRE(read_task->bytes_read_ == write_data.size());
@@ -505,17 +501,16 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
 
     chi::PoolId custom_pool_id(105, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     // Use Broadcast to ensure fresh pool creation with current file
     bool success =
-        client.Create(mctx, chi::PoolQuery::Broadcast(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Broadcast(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
 
     // Get initial stats
     chi::u64 initial_remaining;
-    auto stats_task = client.AsyncGetStats(mctx);
+    auto stats_task = client.AsyncGetStats();
     stats_task->Wait();
     HILOG(kInfo, "Test: GetStats return_code={}, remaining_size={}",
           stats_task->GetReturnCode(), stats_task->remaining_size_);
@@ -533,14 +528,14 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
       auto pool_query = chi::PoolQuery::DirectHash(i);
 
       // Allocate blocks
-      auto alloc_task1 = client.AsyncAllocateBlocks(mctx, pool_query, k1MB);
+      auto alloc_task1 = client.AsyncAllocateBlocks(pool_query, k1MB);
       alloc_task1->Wait();
       REQUIRE(alloc_task1->return_code_ == 0);
       REQUIRE(alloc_task1->blocks_.size() > 0);
       chimaera::bdev::Block block1 = alloc_task1->blocks_[0];
       CHI_IPC->DelTask(alloc_task1);
 
-      auto alloc_task2 = client.AsyncAllocateBlocks(mctx, pool_query, k256KB);
+      auto alloc_task2 = client.AsyncAllocateBlocks(pool_query, k256KB);
       alloc_task2->Wait();
       REQUIRE(alloc_task2->return_code_ == 0);
       REQUIRE(alloc_task2->blocks_.size() > 0);
@@ -556,7 +551,7 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
       memcpy(data1_write_buffer.ptr_, data1.data(), data1.size());
 
       auto write_task1 = client.AsyncWrite(
-          mctx, pool_query, WrapBlock(block1), data1_write_buffer.shm_, data1.size());
+          pool_query, WrapBlock(block1), data1_write_buffer.shm_.template Cast<void>().template Cast<void>(), data1.size());
       write_task1->Wait();
       REQUIRE(write_task1->return_code_ == 0);
       CHI_IPC->DelTask(write_task1);
@@ -567,7 +562,7 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
       memcpy(data2_write_buffer.ptr_, data2.data(), data2.size());
 
       auto write_task2 = client.AsyncWrite(
-          mctx, pool_query, WrapBlock(block2), data2_write_buffer.shm_, data2.size());
+          pool_query, WrapBlock(block2), data2_write_buffer.shm_.template Cast<void>().template Cast<void>(), data2.size());
       write_task2->Wait();
       REQUIRE(write_task2->return_code_ == 0);
       CHI_IPC->DelTask(write_task2);
@@ -576,8 +571,8 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
       auto data1_read_buffer = CHI_IPC->AllocateBuffer(k1MB);
       REQUIRE_FALSE(data1_read_buffer.IsNull());
 
-      auto read_task1 = client.AsyncRead(mctx, pool_query, WrapBlock(block1),
-                                         data1_read_buffer.shm_, k1MB);
+      auto read_task1 = client.AsyncRead(pool_query, WrapBlock(block1),
+                                         data1_read_buffer.shm_.template Cast<void>().template Cast<void>(), k1MB);
       read_task1->Wait();
       REQUIRE(read_task1->return_code_ == 0);
       CHI_IPC->DelTask(read_task1);
@@ -585,8 +580,8 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
       auto data2_read_buffer = CHI_IPC->AllocateBuffer(k256KB);
       REQUIRE_FALSE(data2_read_buffer.IsNull());
 
-      auto read_task2 = client.AsyncRead(mctx, pool_query, WrapBlock(block2),
-                                         data2_read_buffer.shm_, k256KB);
+      auto read_task2 = client.AsyncRead(pool_query, WrapBlock(block2),
+                                         data2_read_buffer.shm_.template Cast<void>().template Cast<void>(), k256KB);
       read_task2->Wait();
       REQUIRE(read_task2->return_code_ == 0);
       CHI_IPC->DelTask(read_task2);
@@ -603,7 +598,7 @@ TEST_CASE("bdev_performance_metrics", "[bdev][performance][metrics]") {
     // Get updated stats
     chi::u64 final_remaining;
     chimaera::bdev::PerfMetrics final_metrics =
-        client.GetStats(mctx, final_remaining);
+        client.GetStats(final_remaining);
 
     // Remaining space should have decreased
     REQUIRE(final_remaining < initial_remaining);
@@ -633,11 +628,10 @@ TEST_CASE("bdev_error_conditions", "[bdev][error][edge_cases]") {
   SECTION("Handle invalid file paths") {
     chi::PoolId custom_pool_id(106, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     // Try to create with non-existent file
     auto create_task = client.AsyncCreate(
-        mctx, chi::PoolQuery::Broadcast(), "/nonexistent/path/file.dat",
+        chi::PoolQuery::Broadcast(), "/nonexistent/path/file.dat",
         custom_pool_id, chimaera::bdev::BdevType::kFile);
     create_task->Wait();
     REQUIRE(create_task->return_code_ != 0); // Should fail
@@ -727,7 +721,7 @@ TEST_CASE("bdev_ram_allocation_and_io", "[bdev][ram][io]") {
     REQUIRE_FALSE(write_buffer.IsNull());
     memcpy(write_buffer.ptr_, write_data.data(), write_data.size());
 
-    auto write_task = bdev_client.AsyncWrite(pool_query, WrapBlock(block), write_buffer.shm_, write_data.size());
+    auto write_task = bdev_client.AsyncWrite(pool_query, WrapBlock(block), write_buffer.shm_.template Cast<void>().template Cast<void>(), write_data.size());
     write_task->Wait();
     REQUIRE(write_task->return_code_ == 0);
     REQUIRE(write_task->bytes_written_ == k4KB);
@@ -738,7 +732,7 @@ TEST_CASE("bdev_ram_allocation_and_io", "[bdev][ram][io]") {
     REQUIRE_FALSE(read_buffer.IsNull());
 
     auto read_task = bdev_client.AsyncRead(pool_query, WrapBlock(block),
-                                           read_buffer.shm_, k4KB);
+                                           read_buffer.shm_.template Cast<void>().template Cast<void>(), k4KB);
     read_task->Wait();
     REQUIRE(read_task->return_code_ == 0);
     REQUIRE(read_task->bytes_read_ == k4KB);
@@ -832,7 +826,7 @@ TEST_CASE("bdev_ram_large_blocks", "[bdev][ram][large]") {
       // Pass all allocated blocks to Write
       auto write_task =
           bdev_client.AsyncWrite(pool_query, ConvertBlocks(blocks),
-                                 test_write_buffer.shm_, test_data.size());
+                                 test_write_buffer.shm_.template Cast<void>().template Cast<void>(), test_data.size());
       write_task->Wait();
       REQUIRE(write_task->return_code_ == 0);
       REQUIRE(write_task->bytes_written_ == block_size);
@@ -843,7 +837,7 @@ TEST_CASE("bdev_ram_large_blocks", "[bdev][ram][large]") {
 
       // Pass all allocated blocks to Read
       auto read_task = bdev_client.AsyncRead(pool_query, ConvertBlocks(blocks),
-                                             test_read_buffer.shm_, block_size);
+                                             test_read_buffer.shm_.template Cast<void>().template Cast<void>(), block_size);
       read_task->Wait();
       REQUIRE(read_task->return_code_ == 0);
       REQUIRE(read_task->bytes_read_ == block_size);
@@ -914,7 +908,7 @@ TEST_CASE("bdev_ram_bounds_checking", "[bdev][ram][bounds]") {
 
     auto write_task =
         bdev_client.AsyncWrite(pool_query, WrapBlock(out_of_bounds_block),
-                               error_write_buffer.shm_, test_data.size());
+                               error_write_buffer.shm_.template Cast<void>().template Cast<void>(), test_data.size());
     write_task->Wait();
     REQUIRE(write_task->bytes_written_ == 0); // Should fail
     CHI_IPC->DelTask(write_task);
@@ -925,7 +919,7 @@ TEST_CASE("bdev_ram_bounds_checking", "[bdev][ram][bounds]") {
 
     auto read_task =
         bdev_client.AsyncRead(pool_query, WrapBlock(out_of_bounds_block),
-                              error_read_buffer.shm_, 2048);
+                              error_read_buffer.shm_.template Cast<void>().template Cast<void>(), 2048);
     read_task->Wait();
     REQUIRE(read_task->bytes_read_ == 0); // Should fail
 
@@ -1025,7 +1019,7 @@ TEST_CASE("bdev_file_vs_ram_comparison", "[bdev][file][ram][comparison]") {
     auto file_write_start = std::chrono::high_resolution_clock::now();
     auto file_write_task =
         file_client.AsyncWrite(pool_query, WrapBlock(file_block),
-                               file_write_buffer.shm_, test_data.size());
+                               file_write_buffer.shm_.template Cast<void>().template Cast<void>(), test_data.size());
     file_write_task->Wait();
     auto file_write_end = std::chrono::high_resolution_clock::now();
 
@@ -1041,7 +1035,7 @@ TEST_CASE("bdev_file_vs_ram_comparison", "[bdev][file][ram][comparison]") {
     auto ram_write_start = std::chrono::high_resolution_clock::now();
     auto ram_write_task =
         ram_client.AsyncWrite(pool_query, WrapBlock(ram_block),
-                              ram_write_buffer.shm_, test_data.size());
+                              ram_write_buffer.shm_.template Cast<void>().template Cast<void>(), test_data.size());
     ram_write_task->Wait();
     auto ram_write_end = std::chrono::high_resolution_clock::now();
 
@@ -1055,7 +1049,7 @@ TEST_CASE("bdev_file_vs_ram_comparison", "[bdev][file][ram][comparison]") {
 
     // Read from file backend and measure time
     auto file_read_start = std::chrono::high_resolution_clock::now();
-    auto file_read_task = file_client.AsyncRead(pool_query, WrapBlock(file_block), file_read_buffer.shm_, test_size);
+    auto file_read_task = file_client.AsyncRead(pool_query, WrapBlock(file_block), file_read_buffer.shm_.template Cast<void>().template Cast<void>(), test_size);
     file_read_task->Wait();
     auto file_read_end = std::chrono::high_resolution_clock::now();
 
@@ -1074,7 +1068,7 @@ TEST_CASE("bdev_file_vs_ram_comparison", "[bdev][file][ram][comparison]") {
 
     auto ram_read_start = std::chrono::high_resolution_clock::now();
     auto ram_read_task = ram_client.AsyncRead(pool_query, WrapBlock(ram_block),
-                                              ram_read_buffer.shm_, test_size);
+                                              ram_read_buffer.shm_.template Cast<void>().template Cast<void>(), test_size);
     ram_read_task->Wait();
     auto ram_read_end = std::chrono::high_resolution_clock::now();
 
@@ -1184,7 +1178,7 @@ TEST_CASE("bdev_file_explicit_backend", "[bdev][file][explicit]") {
 
     auto write_task =
         bdev_client.AsyncWrite(pool_query, WrapBlock(block),
-                               final_write_buffer.shm_, test_data.size());
+                               final_write_buffer.shm_.template Cast<void>().template Cast<void>(), test_data.size());
     write_task->Wait();
     REQUIRE(write_task->return_code_ == 0);
     REQUIRE(write_task->bytes_written_ == k4KB);
@@ -1194,7 +1188,7 @@ TEST_CASE("bdev_file_explicit_backend", "[bdev][file][explicit]") {
     REQUIRE_FALSE(final_read_buffer.IsNull());
 
     auto read_task = bdev_client.AsyncRead(pool_query, WrapBlock(block),
-                                           final_read_buffer.shm_, k4KB);
+                                           final_read_buffer.shm_.template Cast<void>().template Cast<void>(), k4KB);
     read_task->Wait();
     REQUIRE(read_task->return_code_ == 0);
     REQUIRE(read_task->bytes_read_ == k4KB);
@@ -1310,10 +1304,9 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
     // Create BDev container
     chi::PoolId custom_pool_id(200, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     bool success =
-        client.Create(mctx, chi::PoolQuery::Dynamic(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Dynamic(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
     REQUIRE(client.GetReturnCode() == 0);
@@ -1328,7 +1321,6 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
     auto worker_thread = [&](size_t thread_id) {
       // Create thread-local BDev client
       chimaera::bdev::Client thread_client(custom_pool_id);
-      hipc::MemContext thread_mctx;
 
       // Allocate write buffer in shared memory
       auto write_buffer = CHI_IPC->AllocateBuffer(io_size);
@@ -1341,7 +1333,7 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
 
         // Allocate block
         auto alloc_task =
-            thread_client.AsyncAllocateBlocks(thread_mctx, pool_query, io_size);
+            thread_client.AsyncAllocateBlocks(pool_query, io_size);
         alloc_task->Wait();
         REQUIRE(alloc_task->return_code_.load() == 0);
         REQUIRE(alloc_task->blocks_.size() > 0);
@@ -1355,7 +1347,7 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
 
         // Write data
         auto write_task = thread_client.AsyncWrite(
-            thread_mctx, pool_query, WrapBlock(blocks[0]), write_buffer.shm_, io_size);
+            pool_query, WrapBlock(blocks[0]), write_buffer.shm_.template Cast<void>().template Cast<void>(), io_size);
         write_task->Wait();
         HILOG(kInfo, "Write task: return code = {}, bytes written = {}", write_task->return_code_.load(), write_task->bytes_written_);
         REQUIRE(write_task->return_code_.load() == 0);
@@ -1364,7 +1356,7 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
 
         // Free block
         auto free_task =
-            thread_client.AsyncFreeBlocks(thread_mctx, pool_query, blocks);
+            thread_client.AsyncFreeBlocks(pool_query, blocks);
         free_task->Wait();
         REQUIRE(free_task->return_code_.load() == 0);
         CHI_IPC->DelTask(free_task);
@@ -1431,10 +1423,9 @@ TEST_CASE("bdev_force_net_flag", "[bdev][network][force_net]") {
   SECTION("Write and Read with TASK_FORCE_NET") {
     chi::PoolId custom_pool_id(105, 0);
     chimaera::bdev::Client client(custom_pool_id);
-    hipc::MemContext mctx;
 
     bool success =
-        client.Create(mctx, chi::PoolQuery::Dynamic(), fixture.getTestFile(),
+        client.Create(chi::PoolQuery::Dynamic(), fixture.getTestFile(),
                       custom_pool_id, chimaera::bdev::BdevType::kFile);
     REQUIRE(success);
     REQUIRE(client.GetReturnCode() == 0);
@@ -1446,7 +1437,7 @@ TEST_CASE("bdev_force_net_flag", "[bdev][network][force_net]") {
       auto pool_query = chi::PoolQuery::DirectHash(i);
 
       // Allocate a block
-      auto alloc_task = client.AsyncAllocateBlocks(mctx, pool_query, k64KB);
+      auto alloc_task = client.AsyncAllocateBlocks(pool_query, k64KB);
       alloc_task->Wait();
       REQUIRE(alloc_task->return_code_ == 0);
       REQUIRE(alloc_task->blocks_.size() > 0);
@@ -1467,7 +1458,7 @@ TEST_CASE("bdev_force_net_flag", "[bdev][network][force_net]") {
       auto *ipc_manager = CHI_IPC;
       auto write_task = ipc_manager->NewTask<chimaera::bdev::WriteTask>(
           chi::CreateTaskId(), client.pool_id_, pool_query, WrapBlock(block),
-          write_buffer.shm_, write_data.size());
+          write_buffer.shm_.template Cast<void>().template Cast<void>(), write_data.size());
 
       // Set TASK_FORCE_NET flag BEFORE enqueueing
       write_task->SetFlags(TASK_FORCE_NET);
@@ -1494,7 +1485,7 @@ TEST_CASE("bdev_force_net_flag", "[bdev][network][force_net]") {
       // Use NewTask directly to create read task
       auto read_task = ipc_manager->NewTask<chimaera::bdev::ReadTask>(
           chi::CreateTaskId(), client.pool_id_, pool_query, WrapBlock(block),
-          read_buffer.shm_, k64KB);
+          read_buffer.shm_.template Cast<void>().template Cast<void>(), k64KB);
 
       // Set TASK_FORCE_NET flag BEFORE enqueueing
       read_task->SetFlags(TASK_FORCE_NET);

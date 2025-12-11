@@ -232,8 +232,9 @@ class Allocator {
   template <typename T = void>
   HSHM_INLINE_CROSS_FUN bool ContainsPtr(const T *ptr) const {
     MemoryBackend backend = GetBackend();
-    size_t off = reinterpret_cast<const char*>(ptr) - backend.data_;
-    return ptr >= backend.data_ && off < backend.data_capacity_;
+    const char *char_ptr = reinterpret_cast<const char*>(ptr);
+    size_t off = char_ptr - backend.data_;
+    return char_ptr >= backend.data_ && off < backend.data_capacity_;
   }
 
   /**
