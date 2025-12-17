@@ -72,9 +72,8 @@ class Future {
       : task_ptr_(task_ptr) {
     // Allocate FutureShm object
     future_shm_ = alloc->template NewObj<FutureT>(alloc).template Cast<FutureT>();
-    // Link the FutureShm to the task and copy pool_id
+    // Copy pool_id to FutureShm
     if (!task_ptr_.IsNull() && !future_shm_.IsNull()) {
-      task_ptr_->SetFutureShm(future_shm_.shm_);
       future_shm_->pool_id_ = task_ptr_->pool_id_;
     }
   }
@@ -88,9 +87,8 @@ class Future {
   Future(AllocT* alloc, hipc::FullPtr<TaskT> task_ptr, hipc::ShmPtr<FutureT> future_shm)
       : task_ptr_(task_ptr),
         future_shm_(alloc, future_shm) {
-    // Link the FutureShm to the task and copy pool_id
+    // Copy pool_id to FutureShm
     if (!task_ptr_.IsNull() && !future_shm_.IsNull()) {
-      task_ptr_->SetFutureShm(future_shm_.shm_);
       future_shm_->pool_id_ = task_ptr_->pool_id_;
     }
   }

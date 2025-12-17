@@ -139,6 +139,11 @@ public:
                chi::Future<chi::Task>& dup_future, bool deep) override;
 
   /**
+   * Create a new task of the specified method type
+   */
+  hipc::FullPtr<chi::Task> NewTask(chi::u32 method) override;
+
+  /**
    * Aggregate a replica task into the origin task (for merging replica results)
    */
   void Aggregate(chi::u32 method,

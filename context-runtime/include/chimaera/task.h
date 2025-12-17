@@ -65,7 +65,6 @@ class Task {
       return_code_; /**< Task return code (0=success, non-zero=error) */
   OUT std::atomic<ContainerId> completer_; /**< Container ID that completed this task */
   TaskStat stat_;   /**< Task statistics for I/O and compute tracking */
-  hipc::ShmPtr<FutureShm<AllocT>> future_shm_; /**< Pointer to FutureShm for async operations */
 
   /**
    * Default constructor
@@ -89,7 +88,6 @@ class Task {
     run_ctx_ = nullptr;
     return_code_.store(0); // Initialize as success
     completer_.store(0); // Initialize as null (0 is invalid container ID)
-    future_shm_.SetNull();
   }
 
   /**
@@ -107,7 +105,6 @@ class Task {
     return_code_.store(other->return_code_.load());
     completer_.store(other->completer_.load());
     stat_ = other->stat_;
-    future_shm_ = other->future_shm_;
   }
 
   /**
@@ -125,7 +122,6 @@ class Task {
     completer_.store(0); // Initialize as null (0 is invalid container ID)
     stat_.io_size_ = 0;
     stat_.compute_ = 0;
-    future_shm_.SetNull();
   }
 
   /**
@@ -136,12 +132,6 @@ class Task {
    */
   HSHM_CROSS_FUN void Wait(double block_time_us = 0.0,
                            bool from_yield = false);
-
-  /**
-   * Check if task is complete
-   * @return true if task is complete, false otherwise
-   */
-  HSHM_CROSS_FUN bool IsComplete() const;
 
   /**
    * Yield execution back to worker by waiting for task completion
@@ -331,22 +321,6 @@ class Task {
   }
 
   /**
-   * Set the FutureShm pointer for this task
-   * @param future_shm ShmPtr to the FutureShm object
-   */
-  HSHM_CROSS_FUN void SetFutureShm(hipc::ShmPtr<FutureShm<AllocT>> future_shm) {
-    future_shm_ = future_shm;
-  }
-
-  /**
-   * Get the FutureShm pointer for this task
-   * @return ShmPtr to the FutureShm object
-   */
-  HSHM_CROSS_FUN hipc::ShmPtr<FutureShm<AllocT>> GetFutureShm() const {
-    return future_shm_;
-  }
-
-  /**
    * Base aggregate method - propagates return codes from replica tasks
    * Sets this task's return code to the replica's return code if replica has non-zero return code
    * Accepts any task type that inherits from Task
@@ -413,13 +387,16 @@ struct RunContext {
   std::vector<FullPtr<Task>> subtasks_; // Replica tasks for this execution
   std::atomic<u32> completed_replicas_; // Count of completed replicas
   u32 block_count_;  // Number of times task has been blocked
+  hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm_;  // FutureShm for async completion tracking
 
   RunContext()
       : stack_ptr(nullptr), stack_base_for_free(nullptr), stack_size(0),
         thread_type(kSchedWorker), worker_id(0), is_blocked(false),
         est_load(0.0), block_time_us(0.0), block_start(), yield_context{}, resume_context{},
         container(nullptr), lane(nullptr), exec_mode(ExecMode::kExec),
-        completed_replicas_(0), block_count_(0) {}
+        completed_replicas_(0), block_count_(0) {
+    future_shm_.SetNull();
+  }
 
   /**
    * Move constructor - required because of atomic member
@@ -438,7 +415,8 @@ struct RunContext {
         pool_queries(std::move(other.pool_queries)),
         subtasks_(std::move(other.subtasks_)),
         completed_replicas_(other.completed_replicas_.load()),
-        block_count_(other.block_count_) {}
+        block_count_(other.block_count_),
+        future_shm_(other.future_shm_) {}
 
   /**
    * Move assignment operator - required because of atomic member
@@ -465,6 +443,7 @@ struct RunContext {
       subtasks_ = std::move(other.subtasks_);
       completed_replicas_.store(other.completed_replicas_.load());
       block_count_ = other.block_count_;
+      future_shm_ = other.future_shm_;
     }
     return *this;
   }
@@ -490,19 +469,15 @@ struct RunContext {
 
   /**
    * Check if all subtasks this task is waiting for are completed
+   * Subtasks are considered complete when Wait() on them has returned
+   * which removes them from waiting_for_tasks. So if waiting_for_tasks
+   * is empty, all subtasks are done.
    * @return true if all subtasks are completed, false otherwise
    */
   bool AreSubtasksCompleted() const {
-    // Check each task in the waiting_for_tasks vector
-    for (const auto &waiting_task : waiting_for_tasks) {
-      if (!waiting_task.IsNull()) {
-        // Check if the waiting task is completed
-        if (!waiting_task->IsComplete()) {
-          return false; // Found a subtask that's not completed yet
-        }
-      }
-    }
-    return true; // All subtasks are completed (or no subtasks)
+    // If waiting_for_tasks is empty, all subtasks are completed
+    // Tasks are removed from waiting_for_tasks when they complete
+    return waiting_for_tasks.empty();
   }
 };
 

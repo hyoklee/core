@@ -304,9 +304,11 @@ private:
    * allocated and set in task)
    * @param container Container for the task
    * @param lane Lane for the task (can be nullptr)
+   * @param future_shm_ptr FutureShm pointer for async completion tracking
    */
   void BeginTask(const FullPtr<Task> &task_ptr, Container *container,
-                 TaskLane *lane);
+                 TaskLane *lane,
+                 hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm_ptr = hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>>());
 
   /**
    * Continue processing blocked tasks that are ready to resume

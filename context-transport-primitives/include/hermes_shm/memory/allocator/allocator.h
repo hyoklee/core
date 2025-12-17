@@ -798,6 +798,13 @@ struct FullPtr : public ShmPointer {
   HSHM_INLINE_CROSS_FUN FullPtr(const T *ptr, const PointerT &shm)
       : ptr_(const_cast<T *>(ptr)), shm_(shm) {}
 
+  /** Raw pointer constructor (for private/stack memory)
+   * Creates a FullPtr from a raw pointer with null allocator ID
+   * @param ptr Raw pointer to wrap (can be stack or heap memory)
+   */
+  HSHM_INLINE_CROSS_FUN explicit FullPtr(T *ptr)
+      : ptr_(ptr), shm_(AllocatorId::GetNull(), reinterpret_cast<size_t>(ptr)) {}
+
   /** Shared half + alloc constructor for OffsetPtr */
   template <typename AllocT>
   HSHM_CROSS_FUN explicit FullPtr(AllocT *alloc,

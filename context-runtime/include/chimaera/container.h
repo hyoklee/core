@@ -171,6 +171,15 @@ class Container {
                                Future<Task> &dup_future, bool deep) = 0;
 
   /**
+   * Create a new task of the specified method type
+   * Must be implemented by derived classes
+   * Uses switch-case structure based on method ID to dispatch to appropriate task type allocation
+   * @param method The method ID for the task type to create
+   * @return Full pointer to the newly allocated task (cast to base Task type)
+   */
+  HSHM_DLL virtual hipc::FullPtr<Task> NewTask(u32 method) = 0;
+
+  /**
    * Aggregate a replica task into the origin task - must be implemented by derived classes
    * Uses switch-case structure based on method ID to dispatch to appropriate task type aggregation
    * This is used for merging replica results back into the origin task after distributed execution

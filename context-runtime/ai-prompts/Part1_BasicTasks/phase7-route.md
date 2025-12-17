@@ -116,3 +116,30 @@ Comment out the admin SendIn, LoadIn, SendOut, and LoadOut method bodies. We wil
 ## EndTask
 1. Use container->LocalSaveOut to serialize task outputs into the hipc::vector in the future.
 2. Call Future->Complete(). 
+
+@CLAUDE.md
+
+Add a new method to chi_refresh_repo called NewTask. 
+NewTask will be a switch-case that does the following: 
+``auto new_task_ptr = ipc_manager->NewTask<TASK_NAME>(); return new_task_ptr.template Cast<Task>();``
+It should return a ``FullPtr<Task>``.
+Call chi_refresh_repo on each chimod and ensure everything still compiles afterwards.
+
+@CLAUDE.md
+Update ProcessNewTasks, EndTask, and FutureShm.
+FutureShm should also container the method_id from the task, not just the PoolId.
+
+## ProcessNewTasks
+Call container->NewTask to create a task based on the method_id, rather than NewTask directly.
+Construct a ``Future<Task>`` object from the FullPtr<FutureShm> and the FullPtr<Task>. It should have a constructor
+for this if it does not.
+RunContext should store ``Future<Task>`` instead of FutureShm. 
+
+## EndTask
+EndTask should do:
+1. container->LocalSaveOut(run_ctx->future_);
+2. run_ctx->future_.SetComplete();
+3. container->DelTask(run_ctx->future_.task_);
+
+Let's add a new hipc::mpsc_queue to the WorkOrchestrator.
+This queue should be called network_queue. 

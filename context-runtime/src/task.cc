@@ -27,9 +27,8 @@ void Task::Wait(double block_time_us, bool from_yield) {
 
     if (!worker || !run_ctx) {
       // No worker or run context available, fall back to client implementation
-      while (!IsComplete()) {
-        YieldBase();
-      }
+      // Just yield once - client code should use Future::Wait() for proper completion tracking
+      YieldBase();
       return;
     }
 
@@ -64,16 +63,12 @@ void Task::Wait(double block_time_us, bool from_yield) {
     worker->AddToBlockedQueue(run_ctx);
     YieldBase();
 
-    // After yielding, check if task is complete
-    // If not complete, set task_did_work_ to false to indicate blocked work
-    if (!IsComplete()) {
-      worker->SetTaskDidWork(false);
-    }
+    // After yielding, assume blocked work (will be corrected by worker if task completes)
+    worker->SetTaskDidWork(false);
   } else {
-    // Client implementation: Wait loop using Yield()
-    while (!IsComplete()) {
-      YieldBase();
-    }
+    // Client implementation: Just yield once
+    // Client code should use Future::Wait() for proper completion tracking
+    YieldBase();
   }
 }
 
@@ -122,20 +117,6 @@ void Task::Yield(double block_time_us) {
   // New public Yield function that calls Wait with from_yield=true
   // to avoid adding subtasks to RunContext
   Wait(block_time_us, true);
-}
-
-bool Task::IsComplete() const {
-  // Check if FutureShm is available
-  if (!future_shm_.IsNull()) {
-    // Get the FutureShm object via IPC manager's allocator
-    auto *alloc = CHI_IPC->GetMainAlloc();
-    hipc::FullPtr<FutureShm<AllocT>> future_ptr(alloc, future_shm_);
-    if (!future_ptr.IsNull()) {
-      return future_ptr->is_complete_.load() != 0;
-    }
-  }
-  // For tasks without Future (synchronous tasks), assume complete
-  return true;
 }
 
 // Task::Aggregate is now a template method in task.h

@@ -190,18 +190,12 @@ u32 Worker::ProcessNewTasks() {
         // Deserialize into the task
         archive >> (*task_ptr);
 
-        // Wrap task in FullPtr with null allocator (private memory)
-        hipc::FullPtr<Task> task_full_ptr;
-        task_full_ptr.ptr_ = task_ptr;
-        task_full_ptr.shm_.alloc_id_ = hipc::AllocatorId::GetNull();
-        task_full_ptr.shm_.off_ = 0;
-
-        // Link task to FutureShm
-        task_full_ptr->SetFutureShm(future_shm_ptr);
+        // Wrap task in FullPtr using raw pointer constructor (private memory)
+        hipc::FullPtr<Task> task_full_ptr(task_ptr);
 
         // Allocate stack and RunContext before routing
         if (!task_full_ptr->IsRouted()) {
-          BeginTask(task_full_ptr, container, assigned_lane_);
+          BeginTask(task_full_ptr, container, assigned_lane_, future_shm_ptr);
         }
 
         // Route task using consolidated routing function
@@ -780,7 +774,8 @@ void Worker::DeallocateStackAndContext(RunContext *run_ctx) {
 }
 
 void Worker::BeginTask(const FullPtr<Task> &task_ptr, Container *container,
-                       TaskLane *lane) {
+                       TaskLane *lane,
+                       hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm_ptr) {
   if (task_ptr.IsNull()) {
     return;
   }
@@ -805,6 +800,7 @@ void Worker::BeginTask(const FullPtr<Task> &task_ptr, Container *container,
   run_ctx->container = container;     // Store container for CHI_CUR_CONTAINER
   run_ctx->lane = lane;               // Store lane for CHI_CUR_LANE
   run_ctx->waiting_for_tasks.clear(); // Clear waiting tasks for new task
+  run_ctx->future_shm_ = future_shm_ptr;  // Store FutureShm for completion tracking
   // Set RunContext pointer in task
   task_ptr->run_ctx_ = run_ctx;
 
@@ -918,20 +914,12 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
     return; // Consider null tasks as completed
   }
 
-  // Check if task is already completed (e.g., from distributed execution)
-  // If so, skip execution and go directly to ending the task
-  if (task_ptr->IsComplete()) {
-    HILOG(kDebug, "[ExecTask] Task {} already complete, skipping to end",
-          task_ptr->task_id_);
-    // Don't return - fall through to cleanup logic below
+  // Call appropriate fiber function based on task state
+  if (is_started) {
+    ResumeFiber(task_ptr, run_ctx);
   } else {
-    // Call appropriate fiber function based on task state
-    if (is_started) {
-      ResumeFiber(task_ptr, run_ctx);
-    } else {
-      BeginFiber(task_ptr, run_ctx, FiberExecutionFunction);
-      task_ptr->SetFlags(TASK_STARTED);
-    }
+    BeginFiber(task_ptr, run_ctx, FiberExecutionFunction);
+    task_ptr->SetFlags(TASK_STARTED);
   }
 
   // Only set did_work_ if the task actually did work
@@ -1000,9 +988,9 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
           ret_node_id);
   } else {
     // Serialize outputs back to FutureShm for local completion
-    if (!task_ptr->future_shm_.IsNull()) {
+    if (!run_ctx->future_shm_.IsNull()) {
       auto *alloc = CHI_IPC->GetMainAlloc();
-      hipc::FullPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm(alloc, task_ptr->future_shm_);
+      hipc::FullPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm(alloc, run_ctx->future_shm_);
       if (!future_shm.IsNull()) {
         // Serialize task outputs using LocalSaveTaskArchive
         LocalSaveTaskArchive archive(LocalMsgType::kSerializeOut);

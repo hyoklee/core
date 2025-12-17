@@ -120,6 +120,7 @@ public:
                     chi::Future<chi::Task>& task_future) override;
   void NewCopy(chi::u32 method, chi::Future<chi::Task>& orig_future,
                chi::Future<chi::Task>& dup_future, bool deep) override;
+  hipc::FullPtr<chi::Task> NewTask(chi::u32 method) override;
   void Aggregate(chi::u32 method, chi::Future<chi::Task>& origin_future,
                  chi::Future<chi::Task>& replica_future) override;
 
