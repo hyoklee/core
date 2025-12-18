@@ -13,26 +13,35 @@
 // resolution
 #include "chimaera/admin/admin_client.h"
 #include "chimaera/container.h"
+#include "chimaera/future.h"
 #include "chimaera/pool_manager.h"
 #include "chimaera/singletons.h"
 #include "chimaera/task.h"
 #include "chimaera/task_archives.h"
 #include "chimaera/task_queue.h"
 #include "chimaera/work_orchestrator.h"
-#include "chimaera/future.h"
 
 namespace chi {
 
 // Stack detection is now handled by WorkOrchestrator during initialization
 
 Worker::Worker(u32 worker_id, ThreadType thread_type)
-    : worker_id_(worker_id), thread_type_(thread_type), is_running_(false),
-      is_initialized_(false), did_work_(false), task_did_work_(false),
-      current_run_context_(nullptr), assigned_lane_(nullptr),
-      last_long_queue_check_(0), iteration_count_(0), idle_iterations_(0),
-      current_sleep_us_(0), sleep_count_(0) {
-  // std::queue is initialized with default constructors in member initialization
-  // No pre-allocation of capacity is needed or possible with std::queue
+    : worker_id_(worker_id),
+      thread_type_(thread_type),
+      is_running_(false),
+      is_initialized_(false),
+      did_work_(false),
+      task_did_work_(false),
+      current_run_context_(nullptr),
+      assigned_lane_(nullptr),
+      last_long_queue_check_(0),
+      iteration_count_(0),
+      idle_iterations_(0),
+      current_sleep_us_(0),
+      sleep_count_(0) {
+  // std::queue is initialized with default constructors in member
+  // initialization No pre-allocation of capacity is needed or possible with
+  // std::queue
 
   // Record worker spawn time
   spawn_time_.Now();
@@ -114,7 +123,7 @@ void Worker::Run() {
 
   // Main worker loop - process tasks from assigned lane
   while (is_running_) {
-    did_work_ = false; // Reset work tracker at start of each loop iteration
+    did_work_ = false;  // Reset work tracker at start of each loop iteration
 
     // Process tasks from assigned lane
     ProcessNewTasks();
@@ -132,10 +141,10 @@ void Worker::Run() {
 
     if (did_work_) {
       // Work was done - reset idle counters
-    //   if (sleep_count_ > 0) {
-    //     HILOG(kInfo, "Worker {}: Woke up after {} sleeps", worker_id_,
-    //           sleep_count_);
-    //   }
+      //   if (sleep_count_ > 0) {
+      //     HILOG(kInfo, "Worker {}: Woke up after {} sleeps", worker_id_,
+      //           sleep_count_);
+      //   }
       idle_iterations_ = 0;
       current_sleep_us_ = 0;
       sleep_count_ = 0;
@@ -155,56 +164,72 @@ u32 Worker::ProcessNewTasks() {
   u32 tasks_processed = 0;
 
   while (tasks_processed < MAX_TASKS_PER_ITERATION) {
-    hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm_ptr;
-    // Pop FutureShm from assigned lane
-    if (assigned_lane_ && assigned_lane_->Pop(future_shm_ptr)) {
+    Future<Task> future;
+    // Pop Future<Task> from assigned lane
+    if (assigned_lane_ && assigned_lane_->Pop(future)) {
       tasks_processed++;
 
-      auto *alloc = CHI_IPC->GetMainAlloc();
-      hipc::FullPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm(alloc, future_shm_ptr);
+      // Fix the allocator pointer after popping from ring buffer
+      auto *ipc_manager = CHI_IPC;
+      future.SetAllocator(ipc_manager->GetMainAlloc());
 
-      if (!future_shm.IsNull()) {
-        // Get pool_id and method_id from FutureShm
-        PoolId pool_id = future_shm->pool_id_;
-        u32 method_id = future_shm->method_id_;
+      // Get pool_id and method_id from FutureShm
+      auto &future_shm = future.GetFutureShm();
+      PoolId pool_id = future_shm->pool_id_;
+      u32 method_id = future_shm->method_id_;
 
-        // Get container for routing
-        auto *pool_manager = CHI_POOL_MANAGER;
-        Container *container = pool_manager->GetContainer(pool_id);
+      // Get container for routing
+      auto *pool_manager = CHI_POOL_MANAGER;
+      Container *container = pool_manager->GetContainer(pool_id);
 
-        if (!container) {
-          // Container not found - mark as complete with error
-          future_shm->is_complete_.store(1);
-          continue;
-        }
+      if (!container) {
+        // Container not found - mark as complete with error
+        future_shm->is_complete_.store(1);
+        continue;
+      }
 
-        // Deserialize task inputs from FutureShm using container->LocalLoadTask
+      // Check if Future has null task pointer (indicates task needs to be
+      // loaded)
+      FullPtr<Task> task_full_ptr = future.GetTaskPtr();
+      bool destroy_in_end_task = false;
+
+      if (task_full_ptr.IsNull()) {
+        // CLIENT PATH: Load task from serialized data in FutureShm
         std::vector<char> serialized_data(future_shm->serialized_task_.begin(),
                                           future_shm->serialized_task_.end());
         LocalLoadTaskArchive archive(serialized_data);
-        FullPtr<Task> task_full_ptr = container->LocalLoadTask(method_id, archive);
-        Future<Task> future(future_shm, task_full_ptr);
+        task_full_ptr = container->LocalLoadTask(method_id, archive);
 
-        // Allocate stack and RunContext before routing
-        if (!task_full_ptr->IsRouted()) {
-          BeginTask(task_full_ptr, container, assigned_lane_, future_shm_ptr);
-        }
+        // Update the Future's task pointer
+        future.GetTaskPtr() = task_full_ptr;
 
-        // Store future in RunContext
-        RunContext *run_ctx = task_full_ptr->run_ctx_;
-        if (run_ctx) {
-          run_ctx->future_ = std::move(future);
-        }
-
-        // Route task using consolidated routing function
-        if (RouteTask(task_full_ptr, assigned_lane_, container)) {
-          // Routing successful, execute the task
-          RunContext *run_ctx = task_full_ptr->run_ctx_;
-          ExecTask(task_full_ptr, run_ctx, false);
-        }
-        // Note: RouteTask returning false doesn't always indicate an error
-        // Real errors are handled within RouteTask itself
+        destroy_in_end_task =
+            true;  // Task was created from serialized data, should be destroyed
+      } else {
+        // RUNTIME PATH: Task pointer is already set, no need to load
+        destroy_in_end_task = false;  // Task should not be destroyed
       }
+
+      // Allocate stack and RunContext before routing
+      if (!task_full_ptr->IsRouted()) {
+        BeginTask(task_full_ptr, container, assigned_lane_,
+                  destroy_in_end_task);
+      }
+
+      // Store future in RunContext
+      RunContext *run_ctx = task_full_ptr->run_ctx_;
+      if (run_ctx) {
+        run_ctx->future_ = future;
+      }
+
+      // Route task using consolidated routing function
+      if (RouteTask(future, assigned_lane_, container)) {
+        // Routing successful, execute the task
+        RunContext *run_ctx = task_full_ptr->run_ctx_;
+        ExecTask(task_full_ptr, run_ctx, false);
+      }
+      // Note: RouteTask returning false doesn't always indicate an error
+      // Real errors are handled within RouteTask itself
     } else {
       // No more tasks in this lane
       break;
@@ -321,8 +346,11 @@ void Worker::ClearCurrentWorker() {
                             static_cast<class Worker *>(nullptr));
 }
 
-bool Worker::RouteTask(const FullPtr<Task> &task_ptr, TaskLane *lane,
+bool Worker::RouteTask(Future<Task> &future, TaskLane *lane,
                        Container *&container) {
+  // Get task pointer from future
+  FullPtr<Task> task_ptr = future.GetTaskPtr();
+
   if (task_ptr.IsNull()) {
     return false;
   }
@@ -362,12 +390,12 @@ bool Worker::RouteTask(const FullPtr<Task> &task_ptr, TaskLane *lane,
   // Check if task should be processed locally
   if (IsTaskLocal(task_ptr, pool_queries)) {
     // Route task locally using container query and Monitor with kLocalSchedule
-    return RouteLocal(task_ptr, lane, container);
+    return RouteLocal(future, lane, container);
   } else {
     // Route task globally using admin client's ClientSendTaskIn method
     // RouteGlobal never fails, so no need for fallback logic
-    RouteGlobal(task_ptr, pool_queries);
-    return false; // No local execution needed
+    RouteGlobal(future, pool_queries);
+    return false;  // No local execution needed
   }
 }
 
@@ -395,35 +423,38 @@ bool Worker::IsTaskLocal(const FullPtr<Task> &task_ptr,
   RoutingMode routing_mode = query.GetRoutingMode();
 
   switch (routing_mode) {
-  case RoutingMode::Local:
-    return true; // Always local
+    case RoutingMode::Local:
+      return true;  // Always local
 
-  case RoutingMode::Dynamic:
-    // Dynamic mode routes to Monitor first, then may be resolved locally
-    // Treat as local for initial routing to allow Monitor to process
-    return true;
+    case RoutingMode::Dynamic:
+      // Dynamic mode routes to Monitor first, then may be resolved locally
+      // Treat as local for initial routing to allow Monitor to process
+      return true;
 
-  case RoutingMode::Physical: {
-    // Physical mode is local only if targeting local node
-    auto *ipc_manager = CHI_IPC;
-    u64 local_node_id = ipc_manager ? ipc_manager->GetNodeId() : 0;
-    return query.GetNodeId() == local_node_id;
-  }
+    case RoutingMode::Physical: {
+      // Physical mode is local only if targeting local node
+      auto *ipc_manager = CHI_IPC;
+      u64 local_node_id = ipc_manager ? ipc_manager->GetNodeId() : 0;
+      return query.GetNodeId() == local_node_id;
+    }
 
-  case RoutingMode::DirectId:
-  case RoutingMode::DirectHash:
-  case RoutingMode::Range:
-  case RoutingMode::Broadcast:
-    // These modes should have been resolved to Physical queries by now
-    // If we still see them here, they are not local
-    return false;
+    case RoutingMode::DirectId:
+    case RoutingMode::DirectHash:
+    case RoutingMode::Range:
+    case RoutingMode::Broadcast:
+      // These modes should have been resolved to Physical queries by now
+      // If we still see them here, they are not local
+      return false;
   }
 
   return false;
 }
 
-bool Worker::RouteLocal(const FullPtr<Task> &task_ptr, TaskLane *lane,
+bool Worker::RouteLocal(Future<Task> &future, TaskLane *lane,
                         Container *&container) {
+  // Get task pointer from future
+  FullPtr<Task> task_ptr = future.GetTaskPtr();
+
   // Check task execution time estimate
   // Tasks with EstCpuTime >= 50us are considered slow
   size_t est_cpu_time = task_ptr->EstCpuTime();
@@ -459,17 +490,20 @@ bool Worker::RouteLocal(const FullPtr<Task> &task_ptr, TaskLane *lane,
   return true;
 }
 
-bool Worker::RouteGlobal(const FullPtr<Task> &task_ptr,
+bool Worker::RouteGlobal(Future<Task> &future,
                          const std::vector<PoolQuery> &pool_queries) {
+  // Get task pointer from future
+  FullPtr<Task> task_ptr = future.GetTaskPtr();
+
   try {
     // Create admin client to send task to target node
     chimaera::admin::Client admin_client(kAdminPoolId);
 
     // Send task using unified Send API with SerializeIn mode
     admin_client.AsyncSend(
-        chi::MsgType::kSerializeIn, // SerializeIn - sending inputs
-        task_ptr,                   // Task pointer to send
-        pool_queries                // Pool queries vector for target nodes
+        chi::MsgType::kSerializeIn,  // SerializeIn - sending inputs
+        task_ptr,                    // Task pointer to send
+        pool_queries                 // Pool queries vector for target nodes
     );
 
     // Set TASK_ROUTED flag on original task
@@ -494,45 +528,43 @@ std::vector<PoolQuery> Worker::ResolvePoolQuery(const PoolQuery &query,
                                                 const FullPtr<Task> &task_ptr) {
   // Basic validation
   if (pool_id.IsNull()) {
-    return {}; // Invalid pool ID
+    return {};  // Invalid pool ID
   }
 
   RoutingMode routing_mode = query.GetRoutingMode();
 
   switch (routing_mode) {
-  case RoutingMode::Local:
-    return ResolveLocalQuery(query, task_ptr);
-  case RoutingMode::Dynamic:
-    return ResolveDynamicQuery(query, pool_id, task_ptr);
-  case RoutingMode::DirectId:
-    return ResolveDirectIdQuery(query, pool_id, task_ptr);
-  case RoutingMode::DirectHash:
-    return ResolveDirectHashQuery(query, pool_id, task_ptr);
-  case RoutingMode::Range:
-    return ResolveRangeQuery(query, pool_id, task_ptr);
-  case RoutingMode::Broadcast:
-    return ResolveBroadcastQuery(query, pool_id, task_ptr);
-  case RoutingMode::Physical:
-    return ResolvePhysicalQuery(query, pool_id, task_ptr);
+    case RoutingMode::Local:
+      return ResolveLocalQuery(query, task_ptr);
+    case RoutingMode::Dynamic:
+      return ResolveDynamicQuery(query, pool_id, task_ptr);
+    case RoutingMode::DirectId:
+      return ResolveDirectIdQuery(query, pool_id, task_ptr);
+    case RoutingMode::DirectHash:
+      return ResolveDirectHashQuery(query, pool_id, task_ptr);
+    case RoutingMode::Range:
+      return ResolveRangeQuery(query, pool_id, task_ptr);
+    case RoutingMode::Broadcast:
+      return ResolveBroadcastQuery(query, pool_id, task_ptr);
+    case RoutingMode::Physical:
+      return ResolvePhysicalQuery(query, pool_id, task_ptr);
   }
 
   return {};
 }
 
-std::vector<PoolQuery>
-Worker::ResolveLocalQuery(const PoolQuery &query,
-                          const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolveLocalQuery(
+    const PoolQuery &query, const FullPtr<Task> &task_ptr) {
   // Local routing - process on current node
   return {query};
 }
 
-std::vector<PoolQuery>
-Worker::ResolveDynamicQuery(const PoolQuery &query, PoolId pool_id,
-                            const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolveDynamicQuery(
+    const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   // Use the current RunContext that was allocated by BeginTask
   RunContext *run_ctx = task_ptr->run_ctx_;
   if (run_ctx == nullptr) {
-    return {}; // Return empty vector if no RunContext
+    return {};  // Return empty vector if no RunContext
   }
 
   // Set execution mode to kDynamicSchedule
@@ -547,12 +579,11 @@ Worker::ResolveDynamicQuery(const PoolQuery &query, PoolId pool_id,
   return result;
 }
 
-std::vector<PoolQuery>
-Worker::ResolveDirectIdQuery(const PoolQuery &query, PoolId pool_id,
-                             const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolveDirectIdQuery(
+    const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   auto *pool_manager = CHI_POOL_MANAGER;
   if (pool_manager == nullptr) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   // Get the container ID from the query
@@ -571,18 +602,17 @@ Worker::ResolveDirectIdQuery(const PoolQuery &query, PoolId pool_id,
   return {PoolQuery::Physical(node_id)};
 }
 
-std::vector<PoolQuery>
-Worker::ResolveDirectHashQuery(const PoolQuery &query, PoolId pool_id,
-                               const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolveDirectHashQuery(
+    const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   auto *pool_manager = CHI_POOL_MANAGER;
   if (pool_manager == nullptr) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   // Get pool info to find the number of containers
   const PoolInfo *pool_info = pool_manager->GetPoolInfo(pool_id);
   if (pool_info == nullptr || pool_info->num_containers_ == 0) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   // Hash to get container ID
@@ -602,9 +632,8 @@ Worker::ResolveDirectHashQuery(const PoolQuery &query, PoolId pool_id,
   return {PoolQuery::Physical(node_id)};
 }
 
-std::vector<PoolQuery>
-Worker::ResolveRangeQuery(const PoolQuery &query, PoolId pool_id,
-                          const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolveRangeQuery(
+    const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   // Set execution mode to normal execution
   RunContext *run_ctx = task_ptr->run_ctx_;
   if (run_ctx != nullptr) {
@@ -613,12 +642,12 @@ Worker::ResolveRangeQuery(const PoolQuery &query, PoolId pool_id,
 
   auto *pool_manager = CHI_POOL_MANAGER;
   if (pool_manager == nullptr) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   auto *config_manager = CHI_CONFIG_MANAGER;
   if (config_manager == nullptr) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   u32 range_offset = query.GetRangeOffset();
@@ -626,7 +655,7 @@ Worker::ResolveRangeQuery(const PoolQuery &query, PoolId pool_id,
 
   // Validate range
   if (range_count == 0) {
-    return {}; // Empty range
+    return {};  // Empty range
   }
 
   // Boundary case optimization: Check if single-container range is local
@@ -659,7 +688,7 @@ Worker::ResolveRangeQuery(const PoolQuery &query, PoolId pool_id,
   for (u32 i = 0; i < queries_to_create; ++i) {
     u32 current_count = containers_per_query;
     if (i < remaining_containers) {
-      current_count++; // Distribute remainder across first queries
+      current_count++;  // Distribute remainder across first queries
     }
 
     if (current_count > 0) {
@@ -671,18 +700,17 @@ Worker::ResolveRangeQuery(const PoolQuery &query, PoolId pool_id,
   return result_queries;
 }
 
-std::vector<PoolQuery>
-Worker::ResolveBroadcastQuery(const PoolQuery &query, PoolId pool_id,
-                              const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolveBroadcastQuery(
+    const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   auto *pool_manager = CHI_POOL_MANAGER;
   if (pool_manager == nullptr) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   // Get pool info to find the total number of containers
   const PoolInfo *pool_info = pool_manager->GetPoolInfo(pool_id);
   if (pool_info == nullptr || pool_info->num_containers_ == 0) {
-    return {query}; // Fallback to original query
+    return {query};  // Fallback to original query
   }
 
   // Create a Range query that covers all containers, then resolve it
@@ -690,9 +718,8 @@ Worker::ResolveBroadcastQuery(const PoolQuery &query, PoolId pool_id,
   return ResolveRangeQuery(range_query, pool_id, task_ptr);
 }
 
-std::vector<PoolQuery>
-Worker::ResolvePhysicalQuery(const PoolQuery &query, PoolId pool_id,
-                             const FullPtr<Task> &task_ptr) {
+std::vector<PoolQuery> Worker::ResolvePhysicalQuery(
+    const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   // Physical routing - query is already resolved to a specific node
   return {query};
 }
@@ -728,7 +755,7 @@ RunContext *Worker::AllocateStackAndContext(size_t size) {
     // orchestrator
     WorkOrchestrator *orchestrator = CHI_WORK_ORCHESTRATOR;
     bool grows_downward = orchestrator ? orchestrator->IsStackDownward()
-                                       : true; // Default to downward
+                                       : true;  // Default to downward
 
     if (grows_downward) {
       // Stack grows downward: point to aligned end of the malloc buffer
@@ -748,10 +775,8 @@ RunContext *Worker::AllocateStackAndContext(size_t size) {
   }
 
   // Cleanup on failure
-  if (stack_base)
-    free(stack_base);
-  if (new_run_ctx)
-    delete new_run_ctx;
+  if (stack_base) free(stack_base);
+  if (new_run_ctx) delete new_run_ctx;
 
   return nullptr;
 }
@@ -772,14 +797,13 @@ void Worker::DeallocateStackAndContext(RunContext *run_ctx) {
 }
 
 void Worker::BeginTask(const FullPtr<Task> &task_ptr, Container *container,
-                       TaskLane *lane,
-                       hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm_ptr) {
+                       TaskLane *lane, bool destroy_in_end_task) {
   if (task_ptr.IsNull()) {
     return;
   }
 
   // Allocate stack and RunContext together for new task
-  RunContext *run_ctx = AllocateStackAndContext(65536); // 64KB default
+  RunContext *run_ctx = AllocateStackAndContext(65536);  // 64KB default
 
   if (!run_ctx) {
     // FATAL: Stack allocation failure - this is a critical error
@@ -787,19 +811,20 @@ void Worker::BeginTask(const FullPtr<Task> &task_ptr, Container *container,
           "Worker {}: Failed to allocate stack for task execution. Task "
           "method: {}, pool: {}",
           worker_id_, task_ptr->method_, task_ptr->pool_id_);
-    std::abort(); // Fatal failure
+    std::abort();  // Fatal failure
   }
 
   // Initialize RunContext for new task
   run_ctx->thread_type = thread_type_;
   run_ctx->worker_id = worker_id_;
-  run_ctx->task = task_ptr;           // Store task in RunContext
-  run_ctx->is_blocked = false;        // Initially not blocked
-  run_ctx->container = container;     // Store container for CHI_CUR_CONTAINER
-  run_ctx->lane = lane;               // Store lane for CHI_CUR_LANE
-  run_ctx->waiting_for_tasks.clear(); // Clear waiting tasks for new task
-  // Note: future_ will be set later in ProcessNewTasks after Future is constructed
-  // Set RunContext pointer in task
+  run_ctx->task = task_ptr;            // Store task in RunContext
+  run_ctx->is_blocked = false;         // Initially not blocked
+  run_ctx->container = container;      // Store container for CHI_CUR_CONTAINER
+  run_ctx->lane = lane;                // Store lane for CHI_CUR_LANE
+  run_ctx->waiting_for_tasks.clear();  // Clear waiting tasks for new task
+  run_ctx->destroy_in_end_task_ = destroy_in_end_task;  // Set destroy flag
+  // Note: future_ will be set later in ProcessNewTasks after Future is
+  // constructed Set RunContext pointer in task
   task_ptr->run_ctx_ = run_ctx;
 
   // Set current run context
@@ -909,7 +934,7 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
 
   // Check if task is null or run context is null
   if (task_ptr.IsNull() || !run_ctx) {
-    return; // Consider null tasks as completed
+    return;  // Consider null tasks as completed
   }
 
   // Call appropriate fiber function based on task state
@@ -928,7 +953,7 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   // Common cleanup logic for both fiber and direct execution
   if (run_ctx->is_blocked) {
     // Task is blocked - don't clean up, will be resumed later
-    return; // Task is not completed, blocked for later resume
+    return;  // Task is not completed, blocked for later resume
   }
 
   // Check if this is a dynamic scheduling task
@@ -977,34 +1002,39 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
 
     // Send task outputs using SerializeOut mode
     admin_client.AsyncSend(
-        chi::MsgType::kSerializeOut, // SerializeOut - sending outputs
-        task_ptr,                    // Task pointer with results
-        return_queries               // Send back to return node
+        chi::MsgType::kSerializeOut,  // SerializeOut - sending outputs
+        task_ptr,                     // Task pointer with results
+        return_queries                // Send back to return node
     );
 
     HILOG(kDebug, "Worker: Sent remote task outputs back to node {}",
           ret_node_id);
   } else {
     // Local task completion using Future
-    // 1. Serialize outputs using container->LocalSaveTask
-    LocalSaveTaskArchive archive(LocalMsgType::kSerializeOut);
-    if (run_ctx->container) {
-      run_ctx->container->LocalSaveTask(task_ptr->method_, archive, task_ptr);
-    }
+    // 1. Serialize outputs using container->LocalSaveTask (only if task will be
+    // destroyed)
+    if (run_ctx->destroy_in_end_task_) {
+      LocalSaveTaskArchive archive(LocalMsgType::kSerializeOut);
+      if (run_ctx->container) {
+        run_ctx->container->LocalSaveTask(task_ptr->method_, archive, task_ptr);
+      }
 
-    // Copy serialized outputs to FutureShm
-    if (!run_ctx->future_.IsNull()) {
-      const std::vector<char>& serialized = archive.GetData();
-      auto& future_shm = run_ctx->future_.GetFutureShm();
+      // Copy serialized outputs to FutureShm
+      const std::vector<char> &serialized = archive.GetData();
+      auto &future_shm = run_ctx->future_.GetFutureShm();
       future_shm->serialized_task_.resize(serialized.size());
-      std::memcpy(future_shm->serialized_task_.data(), serialized.data(), serialized.size());
+      std::memcpy(future_shm->serialized_task_.data(), serialized.data(),
+                  serialized.size());
     }
 
     // 2. Mark task as complete
     run_ctx->future_.SetComplete();
 
-    // 3. Delete task using container->DelTask
-    run_ctx->container->DelTask(task_ptr->method_, task_ptr);
+    // 3. Delete task using container->DelTask (only if destroy_in_end_task is
+    // true)
+    if (run_ctx->destroy_in_end_task_) {
+      run_ctx->container->DelTask(task_ptr->method_, task_ptr);
+    }
   }
 
   // Deallocate stack and context
@@ -1024,7 +1054,7 @@ void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
   task_ptr->ClearFlags(TASK_STARTED | TASK_ROUTED);
 
   // Re-route the task using the updated pool_query
-  if (RouteTask(task_ptr, lane, container)) {
+  if (RouteTask(run_ctx->future_, lane, container)) {
     // Avoids recursive call to RerouteDynamicTask
     if (run_ctx->exec_mode == ExecMode::kDynamicSchedule) {
       EndTask(task_ptr, run_ctx, true, false);
@@ -1082,7 +1112,7 @@ void Worker::ProcessBlockedQueue(std::queue<RunContext *> &queue,
 
 void Worker::ProcessPeriodicQueue(std::queue<RunContext *> &queue,
                                   u32 queue_idx) {
-  (void)queue_idx; // Unused parameter, kept for API consistency
+  (void)queue_idx;  // Unused parameter, kept for API consistency
 
   // Check up to 8 tasks from the queue
   size_t check_limit = 8;
@@ -1117,7 +1147,7 @@ void Worker::ProcessPeriodicQueue(std::queue<RunContext *> &queue,
       Container *container = run_ctx->container;
 
       // Route task again - this will handle both local and distributed routing
-      if (RouteTask(run_ctx->task, run_ctx->lane, container)) {
+      if (RouteTask(run_ctx->future_, run_ctx->lane, container)) {
         // Routing successful, execute the task
         ExecTask(run_ctx->task, run_ctx, is_started);
       }
@@ -1304,4 +1334,4 @@ void Worker::FiberExecutionFunction(boost::context::detail::transfer_t t) {
   bctx::jump_fcontext(worker_fctx, worker_data);
 }
 
-} // namespace chi
+}  // namespace chi

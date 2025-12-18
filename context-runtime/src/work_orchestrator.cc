@@ -475,9 +475,13 @@ void WorkOrchestrator::AssignToWorkerType(ThreadType thread_type,
   // Get the worker's assigned lane and emplace the task
   TaskLane *lane = worker->GetLane();
   if (lane) {
-    // Emplace the task using its shared memory pointer (offset-based)
-    // The lane expects TypedPointer<Task> which is the shm_ member of FullPtr
-    lane->Emplace(task_ptr.shm_);
+    // RUNTIME PATH: Create Future with task pointer set (no serialization)
+    auto *ipc_manager = CHI_IPC;
+    auto *alloc = ipc_manager->GetMainAlloc();
+    Future<Task> future(alloc, task_ptr);
+
+    // Emplace the Future into the lane
+    lane->Emplace(future);
   }
 }
 

@@ -21,9 +21,9 @@ struct TaskQueueHeader {
 };
 
 // Type alias for individual lanes with per-lane headers (moved outside TaskQueue class)
-// Worker queues now store FutureShm pointers instead of Task pointers
+// Worker queues store Future<Task> objects directly
 using TaskLane =
-    hipc::multi_mpsc_ring_buffer<hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>>,
+    hipc::multi_mpsc_ring_buffer<Future<Task>,
                                  CHI_MAIN_ALLOC_T>::ring_buffer_type;
 
 /**
@@ -33,7 +33,7 @@ using TaskLane =
  * compatibility with existing code that expects the multi_mpsc_ring_buffer
  * interface.
  */
-typedef hipc::multi_mpsc_ring_buffer<hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>>, CHI_MAIN_ALLOC_T>
+typedef hipc::multi_mpsc_ring_buffer<Future<Task>, CHI_MAIN_ALLOC_T>
     TaskQueue;
 
 } // namespace chi

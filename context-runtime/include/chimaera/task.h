@@ -388,13 +388,14 @@ struct RunContext {
   std::atomic<u32> completed_replicas_; // Count of completed replicas
   u32 block_count_;  // Number of times task has been blocked
   Future<Task> future_;  // Future for async completion tracking
+  bool destroy_in_end_task_;  // Flag to indicate if task should be destroyed in EndTask
 
   RunContext()
       : stack_ptr(nullptr), stack_base_for_free(nullptr), stack_size(0),
         thread_type(kSchedWorker), worker_id(0), is_blocked(false),
         est_load(0.0), block_time_us(0.0), block_start(), yield_context{}, resume_context{},
         container(nullptr), lane(nullptr), exec_mode(ExecMode::kExec),
-        completed_replicas_(0), block_count_(0) {
+        completed_replicas_(0), block_count_(0), destroy_in_end_task_(false) {
   }
 
   /**
@@ -415,7 +416,8 @@ struct RunContext {
         subtasks_(std::move(other.subtasks_)),
         completed_replicas_(other.completed_replicas_.load()),
         block_count_(other.block_count_),
-        future_(std::move(other.future_)) {}
+        future_(std::move(other.future_)),
+        destroy_in_end_task_(other.destroy_in_end_task_) {}
 
   /**
    * Move assignment operator - required because of atomic member
@@ -443,6 +445,7 @@ struct RunContext {
       completed_replicas_.store(other.completed_replicas_.load());
       block_count_ = other.block_count_;
       future_ = std::move(other.future_);
+      destroy_in_end_task_ = other.destroy_in_end_task_;
     }
     return *this;
   }

@@ -111,6 +111,69 @@ class Future {
   Future() {}
 
   /**
+   * Constructor from ShmPtr<FutureShm> - used by ring buffer deserialization
+   * Task pointer will be null and must be set later
+   * @param future_shm_ptr ShmPtr to FutureShm object
+   */
+  explicit Future(const hipc::ShmPtr<FutureT>& future_shm_ptr)
+      : future_shm_(nullptr, future_shm_ptr) {
+    // Task pointer starts null - will be set in ProcessNewTasks
+    task_ptr_.SetNull();
+  }
+
+  /**
+   * Fix the allocator pointer after construction from ShmPtr
+   * Call this immediately after popping from ring buffer
+   * @param alloc Allocator to use for FullPtr
+   */
+  void SetAllocator(AllocT* alloc) {
+    // Reconstruct the FullPtr with the allocator
+    future_shm_ = hipc::FullPtr<FutureT>(alloc, future_shm_.shm_);
+  }
+
+  /**
+   * Copy constructor
+   * @param other Future to copy from
+   */
+  Future(const Future& other)
+      : task_ptr_(other.task_ptr_),
+        future_shm_(other.future_shm_) {}
+
+  /**
+   * Copy assignment operator
+   * @param other Future to copy from
+   * @return Reference to this future
+   */
+  Future& operator=(const Future& other) {
+    if (this != &other) {
+      task_ptr_ = other.task_ptr_;
+      future_shm_ = other.future_shm_;
+    }
+    return *this;
+  }
+
+  /**
+   * Move constructor
+   * @param other Future to move from
+   */
+  Future(Future&& other) noexcept
+      : task_ptr_(std::move(other.task_ptr_)),
+        future_shm_(std::move(other.future_shm_)) {}
+
+  /**
+   * Move assignment operator
+   * @param other Future to move from
+   * @return Reference to this future
+   */
+  Future& operator=(Future&& other) noexcept {
+    if (this != &other) {
+      task_ptr_ = std::move(other.task_ptr_);
+      future_shm_ = std::move(other.future_shm_);
+    }
+    return *this;
+  }
+
+  /**
    * Get raw pointer to the task
    * @return Pointer to the task object
    */

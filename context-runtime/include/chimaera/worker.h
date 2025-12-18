@@ -193,13 +193,13 @@ public:
   /**
    * Route a task by calling ResolvePoolQuery and determining local vs global
    * scheduling
-   * @param task_ptr Full pointer to task to route
+   * @param future Future containing the task to route
    * @param lane Pointer to the task lane for execution context
    * @param container Output parameter for the container to use for task
    * execution
    * @return true if task was successfully routed, false otherwise
    */
-  bool RouteTask(const FullPtr<Task> &task_ptr, TaskLane *lane,
+  bool RouteTask(Future<Task> &future, TaskLane *lane,
                  Container *&container);
 
   /**
@@ -265,22 +265,22 @@ public:
 
   /**
    * Route task locally using container query and Monitor with kLocalSchedule
-   * @param task_ptr Full pointer to task to route locally
+   * @param future Future containing the task to route locally
    * @param lane Pointer to the task lane for execution context
    * @param container Output parameter for the container to use for task
    * execution
    * @return true if local routing successful, false otherwise
    */
-  bool RouteLocal(const FullPtr<Task> &task_ptr, TaskLane *lane,
+  bool RouteLocal(Future<Task> &future, TaskLane *lane,
                   Container *&container);
 
   /**
    * Route task globally using admin client's ClientSendTaskIn method
-   * @param task_ptr Full pointer to task to route globally
+   * @param future Future containing the task to route globally
    * @param pool_queries Vector of pool queries for global routing
    * @return true if global routing successful, false otherwise
    */
-  bool RouteGlobal(const FullPtr<Task> &task_ptr,
+  bool RouteGlobal(Future<Task> &future,
                    const std::vector<PoolQuery> &pool_queries);
 
 private:
@@ -304,11 +304,10 @@ private:
    * allocated and set in task)
    * @param container Container for the task
    * @param lane Lane for the task (can be nullptr)
-   * @param future_shm_ptr FutureShm pointer for async completion tracking
+   * @param destroy_in_end_task Flag indicating if task should be destroyed in EndTask
    */
   void BeginTask(const FullPtr<Task> &task_ptr, Container *container,
-                 TaskLane *lane,
-                 hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>> future_shm_ptr = hipc::ShmPtr<FutureShm<CHI_MAIN_ALLOC_T>>());
+                 TaskLane *lane, bool destroy_in_end_task);
 
   /**
    * Continue processing blocked tasks that are ready to resume

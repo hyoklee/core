@@ -157,66 +157,118 @@ public:
   /**
    * Send task asynchronously (serializes into Future)
    * Creates a Future wrapper, serializes task inputs, and enqueues to worker
+   *
+   * Two execution paths:
+   * - Client mode (!IsRuntime): Serialize task and copy Future with null task pointer
+   * - Runtime mode (IsRuntime): Create Future with task pointer directly (no copy)
+   *
    * @param task_ptr Task to send
    * @return Future<TaskT> for polling completion and retrieving results
    */
   template <typename TaskT> Future<TaskT> Send(hipc::FullPtr<TaskT> task_ptr) {
-    // 1. Get main allocator for FutureShm allocation
+    // Get main allocator for FutureShm allocation
     auto *alloc = GetMainAlloc();
 
-    // 2. Create Future with allocator and task_ptr
-    Future<TaskT> future(alloc, task_ptr);
+    if (!CHI_CHIMAERA_MANAGER->IsRuntime()) {
+      // CLIENT PATH: Serialize task and create two Future objects
+      // - One for the queue (with null task pointer)
+      // - One for the user (with task pointer set)
 
-    // 3. Serialize task using LocalSaveTaskArchive with kSerializeIn mode
-    LocalSaveTaskArchive archive(LocalMsgType::kSerializeIn);
-    archive << (*task_ptr.ptr_);
+      // 1. Create Future with allocator and task_ptr (for user)
+      Future<TaskT> user_future(alloc, task_ptr);
 
-    // 4. Get serialized data and copy to FutureShm's hipc::vector
-    const std::vector<char>& serialized = archive.GetData();
-    auto& future_shm = future.GetFutureShm();
-    future_shm->serialized_task_.resize(serialized.size());
-    memcpy(future_shm->serialized_task_.data(), serialized.data(), serialized.size());
+      // 2. Serialize task using LocalSaveTaskArchive with kSerializeIn mode
+      LocalSaveTaskArchive archive(LocalMsgType::kSerializeIn);
+      archive << (*task_ptr.ptr_);
 
-    // 5. Map task to lane using configured policy
-    u32 num_lanes = shared_header_->num_sched_queues;
-    if (num_lanes == 0)
-      return future; // Avoid division by zero
+      // 3. Get serialized data and copy to FutureShm's hipc::vector
+      const std::vector<char>& serialized = archive.GetData();
+      auto& future_shm = user_future.GetFutureShm();
+      future_shm->serialized_task_.resize(serialized.size());
+      memcpy(future_shm->serialized_task_.data(), serialized.data(), serialized.size());
 
-    // 6. Enqueue the FutureShm's ShmPtr to the worker queue
-    LaneId lane_id = MapTaskToLane(num_lanes);
-    auto& lane_ref = worker_queues_->GetLane(lane_id, 0);
-    lane_ref.Push(future_shm.shm_);
+      // 4. Create a separate Future for the queue with null task pointer
+      // This Future shares the same FutureShm but has a null task pointer
+      hipc::FullPtr<TaskT> null_task_ptr;
+      null_task_ptr.SetNull();
+      Future<TaskT> queue_future(user_future.GetFutureShm(), null_task_ptr);
 
-    // 7. Return the Future
-    return future;
+      // 5. Map task to lane using configured policy
+      u32 num_lanes = shared_header_->num_sched_queues;
+      if (num_lanes == 0) {
+        return user_future; // Avoid division by zero
+      }
+
+      // 6. Enqueue the Future object to the worker queue
+      LaneId lane_id = MapTaskToLane(num_lanes);
+      auto& lane_ref = worker_queues_->GetLane(lane_id, 0);
+      // Convert Future<TaskT> to Future<Task> for the queue
+      Future<Task> task_future(queue_future.GetFutureShm(),
+                               hipc::FullPtr<Task>(queue_future.GetTaskPtr().ptr_));
+      lane_ref.Push(task_future);
+
+      // 7. Return the Future with task pointer set for the user
+      return user_future;
+    } else {
+      // RUNTIME PATH: Create Future with task pointer directly (no serialization copy)
+
+      // 1. Create Future with allocator and task_ptr (task pointer is set)
+      Future<TaskT> future(alloc, task_ptr);
+
+      // 2. Map task to lane using configured policy
+      u32 num_lanes = shared_header_->num_sched_queues;
+      if (num_lanes == 0)
+        return future; // Avoid division by zero
+
+      // 3. Enqueue the Future object to the worker queue
+      LaneId lane_id = MapTaskToLane(num_lanes);
+      auto& lane_ref = worker_queues_->GetLane(lane_id, 0);
+      // Convert Future<TaskT> to Future<Task> for the queue
+      Future<Task> task_future(future.GetFutureShm(),
+                               hipc::FullPtr<Task>(future.GetTaskPtr().ptr_));
+      lane_ref.Push(task_future);
+
+      // 4. Return the Future with task pointer
+      return future;
+    }
   }
 
   /**
    * Receive task results (deserializes from completed Future)
    * Polls for completion and deserializes task outputs into task
+   *
+   * Two execution paths:
+   * - Client mode (!IsRuntime): Poll and deserialize task outputs (full path)
+   * - Runtime mode (IsRuntime): Only poll for completion (no deserialization needed)
+   *
    * @param future Future containing completed task
    */
   template <typename TaskT> void Recv(Future<TaskT>& future) {
-    // 1. Poll for completion by checking is_complete atomic in FutureShm
+    // 1. Poll for completion by checking is_complete atomic in FutureShm (lines 201-205)
     auto& future_shm = future.GetFutureShm();
     while (future_shm->is_complete_.load() == 0) {
       // Busy wait or could add a short sleep
       std::this_thread::yield();
     }
 
-    // 2. Get the serialized task data from FutureShm
-    hipc::vector<char, CHI_MAIN_ALLOC_T>& serialized = future_shm->serialized_task_;
+    if (!CHI_CHIMAERA_MANAGER->IsRuntime()) {
+      // CLIENT PATH: Deserialize task outputs from FutureShm
 
-    // 3. Convert hipc::vector to std::vector for LocalLoadTaskArchive
-    std::vector<char> buffer(serialized.begin(), serialized.end());
+      // 2. Get the serialized task data from FutureShm
+      hipc::vector<char, CHI_MAIN_ALLOC_T>& serialized = future_shm->serialized_task_;
 
-    // 4. Create LocalLoadTaskArchive with kSerializeOut mode
-    LocalLoadTaskArchive archive(buffer);
-    archive.SetMsgType(LocalMsgType::kSerializeOut);
+      // 3. Convert hipc::vector to std::vector for LocalLoadTaskArchive
+      std::vector<char> buffer(serialized.begin(), serialized.end());
 
-    // 5. Deserialize task outputs into the Future's task pointer
-    TaskT* task_ptr = future.get();
-    archive >> (*task_ptr);
+      // 4. Create LocalLoadTaskArchive with kSerializeOut mode
+      LocalLoadTaskArchive archive(buffer);
+      archive.SetMsgType(LocalMsgType::kSerializeOut);
+
+      // 5. Deserialize task outputs into the Future's task pointer
+      TaskT* task_ptr = future.get();
+      archive >> (*task_ptr);
+    }
+    // RUNTIME PATH: No deserialization needed - task already has correct outputs
   }
 
 
