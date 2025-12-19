@@ -6,8 +6,8 @@ package:
   version: {{ version }}
 
 source:
-  # For local builds
-  path: ..
+  # For local builds - path is relative to installers/conda directory
+  path: ../..
   # Git metadata for version extraction
   # When building from a git checkout, conda-build will automatically
   # set GIT_DESCRIBE_TAG from the repository

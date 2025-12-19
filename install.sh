@@ -174,7 +174,19 @@ echo -e "${BLUE}>>> Building conda package...${NC}"
 echo -e "${YELLOW}This may take 10-30 minutes depending on your system${NC}"
 echo ""
 
-RECIPE_DIR="$SCRIPT_DIR/conda"
+RECIPE_DIR="$SCRIPT_DIR/installers/conda"
+
+# Verify conda-build is available
+if ! command -v conda-build &> /dev/null; then
+    echo -e "${RED}ERROR: conda-build command not found after installation attempt${NC}"
+    echo "Available conda commands:"
+    conda --help | grep "^  " || true
+    exit 1
+fi
+
+echo -e "${BLUE}Using conda-build: $(which conda-build)${NC}"
+echo -e "${BLUE}Conda build output directory: $(conda info --base)/conda-bld${NC}"
+echo ""
 
 # Verify conda-build is available
 if ! command -v conda-build &> /dev/null; then
@@ -203,7 +215,7 @@ if ! conda build "$RECIPE_DIR" -c conda-forge; then
     echo "   conda config --show channels"
     echo ""
     echo "3. Try building with verbose output:"
-    echo "   conda build conda/ -c conda-forge --debug"
+    echo "   conda build installers/conda/ -c conda-forge --debug"
     echo ""
     echo "4. Check build logs in:"
     echo "   $CONDA_PREFIX/conda-bld/"
