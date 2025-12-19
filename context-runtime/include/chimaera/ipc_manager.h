@@ -207,7 +207,10 @@ public:
                                hipc::FullPtr<Task>(queue_future.GetTaskPtr().ptr_));
       lane_ref.Push(task_future);
 
-      // 7. Return the Future with task pointer set for the user
+      // 7. Awaken worker for this lane
+      AwakenWorker(&lane_ref);
+
+      // 8. Return the Future with task pointer set for the user
       return user_future;
     } else {
       // RUNTIME PATH: Create Future with task pointer directly (no serialization copy)
@@ -228,7 +231,10 @@ public:
                                hipc::FullPtr<Task>(future.GetTaskPtr().ptr_));
       lane_ref.Push(task_future);
 
-      // 4. Return the Future with task pointer
+      // 4. Awaken worker for this lane
+      AwakenWorker(&lane_ref);
+
+      // 5. Return the Future with task pointer
       return future;
     }
   }
@@ -307,6 +313,14 @@ public:
    * @return Number of workers, 0 if not initialized
    */
   u32 GetWorkerCount();
+
+  /**
+   * Awaken a worker by sending a signal to its thread
+   * Sends SIGUSR1 to the worker's thread ID stored in the TaskLane
+   * Only sends signal if the worker is inactive (blocked in epoll_wait)
+   * @param lane Pointer to the TaskLane containing the worker's tid and active status
+   */
+  void AwakenWorker(TaskLane* lane);
 
   /**
    * Set the node ID in the shared memory header

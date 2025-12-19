@@ -14,7 +14,10 @@
 #include <iostream>
 #include <memory>
 #include <netdb.h>
+#include <signal.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <zmq.h>
 
@@ -180,6 +183,21 @@ u32 IpcManager::GetWorkerCount() {
     return 0;
   }
   return shared_header_->num_workers;
+}
+
+void IpcManager::AwakenWorker(TaskLane* lane) {
+  if (!lane) {
+    return;
+  }
+
+  // Only send signal if worker is inactive (blocked in epoll_wait)
+  if (!lane->IsActive()) {
+    pid_t tid = lane->GetTid();
+    if (tid > 0) {
+      // Send SIGUSR1 to the worker thread
+      syscall(SYS_tgkill, getpid(), tid, SIGUSR1);
+    }
+  }
 }
 
 bool IpcManager::ServerInitShm() {

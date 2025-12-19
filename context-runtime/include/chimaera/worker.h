@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <sys/epoll.h>
 #include <thread>
 #include <vector>
 
@@ -426,6 +427,11 @@ private:
   u32 current_sleep_us_;    // Current sleep duration in microseconds
   u64 sleep_count_;         // Number of times sleep was called in current idle period
   hshm::Timepoint idle_start_;  // Time when worker became idle
+
+  // Epoll file descriptor and events buffer for efficient worker suspension
+  int epoll_fd_;
+  static constexpr u32 MAX_EPOLL_EVENTS = 256;
+  struct epoll_event epoll_events_[MAX_EPOLL_EVENTS];
 };
 
 } // namespace chi

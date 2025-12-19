@@ -13,6 +13,7 @@
 #ifndef HSHM_DATA_STRUCTURES_IPC_RING_BUFFER_H_
 #define HSHM_DATA_STRUCTURES_IPC_RING_BUFFER_H_
 
+#include <sys/types.h>
 #include "hermes_shm/data_structures/ipc/shm_container.h"
 #include "hermes_shm/data_structures/ipc/vector.h"
 #include "hermes_shm/memory/allocator/allocator.h"
@@ -208,6 +209,9 @@ class ring_buffer : public ShmContainer<AllocT> {
   head_type head_;           /**< Consumer head pointer */
   tail_type tail_;           /**< Producer tail pointer */
   u32 assigned_worker_id_;   /**< Assigned worker ID for this lane (set by orchestrator) */
+  int signal_fd_;            /**< Signal file descriptor for awakening worker */
+  pid_t tid_;                /**< Thread ID of the worker owning this lane */
+  hipc::opt_atomic<bool, IsAtomic> active_;  /**< Whether worker is accepting tasks (true) or blocked in epoll_wait (false) */
 
  public:
   /**
@@ -221,7 +225,11 @@ class ring_buffer : public ShmContainer<AllocT> {
       : ShmContainer<AllocT>(alloc),
         queue_(alloc, depth + 1),
         head_(0),
-        tail_(0) {
+        tail_(0),
+        assigned_worker_id_(0),
+        signal_fd_(-1),
+        tid_(0),
+        active_(true) {
     // Allocate depth + 1 to account for the one reserved slot
   }
 
@@ -236,7 +244,11 @@ class ring_buffer : public ShmContainer<AllocT> {
       : ShmContainer<AllocT>(other.GetAllocator()),
         queue_(other.GetAllocator(), other.queue_.size() - 1),
         head_(other.head_),
-        tail_(other.tail_) {
+        tail_(other.tail_),
+        assigned_worker_id_(other.assigned_worker_id_),
+        signal_fd_(other.signal_fd_),
+        tid_(other.tid_),
+        active_(other.active_.load()) {
     // Copy the contents of the queue from other
     for (size_t i = 0; i < other.queue_.size(); ++i) {
       queue_[i] = other.queue_[i];
@@ -276,6 +288,66 @@ class ring_buffer : public ShmContainer<AllocT> {
   HSHM_INLINE_CROSS_FUN
   void SetAssignedWorkerId(u32 worker_id) {
     assigned_worker_id_ = worker_id;
+  }
+
+  /**
+   * Get signal file descriptor for this lane
+   *
+   * @return The signal file descriptor
+   */
+  HSHM_INLINE_CROSS_FUN
+  int GetSignalFd() const {
+    return signal_fd_;
+  }
+
+  /**
+   * Set signal file descriptor for this lane
+   *
+   * @param signal_fd The signal file descriptor to set
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetSignalFd(int signal_fd) {
+    signal_fd_ = signal_fd;
+  }
+
+  /**
+   * Get thread ID of the worker owning this lane
+   *
+   * @return The thread ID
+   */
+  HSHM_INLINE_CROSS_FUN
+  pid_t GetTid() const {
+    return tid_;
+  }
+
+  /**
+   * Set thread ID of the worker owning this lane
+   *
+   * @param tid The thread ID to set
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetTid(pid_t tid) {
+    tid_ = tid;
+  }
+
+  /**
+   * Check if worker is active (accepting tasks) or blocked in epoll_wait
+   *
+   * @return true if worker is active, false if blocked
+   */
+  HSHM_INLINE_CROSS_FUN
+  bool IsActive() const {
+    return active_.load();
+  }
+
+  /**
+   * Set worker active status
+   *
+   * @param active true if worker is active, false if blocked in epoll_wait
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetActive(bool active) {
+    active_.store(active);
   }
 
   /**

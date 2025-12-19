@@ -8,6 +8,11 @@
 #include <cstdlib>
 #include <iostream>
 #include <unordered_set>
+#include <sys/epoll.h>
+#include <sys/signalfd.h>
+#include <signal.h>
+#include <unistd.h>
+#include <sys/syscall.h>
 
 // Include task_queue.h before other chimaera headers to ensure proper
 // resolution
@@ -38,7 +43,8 @@ Worker::Worker(u32 worker_id, ThreadType thread_type)
       iteration_count_(0),
       idle_iterations_(0),
       current_sleep_us_(0),
-      sleep_count_(0) {
+      sleep_count_(0),
+      epoll_fd_(-1) {
   // std::queue is initialized with default constructors in member
   // initialization No pre-allocation of capacity is needed or possible with
   // std::queue
@@ -61,6 +67,13 @@ bool Worker::Init() {
   // Stack management simplified - no pool needed
   // Note: assigned_lane_ will be set by WorkOrchestrator during external queue
   // initialization
+
+  // Create epoll file descriptor for efficient worker suspension
+  epoll_fd_ = epoll_create1(0);
+  if (epoll_fd_ == -1) {
+    HELOG(kError, "Worker {}: Failed to create epoll file descriptor", worker_id_);
+    return false;
+  }
 
   is_initialized_ = true;
   return true;
@@ -108,6 +121,12 @@ void Worker::Finalize() {
   // Clear assigned lane reference (don't delete - it's in shared memory)
   assigned_lane_ = nullptr;
 
+  // Close epoll file descriptor
+  if (epoll_fd_ != -1) {
+    close(epoll_fd_);
+    epoll_fd_ = -1;
+  }
+
   is_initialized_ = false;
 }
 
@@ -120,6 +139,48 @@ void Worker::Run() {
   // Set current worker once for the entire thread duration
   SetAsCurrentWorker();
   is_running_ = true;
+
+  // Set up signalfd and store in TaskLane
+  // Get current thread ID
+  pid_t tid = static_cast<pid_t>(syscall(SYS_gettid));
+  assigned_lane_->SetTid(tid);
+
+  // Create signal mask for custom user signal (SIGUSR1)
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGUSR1);
+
+  // Block the signal so it's handled by signalfd instead of default handler
+  if (pthread_sigmask(SIG_BLOCK, &mask, nullptr) != 0) {
+    HELOG(kError, "Worker {}: Failed to block SIGUSR1 signal", worker_id_);
+    is_running_ = false;
+    return;
+  }
+
+  // Create signalfd
+  int signal_fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
+  if (signal_fd == -1) {
+    HELOG(kError, "Worker {}: Failed to create signalfd", worker_id_);
+    is_running_ = false;
+    return;
+  }
+
+  // Store signal_fd in TaskLane
+  assigned_lane_->SetSignalFd(signal_fd);
+
+  // Add signal_fd to epoll
+  struct epoll_event ev;
+  ev.events = EPOLLIN;
+  ev.data.fd = signal_fd;
+  if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, signal_fd, &ev) == -1) {
+    HELOG(kError, "Worker {}: Failed to add signal_fd to epoll", worker_id_);
+    close(signal_fd);
+    assigned_lane_->SetSignalFd(-1);
+    is_running_ = false;
+    return;
+  }
+
+  HILOG(kDebug, "Worker {}: Set up signalfd={} for tid={}", worker_id_, signal_fd, tid);
 
   // Main worker loop - process tasks from assigned lane
   while (is_running_) {
@@ -150,11 +211,22 @@ void Worker::Run() {
       sleep_count_ = 0;
     }
   }
+
+  // Cleanup signalfd when worker exits
+  int cleanup_signal_fd = assigned_lane_->GetSignalFd();
+  if (cleanup_signal_fd != -1) {
+    close(cleanup_signal_fd);
+    assigned_lane_->SetSignalFd(-1);
+  }
 }
 
 void Worker::Stop() { is_running_ = false; }
 
-void Worker::SetLane(TaskLane *lane) { assigned_lane_ = lane; }
+void Worker::SetLane(TaskLane *lane) {
+  assigned_lane_ = lane;
+  // Mark lane as active when assigned to worker
+  assigned_lane_->SetActive(true);
+}
 
 TaskLane *Worker::GetLane() const { return assigned_lane_; }
 
@@ -291,9 +363,28 @@ void Worker::SuspendMe() {
     //         current_sleep_us_);
     // }
 
-    // Sleep for calculated duration
-    HSHM_THREAD_MODEL->SleepForUs(static_cast<size_t>(current_sleep_us_));
-    sleep_count_++;
+    // Mark worker as inactive (blocked in epoll_wait)
+    assigned_lane_->SetActive(false);
+
+    // Wait for signal using epoll_wait with calculated timeout
+    int timeout_ms = static_cast<int>(current_sleep_us_ / 1000);  // Convert microseconds to milliseconds
+    int nfds = epoll_wait(epoll_fd_, epoll_events_, MAX_EPOLL_EVENTS, timeout_ms);
+
+    // Mark worker as active again
+    assigned_lane_->SetActive(true);
+
+    if (nfds > 0) {
+      // Events received - read and discard all signal info
+      for (int i = 0; i < nfds; ++i) {
+        struct signalfd_siginfo si;
+        ssize_t bytes_read = read(epoll_events_[i].data.fd, &si, sizeof(si));
+        (void)bytes_read;  // Suppress unused variable warning
+      }
+    } else if (nfds == 0) {
+      // Timeout occurred - normal sleep expiration
+      sleep_count_++;
+    }
+    // nfds < 0 means error, but we just continue anyway
   }
 }
 
