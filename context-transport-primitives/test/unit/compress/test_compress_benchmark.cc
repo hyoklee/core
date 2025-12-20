@@ -23,7 +23,6 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
-#include <filesystem>
 
 #ifdef __linux__
 #include <sys/resource.h>
@@ -201,13 +200,13 @@ BenchmarkResult benchmarkCompressor(hshm::Compressor* compressor,
     size_t warmup_cmpr_size = compressed_data.size();
     size_t warmup_decmpr_size = decompressed_data.size();
     bool warmup_comp_ok = compressor->Compress(compressed_data.data(), warmup_cmpr_size, 
-                                               input_data.data(), chunk_size);
+                        input_data.data(), chunk_size);
     if (!warmup_comp_ok) {
         // Warmup failed, skip this test
         return result;
     }
     bool warmup_decomp_ok = compressor->Decompress(decompressed_data.data(), warmup_decmpr_size,
-                                                   compressed_data.data(), warmup_cmpr_size);
+                          compressed_data.data(), warmup_cmpr_size);
     if (!warmup_decomp_ok) {
         // Warmup decompression failed, skip this test
         return result;
@@ -233,9 +232,9 @@ BenchmarkResult benchmarkCompressor(hshm::Compressor* compressor,
     
     // Safety check for division by zero
     if (result.compress_time_ms > 0.0) {
-        double cpu_time_ms = (cpu_after.user_time + cpu_after.system_time) - 
-                            (cpu_before.user_time + cpu_before.system_time);
-        result.compress_cpu_percent = (cpu_time_ms / result.compress_time_ms) * 100.0;
+    double cpu_time_ms = (cpu_after.user_time + cpu_after.system_time) - 
+                        (cpu_before.user_time + cpu_before.system_time);
+    result.compress_cpu_percent = (cpu_time_ms / result.compress_time_ms) * 100.0;
     } else {
         result.compress_cpu_percent = 0.0;
     }
@@ -269,8 +268,8 @@ BenchmarkResult benchmarkCompressor(hshm::Compressor* compressor,
     // Safety check for division by zero
     if (result.decompress_time_ms > 0.0) {
         double cpu_time_ms = (cpu_after.user_time + cpu_after.system_time) - 
-                            (cpu_before.user_time + cpu_before.system_time);
-        result.decompress_cpu_percent = (cpu_time_ms / result.decompress_time_ms) * 100.0;
+                  (cpu_before.user_time + cpu_before.system_time);
+    result.decompress_cpu_percent = (cpu_time_ms / result.decompress_time_ms) * 100.0;
     } else {
         result.decompress_cpu_percent = 0.0;
     }
@@ -284,22 +283,22 @@ BenchmarkResult benchmarkCompressor(hshm::Compressor* compressor,
 // Print CSV table header
 void printCSVHeader(std::ostream& os) {
     os << "Library,Data Type,Distribution,Chunk Size (bytes),"
-       << "Compress Time (ms),Decompress Time (ms),"
-       << "Compression Ratio,Compress CPU %,Decompress CPU %,Success\n";
+              << "Compress Time (ms),Decompress Time (ms),"
+              << "Compression Ratio,Compress CPU %,Decompress CPU %,Success\n";
 }
 
 // Print result as CSV
 void printResultCSV(const BenchmarkResult& result, std::ostream& os) {
     os << result.library << ","
-       << result.data_type << ","
-       << result.distribution << ","
-       << result.chunk_size << ","
-       << std::fixed << std::setprecision(3) << result.compress_time_ms << ","
-       << result.decompress_time_ms << ","
-       << std::setprecision(4) << result.compression_ratio << ","
-       << std::setprecision(2) << result.compress_cpu_percent << ","
-       << result.decompress_cpu_percent << ","
-       << (result.success ? "YES" : "NO") << "\n";
+              << result.data_type << ","
+              << result.distribution << ","
+              << result.chunk_size << ","
+              << std::fixed << std::setprecision(3) << result.compress_time_ms << ","
+              << result.decompress_time_ms << ","
+              << std::setprecision(4) << result.compression_ratio << ","
+              << std::setprecision(2) << result.compress_cpu_percent << ","
+              << result.decompress_cpu_percent << ","
+              << (result.success ? "YES" : "NO") << "\n";
 }
 
 TEST_CASE("Compression Benchmark") {
@@ -324,12 +323,10 @@ TEST_CASE("Compression Benchmark") {
         {"double", 8}
     };
     
-    // Open output file in the same directory as this test file
-    std::filesystem::path test_dir = std::filesystem::path(__FILE__).parent_path();
-    std::filesystem::path output_file = test_dir / "compression_benchmark_results.csv";
-    std::ofstream outfile(output_file);
+    // Open output file
+    std::ofstream outfile("compression_benchmark_results.csv");
     if (!outfile.is_open()) {
-        std::cerr << "Warning: Could not open output file at " << output_file << ". Results will only be printed to console.\n";
+        std::cerr << "Warning: Could not open output file. Results will only be printed to console.\n";
     }
     
     // Print headers to both console and file
@@ -370,31 +367,31 @@ TEST_CASE("Compression Benchmark") {
         std::cout.flush();
         
         try {
-            for (const auto& [data_type, type_size] : data_types) {
-                for (const auto& distribution : distributions) {
-                    for (size_t chunk_size : chunk_sizes) {
-                        // Skip if chunk size is not aligned with data type
-                        if (chunk_size % type_size != 0) {
-                            continue;
-                        }
-                        
+        for (const auto& [data_type, type_size] : data_types) {
+            for (const auto& distribution : distributions) {
+                for (size_t chunk_size : chunk_sizes) {
+                    // Skip if chunk size is not aligned with data type
+                    if (chunk_size % type_size != 0) {
+                        continue;
+                    }
+                    
                         std::cerr << "  Testing: " << data_type << ", " << distribution 
                                   << ", " << (chunk_size/1024) << "KB" << std::endl;
                         
-                        auto result = benchmarkCompressor(compressor, lib_name, 
-                                                         data_type, distribution,
-                                                         chunk_size, type_size);
-                        
+                    auto result = benchmarkCompressor(compressor, lib_name, 
+                                                     data_type, distribution,
+                                                     chunk_size, type_size);
+                    
                         // Print to both console and file
                         printResultCSV(result, std::cout);
                         if (outfile.is_open()) {
                             printResultCSV(result, outfile);
-                        }
+                }
                         std::cout.flush();
                         if (outfile.is_open()) {
                             outfile.flush();
-                        }
-                    }
+            }
+        }
                 }
             }
         } catch (const std::exception& e) {
@@ -411,7 +408,7 @@ TEST_CASE("Compression Benchmark") {
     
     if (outfile.is_open()) {
         outfile.close();
-        std::cout << "\nResults saved to: " << output_file << "\n";
+        std::cout << "\nResults saved to: compression_benchmark_results.csv\n";
     }
 }
 
