@@ -1,6 +1,7 @@
 #ifndef CHIMAERA_INCLUDE_CHIMAERA_TASK_H_
 #define CHIMAERA_INCLUDE_CHIMAERA_TASK_H_
 
+#include <atomic>
 #include <boost/context/detail/fcontext.hpp>
 #include <sstream>
 #include <vector>
@@ -128,12 +129,11 @@ class Task {
 
   /**
    * Wait for task completion (blocking)
+   * Uses Future's is_complete flag to determine when waiting is done
+   * @param is_complete Reference to atomic completion flag from Future
    * @param block_time_us Blocking duration in microseconds (default: 0.0 for cooperative tasks)
-   * @param from_yield If true, do not add subtasks to RunContext (default:
-   * false)
    */
-  HSHM_CROSS_FUN void Wait(double block_time_us = 0.0,
-                           bool from_yield = false);
+  HSHM_CROSS_FUN void Wait(std::atomic<u32>& is_complete, double block_time_us = 0.0);
 
   /**
    * Yield execution back to worker by waiting for task completion

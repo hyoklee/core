@@ -320,7 +320,7 @@ TEST_CASE("wait_test_async_functionality", "[wait_test][async]") {
     
     // Wait for all tasks to complete
     for (int i = 0; i < num_tasks; ++i) {
-      tasks[i]->Wait();
+      tasks[i].Wait();
       REQUIRE(tasks[i]->current_depth_ == depths[i]);
     }
     

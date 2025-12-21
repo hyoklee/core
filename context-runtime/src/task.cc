@@ -16,10 +16,10 @@ namespace bctx = boost::context::detail;
 
 namespace chi {
 
-void Task::Wait(double block_time_us, bool from_yield) {
+void Task::Wait(std::atomic<u32>& is_complete, double block_time_us) {
   auto *chimaera_manager = CHI_CHIMAERA_MANAGER;
   if (chimaera_manager && chimaera_manager->IsRuntime()) {
-    // Runtime implementation: Estimate load and yield execution
+    // Runtime implementation: Yield until is_complete is set
 
     // Get current run context from worker
     Worker *worker = CHI_CUR_WORKER;
@@ -27,8 +27,10 @@ void Task::Wait(double block_time_us, bool from_yield) {
 
     if (!worker || !run_ctx) {
       // No worker or run context available, fall back to client implementation
-      // Just yield once - client code should use Future::Wait() for proper completion tracking
-      YieldBase();
+      // Busy-wait on is_complete flag
+      while (is_complete.load() == 0) {
+        YieldBase();
+      }
       return;
     }
 
@@ -45,30 +47,27 @@ void Task::Wait(double block_time_us, bool from_yield) {
 
     // Add this task to the current task's waiting_for_tasks list
     // This ensures AreSubtasksCompleted() properly tracks this subtask
-    // Skip if called from yield to avoid double tracking
-    if (!from_yield) {
-      auto alloc = CHI_IPC->GetMainAlloc();
-      hipc::FullPtr<Task> this_task_ptr(alloc, this);
-      run_ctx->waiting_for_tasks.push_back(this_task_ptr);
-    }
+    auto alloc = CHI_IPC->GetMainAlloc();
+    hipc::FullPtr<Task> this_task_ptr(alloc, this);
+    run_ctx->waiting_for_tasks.push_back(this_task_ptr);
 
     // Store blocking duration in RunContext (use provided value directly)
     // block_time_us is passed by the caller - no estimation
     run_ctx->block_time_us = block_time_us;
 
-    // Yield execution back to worker in loop until task completes
+    // Yield execution back to worker in loop until is_complete is set
     // Add to blocked queue before each yield
-    // NOTE(llogan): This will only be unblocked when all subtasks are complete
-    // No need for a while loop here.
-    worker->AddToBlockedQueue(run_ctx);
-    YieldBase();
-
-    // After yielding, assume blocked work (will be corrected by worker if task completes)
-    worker->SetTaskDidWork(false);
+    while (is_complete.load() == 0) {
+      worker->AddToBlockedQueue(run_ctx);
+      YieldBase();
+      // After yielding, assume blocked work (will be corrected by worker if task completes)
+      worker->SetTaskDidWork(false);
+    }
   } else {
-    // Client implementation: Just yield once
-    // Client code should use Future::Wait() for proper completion tracking
-    YieldBase();
+    // Client implementation: Busy-wait on is_complete flag
+    while (is_complete.load() == 0) {
+      YieldBase();
+    }
   }
 }
 
@@ -114,9 +113,32 @@ void Task::YieldBase() {
 }
 
 void Task::Yield(double block_time_us) {
-  // New public Yield function that calls Wait with from_yield=true
-  // to avoid adding subtasks to RunContext
-  Wait(block_time_us, true);
+  // Yield execution without waiting for any specific completion condition
+  // This is used for cooperative yielding during blocking operations (I/O, locks, etc.)
+  auto *chimaera_manager = CHI_CHIMAERA_MANAGER;
+  if (chimaera_manager && chimaera_manager->IsRuntime()) {
+    // Get current run context from worker
+    Worker *worker = CHI_CUR_WORKER;
+    RunContext *run_ctx = worker ? worker->GetCurrentRunContext() : nullptr;
+
+    if (worker && run_ctx) {
+      // Store blocking duration in RunContext
+      run_ctx->block_time_us = block_time_us;
+
+      // Add to blocked queue and yield
+      worker->AddToBlockedQueue(run_ctx);
+      YieldBase();
+
+      // After yielding, assume blocked work
+      worker->SetTaskDidWork(false);
+    } else {
+      // No worker context, just yield
+      YieldBase();
+    }
+  } else {
+    // Client mode: just yield
+    YieldBase();
+  }
 }
 
 // Task::Aggregate is now a template method in task.h

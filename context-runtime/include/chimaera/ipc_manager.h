@@ -250,12 +250,10 @@ public:
    * @param future Future containing completed task
    */
   template <typename TaskT> void Recv(Future<TaskT>& future) {
-    // 1. Poll for completion by checking is_complete atomic in FutureShm (lines 201-205)
+    // 1. Wait for completion using Task::Wait() which checks is_complete atomic
     auto& future_shm = future.GetFutureShm();
-    while (future_shm->is_complete_.load() == 0) {
-      // Busy wait or could add a short sleep
-      std::this_thread::yield();
-    }
+    TaskT* task_ptr = future.get();
+    task_ptr->Wait(future_shm->is_complete_);
 
     if (!CHI_CHIMAERA_MANAGER->IsRuntime()) {
       // CLIENT PATH: Deserialize task outputs from FutureShm
@@ -271,7 +269,6 @@ public:
       archive.SetMsgType(LocalMsgType::kSerializeOut);
 
       // 5. Deserialize task outputs into the Future's task pointer
-      TaskT* task_ptr = future.get();
       archive >> (*task_ptr);
     }
     // RUNTIME PATH: No deserialization needed - task already has correct outputs
