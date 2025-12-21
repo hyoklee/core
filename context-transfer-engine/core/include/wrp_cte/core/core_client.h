@@ -61,7 +61,7 @@ auto *ipc_manager = CHI_IPC;
                           const chi::PoolId &bdev_id = chi::PoolId::GetNull()) {
     auto task = AsyncRegisterTarget(target_name, bdev_type, total_size, target_query, bdev_id);
     task.Wait();
-    chi::u32 result = task->return_code_.load();
+    chi::u32 result = task->return_code_;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -89,7 +89,7 @@ auto *ipc_manager = CHI_IPC;
   chi::u32 UnregisterTarget(              const std::string &target_name) {
     auto task = AsyncUnregisterTarget(target_name);
     task.Wait();
-    chi::u32 result = task->return_code_.load();
+    chi::u32 result = task->return_code_;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -140,7 +140,7 @@ auto *ipc_manager = CHI_IPC;
   chi::u32 StatTargets() {
     auto task = AsyncStatTargets();
     task.Wait();
-    chi::u32 result = task->return_code_.load();
+    chi::u32 result = task->return_code_;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -195,9 +195,9 @@ auto *ipc_manager = CHI_IPC;
     auto task = AsyncPutBlob(tag_id, blob_name, offset, size, blob_data,
                              score, flags);
     task.Wait();
-    bool result = (task->return_code_.load() == 0);
+    bool result = (task->return_code_ == 0);
     if (!result) {
-      HELOG(kError, "PutBlob failed: {}", task->return_code_.load());
+      HELOG(kError, "PutBlob failed: {}", task->return_code_);
     }
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
@@ -228,7 +228,7 @@ auto *ipc_manager = CHI_IPC;
     auto task =
         AsyncGetBlob(tag_id, blob_name, offset, size, flags, blob_data);
     task.Wait();
-    bool result = (task->return_code_.load() == 0);
+    bool result = (task->return_code_ == 0);
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -256,7 +256,7 @@ auto *ipc_manager = CHI_IPC;
                           const std::string &blob_name, float new_score) {
     auto task = AsyncReorganizeBlob(tag_id, blob_name, new_score);
     task.Wait();
-    chi::u32 result = task->return_code_.load();
+    chi::u32 result = task->return_code_;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -283,7 +283,7 @@ auto *ipc_manager = CHI_IPC;
                const std::string &blob_name) {
     auto task = AsyncDelBlob(tag_id, blob_name);
     task.Wait();
-    bool result = (task->return_code_.load() == 0);
+    bool result = (task->return_code_ == 0);
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -308,7 +308,7 @@ auto *ipc_manager = CHI_IPC;
   bool DelTag(const TagId &tag_id) {
     auto task = AsyncDelTag(tag_id);
     task.Wait();
-    bool result = (task->return_code_.load() == 0);
+    bool result = (task->return_code_ == 0);
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -319,7 +319,7 @@ auto *ipc_manager = CHI_IPC;
   bool DelTag(const std::string &tag_name) {
     auto task = AsyncDelTag(tag_name);
     task.Wait();
-    bool result = (task->return_code_.load() == 0);
+    bool result = (task->return_code_ == 0);
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -354,7 +354,7 @@ auto *ipc_manager = CHI_IPC;
   size_t GetTagSize(const TagId &tag_id) {
     auto task = AsyncGetTagSize(tag_id);
     task.Wait();
-    size_t result = (task->return_code_.load() == 0) ? task->tag_size_ : 0;
+    size_t result = (task->return_code_ == 0) ? task->tag_size_ : 0;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -411,7 +411,7 @@ auto *ipc_manager = CHI_IPC;
                      const std::string &blob_name) {
     auto task = AsyncGetBlobScore(tag_id, blob_name);
     task.Wait();
-    float result = (task->return_code_.load() == 0) ? task->score_ : 0.0f;
+    float result = (task->return_code_ == 0) ? task->score_ : 0.0f;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -438,7 +438,7 @@ auto *ipc_manager = CHI_IPC;
                        const std::string &blob_name) {
     auto task = AsyncGetBlobSize(tag_id, blob_name);
     task.Wait();
-    chi::u64 result = (task->return_code_.load() == 0) ? task->size_ : 0;
+    chi::u64 result = (task->return_code_ == 0) ? task->size_ : 0;
     CHI_IPC->DelTask(task.GetTaskPtr());
     return result;
   }
@@ -465,7 +465,7 @@ auto *ipc_manager = CHI_IPC;
     auto task = AsyncGetContainedBlobs(tag_id);
     task.Wait();
     std::vector<std::string> result;
-    if (task->return_code_.load() == 0) {
+    if (task->return_code_ == 0) {
       result = task->blob_names_;
     }
     CHI_IPC->DelTask(task.GetTaskPtr());
@@ -500,7 +500,7 @@ auto *ipc_manager = CHI_IPC;
     auto task = AsyncTagQuery(tag_regex, max_tags, pool_query);
     task.Wait();
     std::vector<std::string> result;
-    if (task->return_code_.load() == 0) {
+    if (task->return_code_ == 0) {
       result = task->results_;
     }
     CHI_IPC->DelTask(task.GetTaskPtr());
@@ -543,7 +543,7 @@ auto *ipc_manager = CHI_IPC;
     auto task = AsyncBlobQuery(tag_regex, blob_regex, max_blobs, pool_query);
     task.Wait();
     std::vector<std::pair<std::string, std::string>> result;
-    if (task->return_code_.load() == 0) {
+    if (task->return_code_ == 0) {
       for (size_t i = 0; i < task->tag_names_.size(); ++i) {
         result.emplace_back(task->tag_names_[i], task->blob_names_[i]);
       }

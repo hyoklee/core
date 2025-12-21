@@ -283,9 +283,9 @@ int Hdf5FileAssimilator::ProcessDataset(hid_t file_id,
   HILOG(kInfo, "ProcessDataset: Waiting for description blob task...");
   desc_task.Wait();
 
-  if (desc_task->return_code_.load() != 0) {
+  if (desc_task->return_code_ != 0) {
     HELOG(kError, "Hdf5FileAssimilator: Failed to store description for dataset '{}', return_code: {}",
-          dataset_path, desc_task->return_code_.load());
+          dataset_path, desc_task->return_code_);
     CHI_IPC->DelTask(desc_task.GetTaskPtr());
     H5Tclose(datatype_id);
     H5Sclose(dataspace_id);
@@ -450,9 +450,9 @@ int Hdf5FileAssimilator::ProcessDataset(hid_t file_id,
       auto& first_task = active_tasks.front();
       first_task.Wait();
 
-      if (first_task->return_code_.load() != 0) {
+      if (first_task->return_code_ != 0) {
         HELOG(kError, "Hdf5FileAssimilator: PutBlob task failed with code {}",
-              first_task->return_code_.load());
+              first_task->return_code_);
         // Free the buffer before deleting the task
         CHI_IPC->FreeBuffer(first_task->blob_data_.template Cast<char>());
         CHI_IPC->DelTask(first_task.GetTaskPtr());
@@ -476,9 +476,9 @@ int Hdf5FileAssimilator::ProcessDataset(hid_t file_id,
         active_tasks.size());
   for (auto& task : active_tasks) {
     task.Wait();
-    if (task->return_code_.load() != 0) {
+    if (task->return_code_ != 0) {
       HELOG(kError, "Hdf5FileAssimilator: PutBlob task failed with code {}",
-            task->return_code_.load());
+            task->return_code_);
       // Free the buffer before deleting the task
       CHI_IPC->FreeBuffer(task->blob_data_.template Cast<char>());
       CHI_IPC->DelTask(task.GetTaskPtr());

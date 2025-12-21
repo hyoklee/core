@@ -1335,7 +1335,7 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
         auto alloc_task =
             thread_client.AsyncAllocateBlocks(pool_query, io_size);
         alloc_task.Wait();
-        REQUIRE(alloc_task->return_code_.load() == 0);
+        REQUIRE(alloc_task->return_code_ == 0);
         REQUIRE(alloc_task->blocks_.size() > 0);
 
         // Convert hipc::vector to std::vector for FreeBlocks
@@ -1349,8 +1349,8 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
         auto write_task = thread_client.AsyncWrite(
             pool_query, WrapBlock(blocks[0]), write_buffer.shm_.template Cast<void>().template Cast<void>(), io_size);
         write_task.Wait();
-        HILOG(kInfo, "Write task: return code = {}, bytes written = {}", write_task->return_code_.load(), write_task->bytes_written_);
-        REQUIRE(write_task->return_code_.load() == 0);
+        HILOG(kInfo, "Write task: return code = {}, bytes written = {}", write_task->return_code_, write_task->bytes_written_);
+        REQUIRE(write_task->return_code_ == 0);
         REQUIRE(write_task->bytes_written_ == io_size);
         CHI_IPC->DelTask(write_task.GetTaskPtr());
 
@@ -1358,7 +1358,7 @@ TEST_CASE("bdev_parallel_io_operations", "[bdev][parallel][io]") {
         auto free_task =
             thread_client.AsyncFreeBlocks(pool_query, blocks);
         free_task.Wait();
-        REQUIRE(free_task->return_code_.load() == 0);
+        REQUIRE(free_task->return_code_ == 0);
         CHI_IPC->DelTask(free_task.GetTaskPtr());
       }
 

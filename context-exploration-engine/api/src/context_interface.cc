@@ -213,7 +213,7 @@ std::vector<std::string> ContextInterface::ContextRetrieve(
       // Wait for all tasks in this batch to complete
       for (auto& task : tasks) {
         task.Wait();
-        if (task->return_code_.load() != 0) {
+        if (task->return_code_ != 0) {
           std::cerr << "Warning: GetBlob failed for a blob in batch" << std::endl;
         }
       }

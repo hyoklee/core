@@ -40,6 +40,13 @@ void Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext &rctx) {
   // Note: Admin container is already initialized by the framework before Create
   // is called
 
+  // Initialize lock vectors for send_map and recv_map
+  auto *config_manager = CHI_CONFIG_MANAGER;
+  size_t num_workers = config_manager->GetSchedulerWorkerCount() +
+                       config_manager->GetSlowWorkerCount();
+  send_map_locks_.resize(num_workers);
+  recv_map_locks_.resize(num_workers);
+
   create_count_++;
 
   // Spawn periodic Recv task with 25 microsecond period (default)
@@ -807,7 +814,8 @@ void Runtime::RecvOut(hipc::FullPtr<RecvTask> task,
           origin_task->task_id_);
 
     // Increment completed replicas counter in origin's rctx
-    chi::u32 completed = origin_rctx->completed_replicas_.fetch_add(1) + 1;
+    origin_rctx->completed_replicas_++;
+    chi::u32 completed = origin_rctx->completed_replicas_;
     HILOG(kDebug, "[RecvOut] Origin task {} completed {}/{} replicas",
           origin_task->task_id_, completed, origin_rctx->subtasks_.size());
 

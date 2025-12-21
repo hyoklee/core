@@ -1,7 +1,6 @@
 #ifndef CHIMAERA_INCLUDE_CHIMAERA_TASK_H_
 #define CHIMAERA_INCLUDE_CHIMAERA_TASK_H_
 
-#include <atomic>
 #include <boost/context/detail/fcontext.hpp>
 #include <sstream>
 #include <vector>
@@ -61,9 +60,8 @@ class Task {
   IN ibitfield task_flags_; /**< Task properties and flags */
   IN double period_ns_;     /**< Period in nanoseconds for periodic tasks */
   IN RunContext *run_ctx_; /**< Pointer to runtime context for task execution */
-  std::atomic<u32>
-      return_code_; /**< Task return code (0=success, non-zero=error) */
-  OUT std::atomic<ContainerId> completer_; /**< Container ID that completed this task */
+  OUT u32 return_code_; /**< Task return code (0=success, non-zero=error) */
+  OUT ContainerId completer_; /**< Container ID that completed this task */
   TaskStat stat_;   /**< Task statistics for I/O and compute tracking */
 
   /**
@@ -86,8 +84,8 @@ class Task {
     pool_query_ = pool_query;
     period_ns_ = 0.0;
     run_ctx_ = nullptr;
-    return_code_.store(0); // Initialize as success
-    completer_.store(0); // Initialize as null (0 is invalid container ID)
+    return_code_ = 0; // Initialize as success
+    completer_ = 0; // Initialize as null (0 is invalid container ID)
   }
 
   /**
@@ -106,8 +104,8 @@ class Task {
     task_flags_ = other->task_flags_;
     period_ns_ = other->period_ns_;
     run_ctx_ = other->run_ctx_;
-    return_code_.store(other->return_code_.load());
-    completer_.store(other->completer_.load());
+    return_code_ = other->return_code_;
+    completer_ = other->completer_;
     stat_ = other->stat_;
   }
 
@@ -122,8 +120,8 @@ class Task {
     task_flags_.Clear();
     period_ns_ = 0.0;
     run_ctx_ = nullptr;
-    return_code_.store(0); // Initialize as success
-    completer_.store(0); // Initialize as null (0 is invalid container ID)
+    return_code_ = 0; // Initialize as success
+    completer_ = 0; // Initialize as null (0 is invalid container ID)
     stat_.io_size_ = 0;
     stat_.compute_ = 0;
   }
@@ -246,11 +244,8 @@ class Task {
    */
   template <typename Archive> void SerializeIn(Archive &ar) {
     // Serialize base Task fields (IN and INOUT parameters)
-    // Handle atomic return_code_ by loading/storing its value
-    u32 return_code_value = return_code_.load();
     ar(pool_id_, task_id_, pool_query_, method_, task_flags_, period_ns_,
-       return_code_value);
-    return_code_.store(return_code_value);
+       return_code_);
   }
 
   /**
@@ -268,11 +263,7 @@ class Task {
     // Only serialize OUT fields - do NOT re-serialize IN fields
     // (pool_id_, task_id_, pool_query_, method_, task_flags_, period_ns_ are all IN)
     // Only return_code_ and completer_ are OUT fields that need to be sent back
-    u32 return_code_value = return_code_.load();
-    ContainerId completer_value = completer_.load();
-    ar(return_code_value, completer_value);
-    return_code_.store(return_code_value);
-    completer_.store(completer_value);
+    ar(return_code_, completer_);
   }
 
   /**
@@ -286,28 +277,28 @@ class Task {
    * Get the task return code
    * @return Return code (0=success, non-zero=error)
    */
-  HSHM_CROSS_FUN u32 GetReturnCode() const { return return_code_.load(); }
+  HSHM_CROSS_FUN u32 GetReturnCode() const { return return_code_; }
 
   /**
    * Set the task return code
    * @param return_code Return code to set (0=success, non-zero=error)
    */
   HSHM_CROSS_FUN void SetReturnCode(u32 return_code) {
-    return_code_.store(return_code);
+    return_code_ = return_code;
   }
 
   /**
    * Get the completer container ID (which container completed this task)
    * @return Container ID that completed this task
    */
-  HSHM_CROSS_FUN ContainerId GetCompleter() const { return completer_.load(); }
+  HSHM_CROSS_FUN ContainerId GetCompleter() const { return completer_; }
 
   /**
    * Set the completer container ID (which container completed this task)
    * @param completer Container ID to set
    */
   HSHM_CROSS_FUN void SetCompleter(ContainerId completer) {
-    completer_.store(completer);
+    completer_ = completer;
   }
 
   /**
@@ -379,7 +370,7 @@ struct RunContext {
       waiting_for_tasks; // Tasks this task is waiting for completion
   std::vector<PoolQuery> pool_queries;  // Pool queries for task distribution
   std::vector<FullPtr<Task>> subtasks_; // Replica tasks for this execution
-  std::atomic<u32> completed_replicas_; // Count of completed replicas
+  u32 completed_replicas_; // Count of completed replicas
   u32 block_count_;  // Number of times task has been blocked
   Future<Task> future_;  // Future for async completion tracking
   bool destroy_in_end_task_;  // Flag to indicate if task should be destroyed in EndTask
@@ -393,7 +384,7 @@ struct RunContext {
   }
 
   /**
-   * Move constructor - required because of atomic member
+   * Move constructor
    */
   RunContext(RunContext &&other) noexcept
       : stack_ptr(other.stack_ptr),
@@ -408,13 +399,13 @@ struct RunContext {
         waiting_for_tasks(std::move(other.waiting_for_tasks)),
         pool_queries(std::move(other.pool_queries)),
         subtasks_(std::move(other.subtasks_)),
-        completed_replicas_(other.completed_replicas_.load()),
+        completed_replicas_(other.completed_replicas_),
         block_count_(other.block_count_),
         future_(std::move(other.future_)),
         destroy_in_end_task_(other.destroy_in_end_task_) {}
 
   /**
-   * Move assignment operator - required because of atomic member
+   * Move assignment operator
    */
   RunContext &operator=(RunContext &&other) noexcept {
     if (this != &other) {
@@ -436,7 +427,7 @@ struct RunContext {
       waiting_for_tasks = std::move(other.waiting_for_tasks);
       pool_queries = std::move(other.pool_queries);
       subtasks_ = std::move(other.subtasks_);
-      completed_replicas_.store(other.completed_replicas_.load());
+      completed_replicas_ = other.completed_replicas_;
       block_count_ = other.block_count_;
       future_ = std::move(other.future_);
       destroy_in_end_task_ = other.destroy_in_end_task_;
@@ -456,7 +447,7 @@ struct RunContext {
     waiting_for_tasks.clear();
     pool_queries.clear();
     subtasks_.clear();
-    completed_replicas_.store(0);
+    completed_replicas_ = 0;
     est_load = 0.0;
     block_time_us = 0.0;
     block_start = hshm::Timepoint();

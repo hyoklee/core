@@ -113,9 +113,9 @@ int BinaryFileAssimilator::Schedule(const AssimilationCtx& ctx) {
       tag_id, "description", 0, desc_size, desc_buffer.shm_.template Cast<void>(), 1.0f, 0);
   desc_task.Wait();
 
-  if (desc_task->return_code_.load() != 0) {
+  if (desc_task->return_code_ != 0) {
     HELOG(kError, "BinaryFileAssimilator: Failed to store description for tag '{}', return_code: {}",
-          tag_name, desc_task->return_code_.load());
+          tag_name, desc_task->return_code_);
     CHI_IPC->DelTask(desc_task.GetTaskPtr());
     return -9;
   }
@@ -218,9 +218,9 @@ int BinaryFileAssimilator::Schedule(const AssimilationCtx& ctx) {
       auto& first_task = active_tasks.front();
       first_task.Wait();
 
-      if (first_task->return_code_.load() != 0) {
+      if (first_task->return_code_ != 0) {
         HELOG(kError, "BinaryFileAssimilator: PutBlob task failed with code {}",
-              first_task->return_code_.load());
+              first_task->return_code_);
         // Free the buffer before deleting the task
         CHI_IPC->FreeBuffer(first_task->blob_data_.template Cast<char>());
         CHI_IPC->DelTask(first_task.GetTaskPtr());
@@ -238,9 +238,9 @@ int BinaryFileAssimilator::Schedule(const AssimilationCtx& ctx) {
   HILOG(kInfo, "BinaryFileAssimilator: Waiting for {} remaining tasks to complete", active_tasks.size());
   for (auto& task : active_tasks) {
     task.Wait();
-    if (task->return_code_.load() != 0) {
+    if (task->return_code_ != 0) {
       HELOG(kError, "BinaryFileAssimilator: PutBlob task failed with code {}",
-            task->return_code_.load());
+            task->return_code_);
       // Free the buffer before deleting the task
       CHI_IPC->FreeBuffer(task->blob_data_.template Cast<char>());
       CHI_IPC->DelTask(task.GetTaskPtr());

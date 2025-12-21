@@ -60,7 +60,7 @@ std::unique_ptr<chimaera::admin::CreateTask> CreateTestAdminTask() {
   auto task = std::make_unique<chimaera::admin::CreateTask>(
       chi::TaskId(2, 2, 2, 0, 2), chi::PoolId(200, 0), chi::PoolQuery(),
       "test_chimod", "test_pool", chi::PoolId(300, 0));
-  task->return_code_.store(42);
+  task->return_code_ = 42;
   task->error_message_ = chi::priv::string("test error message", alloc);
   return task;
 }
@@ -305,7 +305,7 @@ TEST_CASE("Task Base Class Serialization", "[task_archive][task_base]") {
 
   SECTION("Task BaseSerializeOut with TaskSaveOutArchive") {
     auto original_task = CreateTestTask();
-    original_task->return_code_.store(42); // Set a return code (OUT parameter)
+    original_task->return_code_ = 42; // Set a return code (OUT parameter)
 
     // Serialize using TaskSaveOutArchive (calls BaseSerializeOut +
     // SerializeOut)
@@ -316,12 +316,12 @@ TEST_CASE("Task Base Class Serialization", "[task_archive][task_base]") {
     // Deserialize using TaskLoadOutArchive
     chi::TaskLoadOutArchive in_archive(serialized_data);
     auto new_task = CreateTestTask();
-    new_task->return_code_.store(0); // Clear return code
+    new_task->return_code_ = 0; // Clear return code
     REQUIRE_NOTHROW(in_archive >> *new_task);
 
     // Verify OUT parameters were preserved
     // BaseSerializeOut only serializes return_code, not pool_id/task_id/method
-    REQUIRE(new_task->return_code_.load() == original_task->return_code_.load());
+    REQUIRE(new_task->return_code_ == original_task->return_code_);
   }
 }
 
@@ -355,12 +355,12 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
 
     chi::TaskLoadOutArchive in_archive_out(out_data);
     auto new_task_out = CreateTestAdminTask();
-    new_task_out->return_code_.store(0); // Clear
+    new_task_out->return_code_ = 0; // Clear
     new_task_out->error_message_ = chi::priv::string("", GetTestAllocator());
     REQUIRE_NOTHROW(in_archive_out >> *new_task_out);
 
     // Verify OUT/INOUT parameters were preserved
-    REQUIRE(new_task_out->return_code_.load() == original_task->return_code_.load());
+    REQUIRE(new_task_out->return_code_ == original_task->return_code_);
     REQUIRE(new_task_out->error_message_.str() ==
             original_task->error_message_.str());
     REQUIRE(new_task_out->pool_id_ ==
@@ -372,7 +372,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     chimaera::admin::DestroyPoolTask original_task(
         chi::TaskId(3, 3, 3, 0, 3), chi::PoolId(400, 0),
         chi::PoolQuery(), chi::PoolId(500, 0), 0x123);
-    original_task.return_code_.store(99);
+    original_task.return_code_ = 99;
     original_task.error_message_ = chi::priv::string("destroy error", alloc);
 
     // Test round-trip IN parameters
@@ -396,7 +396,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     chimaera::admin::DestroyPoolTask new_task_out;
     in_archive_out >> new_task_out;
 
-    REQUIRE(new_task_out.return_code_.load() == original_task.return_code_.load());
+    REQUIRE(new_task_out.return_code_ == original_task.return_code_);
     REQUIRE(new_task_out.error_message_.str() ==
             original_task.error_message_.str());
   }
@@ -406,7 +406,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     chimaera::admin::StopRuntimeTask original_task(
         chi::TaskId(4, 4, 4, 0, 4), chi::PoolId(600, 0),
         chi::PoolQuery(), 0x456, 10000);
-    original_task.return_code_.store(777);
+    original_task.return_code_ = 777;
     original_task.error_message_ = chi::priv::string("shutdown error", alloc);
 
     // Test IN parameters
@@ -430,7 +430,7 @@ TEST_CASE("Admin Task Serialization", "[task_archive][admin_tasks]") {
     chimaera::admin::StopRuntimeTask new_task_out;
     in_archive_out >> new_task_out;
 
-    REQUIRE(new_task_out.return_code_.load() == original_task.return_code_.load());
+    REQUIRE(new_task_out.return_code_ == original_task.return_code_);
     REQUIRE(new_task_out.error_message_.str() ==
             original_task.error_message_.str());
   }
@@ -742,7 +742,7 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     REQUIRE(remote_task->pool_id_ == original_task->pool_id_);
 
     // Step 3: Simulate task execution and result generation on remote node
-    remote_task->return_code_.store(123);
+    remote_task->return_code_ = 123;
     remote_task->error_message_ =
         chi::priv::string("remote execution result", GetTestAllocator());
 
@@ -755,12 +755,12 @@ TEST_CASE("Complete Serialization Flow", "[task_archive][integration]") {
     // Step 5: Simulate client receiving and deserializing OUT parameters
     chi::TaskLoadOutArchive recv_out_archive(out_data);
     auto final_task = CreateTestAdminTask();
-    final_task->return_code_.store(0); // Clear
+    final_task->return_code_ = 0; // Clear
     final_task->error_message_ = chi::priv::string("", GetTestAllocator());
     recv_out_archive >> *final_task;
 
     // Verify OUT parameters were transferred back
-    REQUIRE(final_task->return_code_.load() == 123);
+    REQUIRE(final_task->return_code_ == 123);
     REQUIRE(final_task->error_message_.str() == "remote execution result");
     REQUIRE(final_task->pool_id_ ==
             original_task->pool_id_); // INOUT parameter preserved

@@ -482,7 +482,7 @@ TEST_CASE("FUNCTIONAL - Register Target",
     REQUIRE(fixture->WaitForTaskCompletion(register_task, 10000));
 
     // Check real result
-    chi::u32 result = register_task->return_code_.load();
+    chi::u32 result = register_task->return_code_;
     REQUIRE(result == 0);
     INFO(
         "SUCCESS: Async target registration completed with result: " << result);
@@ -570,7 +570,7 @@ TEST_CASE(
 
     REQUIRE(!put_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-    REQUIRE(put_task->return_code_.load() == 0);
+    REQUIRE(put_task->return_code_ == 0);
 
     INFO("PutBlob completed successfully.");
 
@@ -617,7 +617,7 @@ TEST_CASE(
                                      blob_size, blob_data_ptr, score, 0);
 
       if (!put_task.IsNull() && fixture->WaitForTaskCompletion(put_task, 10000) &&
-          put_task->return_code_.load() == 0) {
+          put_task->return_code_ == 0) {
         INFO("Blob " << blob_name << " stored successfully");
         CHI_IPC->DelTask(put_task.GetTaskPtr());
       } else {
@@ -663,7 +663,7 @@ TEST_CASE(
                                      chunk_size, chunk_ptr, 0.8f, 0);
 
       if (!chunk_task.IsNull() && fixture->WaitForTaskCompletion(chunk_task, 10000) &&
-          chunk_task->return_code_.load() == 0) {
+          chunk_task->return_code_ == 0) {
         INFO("Chunk at offset " << offset << " stored successfully");
       } else {
         INFO("Chunk at offset " << offset << " storage failed");
@@ -708,7 +708,7 @@ TEST_CASE(
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000)); // 10 second timeout
 
     // Check result
-    chi::u32 result = put_task->return_code_.load();
+    chi::u32 result = put_task->return_code_;
     INFO("Async PutBlob completed with result: " << result);
 
     // Cleanup task
@@ -732,7 +732,7 @@ TEST_CASE(
                                                    0, 512, data_ptr, 0.5f, 0);
       if (!error_task.IsNull()) {
         bool completed = fixture->WaitForTaskCompletion(error_task, 5000);
-        bool success = completed && (error_task->return_code_.load() == 0);
+        bool success = completed && (error_task->return_code_ == 0);
         INFO("Empty name result: "
              << (success ? "true" : "false")
              << " (false indicates proper error handling)");
@@ -747,7 +747,7 @@ TEST_CASE(
                                                   0, 512, data_ptr, 0.5f, 0);
       if (!valid_task.IsNull()) {
         bool completed = fixture->WaitForTaskCompletion(valid_task, 5000);
-        bool success = completed && (valid_task->return_code_.load() == 0);
+        bool success = completed && (valid_task->return_code_ == 0);
         INFO("Valid name result: "
              << (success ? "true" : "false")
              << " (true expected for valid operation)");
@@ -763,7 +763,7 @@ TEST_CASE(
           0, 512, data_ptr, 0.5f, 0);
       if (!invalid_tag_task.IsNull()) {
         bool completed = fixture->WaitForTaskCompletion(invalid_tag_task, 5000);
-        bool success = completed && (invalid_tag_task->return_code_.load() == 0);
+        bool success = completed && (invalid_tag_task->return_code_ == 0);
         INFO("Invalid tag result: "
              << (success ? "true" : "false")
              << " (false indicates proper error handling)");
@@ -840,7 +840,7 @@ TEST_CASE(
 
     REQUIRE(!put_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-    REQUIRE(put_task->return_code_.load() == 0);
+    REQUIRE(put_task->return_code_ == 0);
 
     INFO("Blob stored successfully");
     CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -917,7 +917,7 @@ TEST_CASE(
           tag_id, blob_name, 0, blob_size, put_ptr, 0.5f, 0);
 
       if (!put_task.IsNull() && fixture->WaitForTaskCompletion(put_task, 10000) &&
-          put_task->return_code_.load() == 0) {
+          put_task->return_code_ == 0) {
         stored_blob_names.push_back(blob_name);
         INFO("Stored " << blob_name << " successfully");
         CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -995,7 +995,7 @@ TEST_CASE(
 
     REQUIRE(!put_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-    REQUIRE(put_task->return_code_.load() == 0);
+    REQUIRE(put_task->return_code_ == 0);
 
     INFO("Full blob stored successfully");
     CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -1068,7 +1068,7 @@ TEST_CASE(
 
     REQUIRE(!put_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-    REQUIRE(put_task->return_code_.load() == 0);
+    REQUIRE(put_task->return_code_ == 0);
 
     INFO("Blob stored successfully");
     CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -1097,7 +1097,7 @@ TEST_CASE(
     REQUIRE(fixture->WaitForTaskCompletion(get_task, 10000)); // 10 second timeout
 
     // Check result and data
-    chi::u32 result = get_task->return_code_.load();
+    chi::u32 result = get_task->return_code_;
     bool get_success = (result == 0);
     INFO("Async GetBlob completed with success: " << (get_success ? "true"
                                                                   : "false"));
@@ -1226,7 +1226,7 @@ TEST_CASE(
 
     REQUIRE(!put_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-    REQUIRE(put_task->return_code_.load() == 0);
+    REQUIRE(put_task->return_code_ == 0);
 
     INFO("PutBlob success");
     CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -1319,7 +1319,7 @@ TEST_CASE(
           tag_id, blob_name, 0, blob_size, put_ptr, score, 0);
 
       if (!put_task.IsNull() && fixture->WaitForTaskCompletion(put_task, 10000) &&
-          put_task->return_code_.load() == 0) {
+          put_task->return_code_ == 0) {
         stored_blob_names.push_back(blob_name);
         INFO("✓ " << blob_name << " stored successfully");
         CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -1407,7 +1407,7 @@ TEST_CASE(
       auto put1_task = fixture->core_client_->AsyncPutBlob(
           tag1_id, blob_name, 0, blob_size, put1_ptr, 0.5f, 0);
       if (!put1_task.IsNull() && fixture->WaitForTaskCompletion(put1_task, 10000) &&
-          put1_task->return_code_.load() == 0) {
+          put1_task->return_code_ == 0) {
         tag1_stored = true;
         INFO("Tag1 blob stored successfully");
       }
@@ -1425,7 +1425,7 @@ TEST_CASE(
       auto put2_task = fixture->core_client_->AsyncPutBlob(
           tag2_id, blob_name, 0, blob_size, put2_ptr, 0.5f, 0);
       if (!put2_task.IsNull() && fixture->WaitForTaskCompletion(put2_task, 10000) &&
-          put2_task->return_code_.load() == 0) {
+          put2_task->return_code_ == 0) {
         tag2_stored = true;
         INFO("Tag2 blob stored successfully");
       }
@@ -1510,7 +1510,7 @@ TEST_CASE(
     INFO("Waiting for async put completion...");
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
 
-    chi::u32 put_result = put_task->return_code_.load();
+    chi::u32 put_result = put_task->return_code_;
     bool put_success = (put_result == 0);
     INFO("Async put completed with success: " << (put_success ? "true"
                                                               : "false"));
@@ -1591,7 +1591,7 @@ TEST_CASE(
                                      chunk_size, chunk_ptr, 0.6f, 0);
 
       if (!chunk_task.IsNull() && fixture->WaitForTaskCompletion(chunk_task, 10000) &&
-          chunk_task->return_code_.load() == 0) {
+          chunk_task->return_code_ == 0) {
         chunks_stored = true;
         INFO("✓ Chunk " << i << " stored successfully");
       } else {
@@ -1761,9 +1761,9 @@ TEST_CASE(
 
   // Wait for PutBlob completion
   REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-  REQUIRE(put_task->return_code_.load() == 0);
+  REQUIRE(put_task->return_code_ == 0);
   INFO("✓ PutBlob completed successfully with result code: "
-       << put_task->return_code_.load());
+       << put_task->return_code_);
 
   // Cleanup PutBlob task
   CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -1789,9 +1789,9 @@ TEST_CASE(
 
   // Wait for GetBlob completion
   REQUIRE(fixture->WaitForTaskCompletion(get_task, 10000));
-  REQUIRE(get_task->return_code_.load() == 0);
+  REQUIRE(get_task->return_code_ == 0);
   INFO("✓ GetBlob completed successfully with result code: "
-       << get_task->return_code_.load());
+       << get_task->return_code_);
 
   // Step 6: Verify data integrity matches exactly (test should FAIL if data
   // doesn't match)
@@ -1904,7 +1904,7 @@ TEST_CASE(
 
       REQUIRE(!put_task.IsNull());
       REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-      REQUIRE(put_task->return_code_.load() == 0);
+      REQUIRE(put_task->return_code_ == 0);
 
       INFO("✓ Blob " << i << " stored: " << blob_name);
       CHI_IPC->DelTask(put_task.GetTaskPtr());
@@ -1928,7 +1928,7 @@ TEST_CASE(
 
       REQUIRE(!reorganize_task.IsNull());
       REQUIRE(fixture->WaitForTaskCompletion(reorganize_task, 10000));
-      REQUIRE(reorganize_task->return_code_.load() == 0);
+      REQUIRE(reorganize_task->return_code_ == 0);
       CHI_IPC->DelTask(reorganize_task.GetTaskPtr());
       INFO("✓ Blob " << i << " reorganized successfully");
     }
@@ -1990,7 +1990,7 @@ TEST_CASE(
 
       REQUIRE(!put_task.IsNull());
       REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-      REQUIRE(put_task->return_code_.load() == 0);
+      REQUIRE(put_task->return_code_ == 0);
       CHI_IPC->DelTask(put_task.GetTaskPtr());
       
       INFO("✓ Test blob " << i << " stored with score " << initial_scores[i]);
@@ -2004,7 +2004,7 @@ TEST_CASE(
 
       REQUIRE(!threshold_reorganize_task.IsNull());
       REQUIRE(fixture->WaitForTaskCompletion(threshold_reorganize_task, 10000));
-      REQUIRE(threshold_reorganize_task->return_code_.load() == 0);
+      REQUIRE(threshold_reorganize_task->return_code_ == 0);
       CHI_IPC->DelTask(threshold_reorganize_task.GetTaskPtr());
     }
 
@@ -2055,7 +2055,7 @@ TEST_CASE(
 
       REQUIRE(!put_task.IsNull());
       REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-      REQUIRE(put_task->return_code_.load() == 0);
+      REQUIRE(put_task->return_code_ == 0);
       CHI_IPC->DelTask(put_task.GetTaskPtr());
 
       if ((i + 1) % 8 == 0) {
@@ -2071,7 +2071,7 @@ TEST_CASE(
 
       REQUIRE(!batch_reorganize_task.IsNull());
       REQUIRE(fixture->WaitForTaskCompletion(batch_reorganize_task, 10000));
-      REQUIRE(batch_reorganize_task->return_code_.load() == 0);
+      REQUIRE(batch_reorganize_task->return_code_ == 0);
       CHI_IPC->DelTask(batch_reorganize_task.GetTaskPtr());
 
       if ((i + 1) % 8 == 0) {
@@ -2279,10 +2279,10 @@ TEST_CASE(
 
     REQUIRE(!put_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(put_task, 10000));
-    REQUIRE(put_task->return_code_.load() == 0);
+    REQUIRE(put_task->return_code_ == 0);
 
     // Track the completer for PutBlob
-    chi::ContainerId put_completer = put_task->completer_.load();
+    chi::ContainerId put_completer = put_task->completer_;
     put_completer_sum += static_cast<chi::u64>(put_completer);
     INFO("Put iteration " << i << ": blob_name=" << blob_name
                           << ", completer=" << put_completer);
@@ -2302,10 +2302,10 @@ TEST_CASE(
 
     REQUIRE(!get_task.IsNull());
     REQUIRE(fixture->WaitForTaskCompletion(get_task, 10000));
-    REQUIRE(get_task->return_code_.load() == 0);
+    REQUIRE(get_task->return_code_ == 0);
 
     // Track the completer for GetBlob
-    chi::ContainerId get_completer = get_task->completer_.load();
+    chi::ContainerId get_completer = get_task->completer_;
     get_completer_sum += static_cast<chi::u64>(get_completer);
     INFO("Get iteration " << i << ": blob_name=" << blob_name
                           << ", completer=" << get_completer);
