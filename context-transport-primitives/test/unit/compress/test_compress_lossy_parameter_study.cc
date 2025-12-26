@@ -19,8 +19,10 @@
 
 #include "basic_test.h"
 #include "hermes_shm/util/compress/compress.h"
-#if HSHM_ENABLE_COMPRESS && HSHM_HAS_LIBPRESSIO
-#include "hermes_shm/util/compress/libpressio.h"
+#if HSHM_ENABLE_COMPRESS
+#include "hermes_shm/util/compress/zfp.h"
+#include "hermes_shm/util/compress/bitgrooming.h"
+#include "hermes_shm/util/compress/fpzip.h"
 #endif
 #include <fstream>
 #include <iostream>
@@ -45,6 +47,10 @@ struct BenchmarkResult {
     double compression_ratio;
     double compress_cpu_percent;
     double decompress_cpu_percent;
+    double snr_db;          // Signal-to-Noise Ratio in dB
+    double psnr_db;         // Peak Signal-to-Noise Ratio in dB
+    double max_error;       // Maximum absolute error
+    double mse;             // Mean Squared Error
     bool success;
 };
 
@@ -67,6 +73,112 @@ struct CPUUsage {
         return {0.0};
     }
 #endif
+};
+
+// Quality metric calculations for lossy compression
+struct QualityMetrics {
+    /**
+     * Calculate Mean Squared Error (MSE) between original and decompressed data.
+     *
+     * MSE = (1/n) * Σ(original[i] - decompressed[i])²
+     *
+     * @param original Original float data
+     * @param decompressed Decompressed float data
+     * @param count Number of elements
+     * @return MSE value
+     */
+    static double calculateMSE(const float* original, const float* decompressed, size_t count) {
+        double mse = 0.0;
+        for (size_t i = 0; i < count; i++) {
+            double diff = static_cast<double>(original[i]) - static_cast<double>(decompressed[i]);
+            mse += diff * diff;
+        }
+        return mse / static_cast<double>(count);
+    }
+
+    /**
+     * Calculate Signal-to-Noise Ratio (SNR) in decibels.
+     *
+     * SNR = 10 * log10(signal_power / noise_power)
+     * signal_power = Σ(original[i]²) / n
+     * noise_power = MSE = Σ(original[i] - decompressed[i])² / n
+     *
+     * @param original Original float data
+     * @param decompressed Decompressed float data
+     * @param count Number of elements
+     * @return SNR in dB (higher is better)
+     */
+    static double calculateSNR(const float* original, const float* decompressed, size_t count) {
+        double signal_power = 0.0;
+        double noise_power = 0.0;
+
+        for (size_t i = 0; i < count; i++) {
+            double orig = static_cast<double>(original[i]);
+            double decomp = static_cast<double>(decompressed[i]);
+            double diff = orig - decomp;
+
+            signal_power += orig * orig;
+            noise_power += diff * diff;
+        }
+
+        signal_power /= static_cast<double>(count);
+        noise_power /= static_cast<double>(count);
+
+        if (noise_power < 1e-10) {
+            return 999.0;  // Near-perfect reconstruction (lossless)
+        }
+
+        return 10.0 * std::log10(signal_power / noise_power);
+    }
+
+    /**
+     * Calculate Peak Signal-to-Noise Ratio (PSNR) in decibels.
+     *
+     * PSNR = 10 * log10(MAX² / MSE)
+     * where MAX is the maximum possible value in the data range
+     *
+     * @param original Original float data
+     * @param decompressed Decompressed float data
+     * @param count Number of elements
+     * @return PSNR in dB (higher is better)
+     */
+    static double calculatePSNR(const float* original, const float* decompressed, size_t count) {
+        // Find maximum absolute value in original data for dynamic range
+        double max_val = 0.0;
+        for (size_t i = 0; i < count; i++) {
+            double abs_val = std::abs(static_cast<double>(original[i]));
+            if (abs_val > max_val) {
+                max_val = abs_val;
+            }
+        }
+
+        double mse = calculateMSE(original, decompressed, count);
+
+        if (mse < 1e-10 || max_val < 1e-10) {
+            return 999.0;  // Near-perfect reconstruction or zero signal
+        }
+
+        return 10.0 * std::log10((max_val * max_val) / mse);
+    }
+
+    /**
+     * Calculate maximum absolute error between original and decompressed data.
+     *
+     * @param original Original float data
+     * @param decompressed Decompressed float data
+     * @param count Number of elements
+     * @return Maximum absolute error
+     */
+    static double calculateMaxError(const float* original, const float* decompressed, size_t count) {
+        double max_error = 0.0;
+        for (size_t i = 0; i < count; i++) {
+            double error = std::abs(static_cast<double>(original[i]) - static_cast<double>(decompressed[i]));
+            if (error > max_error) {
+                max_error = error;
+            }
+        }
+        return max_error;
+    }
 };
 
 // Data distribution generators
@@ -153,6 +265,69 @@ public:
         float* floats = static_cast<float*>(data);
         for (size_t i = 0; i < size; i++) {
             floats[i] = dist(gen);
+        }
+    }
+
+    // HIGHLY COMPRESSIBLE: Smooth repeating pattern (sine wave)
+    // Expected ratio: ~50-200x with lossy compressors
+    static void generateRepeatingFloat(void* data, size_t size, const std::string& dist_name = "repeating_float") {
+        (void)dist_name;
+        float* floats = static_cast<float*>(data);
+        for (size_t i = 0; i < size; i++) {
+            // Simple repeating sine wave pattern
+            float x = static_cast<float>(i % 100);  // Repeat every 100 samples
+            floats[i] = std::sin(x * 0.0628F) * 1000.0F;  // 0.0628 ≈ 2π/100
+        }
+    }
+
+    // MEDIUM COMPRESSIBLE: Structured data with some variation
+    // Expected ratio: ~5-20x with lossy compressors
+    static void generateStructuredFloat(void* data, size_t size, const std::string& dist_name = "structured_float") {
+        (void)dist_name;
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::normal_distribution<float> noise_dist(0.0F, 10.0F);  // Small noise
+
+        float* floats = static_cast<float*>(data);
+        for (size_t i = 0; i < size; i++) {
+            // Slowly varying smooth signal + small noise
+            float x = static_cast<float>(i);
+            float signal = std::sin(x * 0.01F) * 500.0F +
+                          std::cos(x * 0.003F) * 300.0F;
+            float noise = noise_dist(gen);
+            floats[i] = signal + noise;
+        }
+    }
+
+    // LIGHTLY COMPRESSIBLE: Noisy signal (signal + significant noise)
+    // Expected ratio: ~1.5-5x with lossy compressors
+    static void generateNoisyFloat(void* data, size_t size, const std::string& dist_name = "noisy_float") {
+        (void)dist_name;
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::normal_distribution<float> noise_dist(0.0F, 200.0F);  // Large noise
+
+        float* floats = static_cast<float*>(data);
+        for (size_t i = 0; i < size; i++) {
+            // Weak signal buried in noise
+            float x = static_cast<float>(i);
+            float signal = std::sin(x * 0.01F) * 100.0F;  // Weak signal
+            float noise = noise_dist(gen);                // Strong noise
+            floats[i] = signal + noise;
+        }
+    }
+
+    // INCOMPRESSIBLE: Pure random noise (white noise)
+    // Expected ratio: ~1.0-1.2x with lossy compressors
+    static void generateRandomFloat(void* data, size_t size, const std::string& dist_name = "random_float") {
+        (void)dist_name;
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::uniform_real_distribution<float> dist(-1000.0F, 1000.0F);
+
+        float* floats = static_cast<float*>(data);
+        for (size_t i = 0; i < size; i++) {
+            floats[i] = dist(gen);  // Pure random noise
         }
     }
 
@@ -423,6 +598,14 @@ BenchmarkResult benchmarkCompressorFloat(hshm::Compressor* compressor,
         DataGenerator::generateUniformRandomFloat(input_data.data(), num_floats, distribution);
     } else if (distribution == "normal_float") {
         DataGenerator::generateNormalFloat(input_data.data(), num_floats, distribution);
+    } else if (distribution == "repeating_float") {
+        DataGenerator::generateRepeatingFloat(input_data.data(), num_floats, distribution);
+    } else if (distribution == "structured_float") {
+        DataGenerator::generateStructuredFloat(input_data.data(), num_floats, distribution);
+    } else if (distribution == "noisy_float") {
+        DataGenerator::generateNoisyFloat(input_data.data(), num_floats, distribution);
+    } else if (distribution == "random_float") {
+        DataGenerator::generateRandomFloat(input_data.data(), num_floats, distribution);
     } else {
         // Unsupported distribution for float data
         return result;
@@ -507,6 +690,12 @@ BenchmarkResult benchmarkCompressorFloat(hshm::Compressor* compressor,
         return result;
     }
 
+    // Calculate quality metrics for lossy compression
+    result.mse = QualityMetrics::calculateMSE(input_data.data(), decompressed_data.data(), num_floats);
+    result.snr_db = QualityMetrics::calculateSNR(input_data.data(), decompressed_data.data(), num_floats);
+    result.psnr_db = QualityMetrics::calculatePSNR(input_data.data(), decompressed_data.data(), num_floats);
+    result.max_error = QualityMetrics::calculateMaxError(input_data.data(), decompressed_data.data(), num_floats);
+
     result.success = true;
     return result;
 }
@@ -515,7 +704,8 @@ BenchmarkResult benchmarkCompressorFloat(hshm::Compressor* compressor,
 void printCSVHeader(std::ostream& os) {
     os << "Library,Distribution,Chunk Size (bytes),"
               << "Compress Time (ms),Decompress Time (ms),"
-              << "Compression Ratio,Compress CPU %,Decompress CPU %,Success\n";
+              << "Compression Ratio,Compress CPU %,Decompress CPU %,"
+              << "SNR (dB),PSNR (dB),Max Error,MSE,Success\n";
 }
 
 // Print result as CSV
@@ -528,6 +718,10 @@ void printResultCSV(const BenchmarkResult& result, std::ostream& os) {
               << std::setprecision(4) << result.compression_ratio << ","
               << std::setprecision(2) << result.compress_cpu_percent << ","
               << result.decompress_cpu_percent << ","
+              << std::setprecision(2) << result.snr_db << ","
+              << std::setprecision(2) << result.psnr_db << ","
+              << std::scientific << std::setprecision(3) << result.max_error << ","
+              << result.mse << ","
               << (result.success ? "YES" : "NO") << "\n";
 }
 
@@ -539,14 +733,29 @@ TEST_CASE("Lossy Compression Parameter Study") {
 
     // Floating-point distributions for lossy compressors:
     //
-    // UNIFORM FLOAT DISTRIBUTION - 0.0 to 1000.0 range
-    //   uniform_float = continuous floating-point values with uniform distribution
+    // FLOAT DISTRIBUTIONS (for lossy compression testing)
+    // Organized by compressibility level:
     //
-    // NORMAL FLOAT DISTRIBUTION - mean=500.0, stddev=200.0
-    //   normal_float = continuous floating-point values with normal distribution
+    // HIGHLY COMPRESSIBLE:
+    //   repeating_float = smooth repeating sine wave pattern (~50-200x compression)
+    //
+    // MEDIUM COMPRESSIBLE:
+    //   structured_float = smooth signal with small noise (~5-20x compression)
+    //   uniform_float = uniform random in [0, 1000] range (~2-10x compression)
+    //
+    // LIGHTLY COMPRESSIBLE:
+    //   noisy_float = weak signal + strong noise (~1.5-5x compression)
+    //   normal_float = normal distribution mean=500, stddev=200 (~1.5-5x compression)
+    //
+    // INCOMPRESSIBLE:
+    //   random_float = pure white noise (~1.0-1.2x compression)
     const std::vector<std::string> float_distributions = {
-        "uniform_float",
-        "normal_float"
+        "repeating_float",    // Highly compressible
+        "structured_float",   // Medium compressible
+        "uniform_float",      // Medium compressible
+        "noisy_float",        // Lightly compressible
+        "normal_float",       // Lightly compressible
+        "random_float"        // Incompressible
     };
 
     // Open output file for lossy compression results
@@ -567,13 +776,40 @@ TEST_CASE("Lossy Compression Parameter Study") {
         std::unique_ptr<hshm::Compressor> compressor;
     };
 
-    // Lossy compressors for floating-point data
+    // Lossy compressors for floating-point data - PARAMETER STUDY
+    // Test multiple parameter values for each compressor
+#if HSHM_ENABLE_COMPRESS
     std::vector<CompressorTest> lossy_compressors;
-#if HSHM_ENABLE_COMPRESS && HSHM_HAS_LIBPRESSIO
-    lossy_compressors.push_back({"LibPressio-ZFP", std::make_unique<hshm::LibPressio>("zfp")});
-    lossy_compressors.push_back({"LibPressio-BitGrooming", std::make_unique<hshm::LibPressio>("bit_grooming")});
-#endif
 
+    // ZFP: Test multiple error tolerances
+    std::vector<double> zfp_tolerances = {1e-1, 1e-2, 1e-3, 1e-4, 1e-5};
+    for (double tol : zfp_tolerances) {
+        std::string name = "ZFP_tol_" + std::to_string(tol);
+        lossy_compressors.push_back({name, std::make_unique<hshm::Zfp>(tol)});
+    }
+
+    // BitGrooming: Test multiple significant digits
+    std::vector<int> bitgrooming_nsds = {1, 2, 3, 4, 5};
+    for (int nsd : bitgrooming_nsds) {
+        std::string name = "BitGrooming_nsd_" + std::to_string(nsd);
+        lossy_compressors.push_back({name, std::make_unique<hshm::BitGrooming>(nsd)});
+    }
+
+    // FPZIP: Test multiple precision levels
+    std::vector<int> fpzip_precisions = {8, 12, 16, 20, 24, 0};  // 0 = lossless
+    for (int prec : fpzip_precisions) {
+        std::string name = "FPZIP_prec_" + std::to_string(prec);
+        lossy_compressors.push_back({name, std::make_unique<hshm::Fpzip>(prec)});
+    }
+
+    // SZ3 and SZ: Commented out due to header/API compatibility issues
+    // Can be enabled once proper headers are installed
+    // std::vector<double> sz_tolerances = {1e-1, 1e-2, 1e-3, 1e-4, 1e-5};
+    // for (double tol : sz_tolerances) {
+    //     std::string name = "SZ3_tol_" + std::to_string(tol);
+    //     lossy_compressors.push_back({name, std::make_unique<hshm::Sz3>(tol, hshm::Sz3::ErrorMode::ABS)});
+    // }
+#endif
     // Test lossy compressors with floating-point data
     // These compressors require float input and support lossy compression
     for (const auto& test : lossy_compressors) {

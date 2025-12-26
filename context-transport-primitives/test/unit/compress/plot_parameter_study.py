@@ -44,11 +44,32 @@ LIBRARY_COLORS = {
     'Zlib': '#7f7f7f',
     'Zstd': '#bcbd22',
     'LibPressio-BZIP2': '#17becf',
-    'LibPressio-BLOSC': '#aec7e8',
-    # Lossy compressors
+    # Lossy compressors (base names)
     'LibPressio-ZFP': '#ff9896',
     'LibPressio-BitGrooming': '#98df8a',
+    'ZFP': '#3498db',        # Blue for ZFP direct wrappers
+    'FPZIP': '#2ecc71',      # Green for FPZIP direct wrappers
+    'BitGrooming': '#e67e22', # Orange for BitGrooming direct wrappers
 }
+
+def get_base_compressor_name(lib_name):
+    """Extract base compressor name from parameter variants.
+
+    Examples:
+        'ZFP_tol_0.001000' -> 'ZFP'
+        'BitGrooming_nsd_3' -> 'BitGrooming'
+        'FPZIP_prec_16' -> 'FPZIP'
+        'BZIP2' -> 'BZIP2'
+    """
+    # Check for parameter patterns
+    if '_tol_' in lib_name:
+        return 'ZFP'
+    elif '_nsd_' in lib_name:
+        return 'BitGrooming'
+    elif '_prec_' in lib_name:
+        return 'FPZIP'
+    else:
+        return lib_name  # Return as-is for non-parameterized names
 
 # Output directory for plots
 OUTPUT_DIR = Path(__file__).parent / 'benchmark_plots'
@@ -103,8 +124,8 @@ def create_simple_bar_chart(ax, df_subset, libraries, metric, ylabel, title, use
         else:
             values.append(0.001 if use_log_scale else 0)
 
-    # Create color list
-    colors = [LIBRARY_COLORS.get(lib, '#808080') for lib in libraries]
+    # Create color list using base compressor names
+    colors = [LIBRARY_COLORS.get(get_base_compressor_name(lib), '#808080') for lib in libraries]
 
     # Plot bars
     ax.bar(x_positions, values, color=colors, alpha=0.8, edgecolor='black', linewidth=0.5)
@@ -120,18 +141,92 @@ def create_simple_bar_chart(ax, df_subset, libraries, metric, ylabel, title, use
     if use_log_scale:
         ax.set_yscale('log')
 
+def get_distribution_description(distribution):
+    """
+    Generate a descriptive subtitle for a distribution explaining the parameters.
+
+    Args:
+        distribution: Distribution name (e.g., 'gamma_high', 'exponential_medium')
+
+    Returns:
+        String with parameter description
+    """
+    # Uniform distributions - varying max value
+    if distribution.startswith('uniform_'):
+        if distribution == 'uniform_float':
+            return "Float data: Uniform distribution [0.0, 1000.0]"
+        max_val = distribution.split('_')[1]
+        return f"Max value = {max_val} (controls entropy/bit usage)"
+
+    # Normal distributions - varying standard deviation
+    if distribution.startswith('normal_'):
+        if distribution == 'normal_float':
+            return "Float data: Normal distribution (μ=500, σ=200)"
+        stddev = distribution.split('_')[1]
+        return f"Standard deviation σ = {stddev} (controls clustering)"
+
+    # Gamma distributions - varying shape/scale parameters
+    if distribution.startswith('gamma_'):
+        param_map = {
+            'incomp': "Gamma(α=5, β=5) × 5 + noise: Wide spread, high entropy",
+            'light': "Gamma(α=5, β=8) × 4: Moderate spread, some clustering",
+            'medium': "Gamma(α=2, β=4) × 15: Medium clustering",
+            'high': "Gamma(α=1, β=2) × 20: Tight clustering at low values"
+        }
+        suffix = distribution.split('_')[1]
+        return param_map.get(suffix, "Gamma distribution")
+
+    # Exponential distributions - varying rate parameter
+    if distribution.startswith('exponential_'):
+        param_map = {
+            'incomp': "Exponential(λ=0.01) × 1.5 + noise: Slow decay, high entropy",
+            'light': "Exponential(λ=0.012) × 2.5 + 10: Slow decay, wide spread",
+            'medium': "Exponential(λ=0.02) × 3.0 + 5: Moderate decay",
+            'high': "Exponential(λ=0.05) × 2.0: Fast decay, clustering near zero"
+        }
+        suffix = distribution.split('_')[1]
+        return param_map.get(suffix, "Exponential distribution")
+
+    # Repeating pattern
+    if distribution == 'repeating':
+        return "Deterministic pattern (AAABBBCCC...): Extremely compressible"
+
+    return ""
+
 def create_page(df_subset, distribution, libraries):
     """
-    Create a page with 5 bar charts for a specific distribution (64KB fixed size).
+    Create a page with bar charts for a specific distribution (64KB fixed size).
+    For lossy compressors (with SNR data), creates 4x2 grid with quality metrics.
+    For lossless compressors, creates 3x2 grid.
 
     Args:
         df_subset: DataFrame subset for this distribution
         distribution: Distribution name
         libraries: List of unique libraries
     """
-    fig, axes = plt.subplots(3, 2, figsize=(11, 14))
-    fig.suptitle(f'Parameter Study: {distribution}\nChar Data Type, 64KB Chunk Size',
-                 fontsize=14, fontweight='bold', y=0.995)
+    # Check if this distribution has SNR data (lossy compressors)
+    has_quality_metrics = 'SNR (dB)' in df_subset.columns and df_subset['SNR (dB)'].notna().any()
+
+    if has_quality_metrics:
+        # Extended layout for lossy compressors with quality metrics
+        fig, axes = plt.subplots(4, 2, figsize=(11, 17))
+    else:
+        # Standard layout for lossless compressors
+        fig, axes = plt.subplots(3, 2, figsize=(11, 14))
+
+    # Get descriptive subtitle with parameters
+    description = get_distribution_description(distribution)
+
+    # Determine data type
+    data_type = "Float Data Type" if distribution.endswith('_float') else "Char Data Type"
+
+    # Create multi-line title
+    if description:
+        title = f'Parameter Study: {distribution}\n{description}\n{data_type}, 64KB Chunk Size'
+    else:
+        title = f'Parameter Study: {distribution}\n{data_type}, 64KB Chunk Size'
+
+    fig.suptitle(title, fontsize=13, fontweight='bold', y=0.995)
 
     # 1. Compress Time (log scale)
     create_simple_bar_chart(
@@ -204,6 +299,22 @@ def create_page(df_subset, distribution, libraries):
 
     axes[2, 1].set_title('Performance Summary (64KB chunks)\nSorted by Compression Ratio',
                         fontweight='bold', pad=10)
+
+    # Add quality metric plots for lossy compressors
+    if has_quality_metrics:
+        # 7. SNR (Signal-to-Noise Ratio)
+        create_simple_bar_chart(
+            axes[3, 0], df_subset, libraries,
+            'SNR (dB)', 'SNR (dB, higher = better)',
+            'Signal-to-Noise Ratio (SNR)', use_log_scale=False
+        )
+
+        # 8. PSNR (Peak Signal-to-Noise Ratio)
+        create_simple_bar_chart(
+            axes[3, 1], df_subset, libraries,
+            'PSNR (dB)', 'PSNR (dB, higher = better)',
+            'Peak Signal-to-Noise Ratio (PSNR)', use_log_scale=False
+        )
 
     plt.tight_layout(rect=[0, 0, 1, 0.99])
     return fig
@@ -380,63 +491,95 @@ def main():
         print("  ./bin/benchmark_compress_lossy_parameter_study_exec")
         sys.exit(1)
 
-    # Load and combine data
-    dfs = []
+    # Load data separately (DO NOT combine - they test different data types)
+    df_lossless = None
+    df_lossy = None
+
     if lossless_csv_path.exists():
         print(f"Loading lossless data from: {lossless_csv_path}")
         df_lossless = load_data(lossless_csv_path)
-        dfs.append(df_lossless)
-        print(f"  ✓ Loaded {len(df_lossless)} lossless compression results")
+        print(f"  ✓ Loaded {len(df_lossless)} lossless compression results (char data)")
 
     if lossy_csv_path.exists():
         print(f"Loading lossy data from: {lossy_csv_path}")
         df_lossy = load_data(lossy_csv_path)
-        dfs.append(df_lossy)
-        print(f"  ✓ Loaded {len(df_lossy)} lossy compression results")
+        print(f"  ✓ Loaded {len(df_lossy)} lossy compression results (float data)")
 
-    # Combine dataframes
-    df = pd.concat(dfs, ignore_index=True)
-    print(f"✓ Combined total: {len(df)} compression results")
     print()
 
-    # Get unique values
-    distributions = sorted(df['Distribution'].unique())
-    libraries = sorted(df['Library'].unique())
-    chunk_sizes = sorted(df['Chunk Size (MB)'].unique())
+    # Identify lossy compressors and float distributions
+    lossy_compressors = ['LibPressio-ZFP', 'LibPressio-BitGrooming']
+    float_distributions = ['uniform_float', 'normal_float']
 
-    print(f"✓ Found {len(distributions)} distributions")
-    print(f"✓ Found {len(libraries)} libraries")
-    print(f"✓ Found {len(chunk_sizes)} chunk sizes")
+    # Get unique values for each type
+    lossless_distributions = sorted(df_lossless['Distribution'].unique()) if df_lossless is not None else []
+    lossy_distributions = sorted(df_lossy['Distribution'].unique()) if df_lossy is not None else []
+
+    # Separate distributions: lossless first, lossy at the end
+    all_distributions = lossless_distributions + lossy_distributions
+
+    lossless_libraries = sorted(df_lossless['Library'].unique()) if df_lossless is not None else []
+    lossy_libraries = sorted(df_lossy['Library'].unique()) if df_lossy is not None else []
+
+    print(f"✓ Found {len(lossless_distributions)} lossless distributions (char data)")
+    print(f"✓ Found {len(lossy_distributions)} lossy distributions (float data)")
+    print(f"✓ Found {len(lossless_libraries)} lossless compressors")
+    print(f"✓ Found {len(lossy_libraries)} lossy compressors")
     print()
 
-    # Generate PDF report
+    # Generate PDF report with lossless pages first, lossy pages at the end
     pdf_path = OUTPUT_DIR / 'parameter_study_full_report.pdf'
     print(f"Generating PDF report: {pdf_path}")
+    print(f"  Layout: {len(lossless_distributions)} lossless pages, then {len(lossy_distributions)} lossy pages")
+    print()
 
     with PdfPages(pdf_path) as pdf:
-        for i, dist in enumerate(distributions, 1):
-            print(f"  Page {i}/{len(distributions)}: {dist}")
-            df_dist = df[df['Distribution'] == dist]
+        page_num = 1
 
-            if len(df_dist) > 0:
-                fig = create_page(df_dist, dist, libraries)
-                pdf.savefig(fig, bbox_inches='tight')
-                plt.close(fig)
+        # First, generate all lossless distribution pages
+        for dist in lossless_distributions:
+            print(f"  Page {page_num}/{len(all_distributions)}: {dist} (lossless)")
 
-    print(f"✓ PDF report saved: {pdf_path.name} ({len(distributions)} pages)")
+            if df_lossless is not None:
+                df_dist = df_lossless[df_lossless['Distribution'] == dist]
+                if len(df_dist) > 0:
+                    fig = create_page(df_dist, dist, lossless_libraries)
+                    pdf.savefig(fig, bbox_inches='tight')
+                    plt.close(fig)
+                    page_num += 1
+
+        # Then, generate all lossy distribution pages at the end
+        for dist in lossy_distributions:
+            print(f"  Page {page_num}/{len(all_distributions)}: {dist} (lossy)")
+
+            if df_lossy is not None:
+                df_dist = df_lossy[df_lossy['Distribution'] == dist]
+                if len(df_dist) > 0:
+                    fig = create_page(df_dist, dist, lossy_libraries)
+                    pdf.savefig(fig, bbox_inches='tight')
+                    plt.close(fig)
+                    page_num += 1
+
     print()
+    print(f"✓ PDF report saved: {pdf_path.name} ({len(all_distributions)} pages)")
+    print(f"  Pages 1-{len(lossless_distributions)}: Lossless compressors (char data)")
+    print(f"  Pages {len(lossless_distributions)+1}-{len(all_distributions)}: Lossy compressors (float data)")
+    print()
+
+    # Combine data for statistics (keep separate context)
+    df_combined = pd.concat([df for df in [df_lossless, df_lossy] if df is not None], ignore_index=True)
 
     # Generate statistics report
     stats_path = OUTPUT_DIR / 'parameter_study_statistics.txt'
     print(f"Generating statistics report: {stats_path}")
-    generate_statistics_report(df, stats_path)
+    generate_statistics_report(df_combined, stats_path)
     print(f"✓ Statistics saved: {stats_path.name}")
     print()
 
     # Generate best compressor table
     table_path = OUTPUT_DIR / 'parameter_study_best_compressor.txt'
     print(f"Generating best compressor table: {table_path}")
-    generate_best_compressor_table(df, table_path)
+    generate_best_compressor_table(df_combined, table_path)
     print(f"✓ Table saved: {table_path.name}")
     print()
 
@@ -445,7 +588,7 @@ def main():
     print("=" * 80)
     print()
     print("Generated files:")
-    print(f"  • {pdf_path.name} - {len(distributions)}-page detailed report")
+    print(f"  • {pdf_path.name} - {len(all_distributions)}-page detailed report")
     print(f"  • {stats_path.name} - Detailed statistics and analysis")
     print(f"  • {table_path.name} - Best compressor lookup table")
     print()
