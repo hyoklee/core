@@ -145,7 +145,8 @@ void ModuleManager::ScanForChiMods() {
       for (const auto &entry : std::filesystem::directory_iterator(dir)) {
         if (entry.is_regular_file()) {
           std::string file_path = entry.path().string();
-          if (IsSharedLibrary(file_path)) {
+          if (IsSharedLibrary(file_path) &&
+              HasModuleNamingConvention(file_path)) {
             HLOG(kDebug, "Attempting to load ChiMod from: {}", file_path);
             LoadChiMod(file_path);
           }
@@ -246,6 +247,12 @@ bool ModuleManager::IsSharedLibrary(const std::string &file_path) const {
   return file_path.length() >= ext.length() &&
          file_path.compare(file_path.length() - ext.length(), ext.length(),
                            ext) == 0;
+}
+
+bool ModuleManager::HasModuleNamingConvention(
+    const std::string &file_path) const {
+  // ChiMod libraries must contain "_runtime" in their name
+  return file_path.find("_runtime") != std::string::npos;
 }
 
 bool ModuleManager::ValidateChiMod(hshm::SharedLibrary &lib) const {
