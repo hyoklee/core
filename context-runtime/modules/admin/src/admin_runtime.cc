@@ -48,6 +48,11 @@ void Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext &rctx) {
   send_map_locks_.resize(num_workers);
   recv_map_locks_.resize(num_workers);
 
+  // Initialize lock vector for ZeroMQ client sends (one per host)
+  auto *ipc_manager = CHI_IPC;
+  size_t num_hosts = ipc_manager->GetNumHosts();
+  client_send_locks_.resize(num_hosts);
+
   create_count_++;
 
   // Spawn periodic Recv task with 25 microsecond period (default)
@@ -339,25 +344,38 @@ void Runtime::SendIn(hipc::FullPtr<SendTask> task, chi::RunContext &rctx) {
         num_replicas);
 
   // Send to each target in pool_queries
+  HILOG(kInfo, "[DEBUG] SendIn - processing {} replicas for pool_id={}",
+        num_replicas, origin_task->pool_id_);
+
   for (size_t i = 0; i < num_replicas; ++i) {
     const chi::PoolQuery &query = task->pool_queries_[i];
+
+    HILOG(kInfo, "[DEBUG] SendIn - replica {} routing_mode={}, range_offset={}, range_count={}",
+          i, static_cast<int>(query.GetRoutingMode()),
+          query.GetRangeOffset(), query.GetRangeCount());
 
     // Determine target node_id based on query type
     chi::u64 target_node_id = 0;
 
     if (query.IsLocalMode()) {
       target_node_id = ipc_manager->GetNodeId();
+      HILOG(kInfo, "[DEBUG] SendIn - replica {} LocalMode -> target_node_id={}", i, target_node_id);
     } else if (query.IsPhysicalMode()) {
       target_node_id = query.GetNodeId();
+      HILOG(kInfo, "[DEBUG] SendIn - replica {} PhysicalMode -> target_node_id={}", i, target_node_id);
     } else if (query.IsDirectIdMode()) {
       chi::ContainerId container_id = query.GetContainerId();
       target_node_id =
           pool_manager->GetContainerNodeId(origin_task->pool_id_, container_id);
+      HILOG(kInfo, "[DEBUG] SendIn - replica {} DirectIdMode container_id={} -> target_node_id={}",
+            i, container_id, target_node_id);
     } else if (query.IsRangeMode()) {
       chi::u32 offset = query.GetRangeOffset();
       chi::ContainerId container_id(offset);
       target_node_id =
           pool_manager->GetContainerNodeId(origin_task->pool_id_, container_id);
+      HILOG(kInfo, "[DEBUG] SendIn - replica {} RangeMode offset={} container_id={} -> target_node_id={}",
+            i, offset, container_id, target_node_id);
     } else if (query.IsBroadcastMode()) {
       HELOG(kError,
             "Admin: Broadcast mode should be handled by "
@@ -381,14 +399,27 @@ void Runtime::SendIn(hipc::FullPtr<SendTask> task, chi::RunContext &rctx) {
       continue;
     }
 
-    // Create Lightbeam client using configured port
+    HILOG(kInfo, "[DEBUG] SendIn - replica {} target_host: ip={}, node_id={}",
+          i, target_host->ip_address, target_host->node_id);
+
+    // Get or create persistent Lightbeam client using connection pool
     auto *config_manager = CHI_CONFIG_MANAGER;
     int port = static_cast<int>(config_manager->GetPort());
-    auto lbm_client = hshm::lbm::TransportFactory::GetClient(
-        target_host->ip_address, hshm::lbm::Transport::kZeroMq, "tcp", port);
+    HILOG(kInfo, "[DEBUG] SendIn - getting pooled client to {}:{}",
+          target_host->ip_address, port);
+    hshm::lbm::Client *lbm_client =
+        ipc_manager->GetOrCreateClient(target_host->ip_address, port);
+
+    if (!lbm_client) {
+      HELOG(kError, "[SendIn] Task {} FAILED: Could not get client for {}:{}",
+            origin_task->task_id_, target_host->ip_address, port);
+      continue;
+    }
+
+    HILOG(kInfo, "[DEBUG] SendIn - lbm_client obtained from pool: OK");
 
     // Create SaveTaskArchive with SerializeIn mode and lbm_client
-    chi::SaveTaskArchive archive(chi::MsgType::kSerializeIn, lbm_client.get());
+    chi::SaveTaskArchive archive(chi::MsgType::kSerializeIn, lbm_client);
 
     // Create task copy
     hipc::FullPtr<chi::Task> task_copy =
@@ -400,7 +431,7 @@ void Runtime::SendIn(hipc::FullPtr<SendTask> task, chi::RunContext &rctx) {
     copy_id.net_key_ = send_map_key;
     copy_id.replica_id_ = i;
 
-    HILOG(kDebug, "[SendIn] Created task copy {} with net_key {} for node {}",
+    HILOG(kInfo, "[DEBUG] SendIn - created task copy {} with net_key {} for node {}",
           task_copy->task_id_, send_map_key, target_node_id);
 
     // Update the copy's pool query to current query
@@ -409,29 +440,36 @@ void Runtime::SendIn(hipc::FullPtr<SendTask> task, chi::RunContext &rctx) {
     // Set return node ID in the pool query
     chi::u64 this_node_id = ipc_manager->GetNodeId();
     task_copy->pool_query_.SetReturnNode(this_node_id);
-    HILOG(kDebug, "Admin: Task copy return node set to {}", this_node_id);
 
     // Serialize the task using container->SaveTask (Expose will be called
     // automatically for bulks)
+    HILOG(kInfo, "[DEBUG] SendIn - serializing task...");
     container->SaveTask(task_copy->method_, archive, task_copy);
 
-    // Send using Lightbeam asynchronously (non-blocking)
-    hshm::lbm::LbmContext ctx(0);  // Non-blocking async send
-    int rc = lbm_client->Send(archive, ctx);
+    // Lock the client send mutex to prevent multi-part message interleaving
+    // ZeroMQ sockets are not thread-safe - concurrent sends corrupt message boundaries
+    {
+      chi::ScopedCoMutex send_lock(client_send_locks_[target_node_id]);
 
-    if (rc != 0) {
-      HELOG(kError,
-            "[SendIn] Task {} Lightbeam async Send FAILED with error code {}",
-            origin_task->task_id_, rc);
-      continue;
+      // Send using Lightbeam asynchronously (non-blocking)
+      HILOG(kInfo, "[DEBUG] SendIn - calling Lightbeam Send...");
+      hshm::lbm::LbmContext ctx(0);  // Non-blocking async send
+      int rc = lbm_client->Send(archive, ctx);
+
+      if (rc != 0) {
+        HELOG(kError,
+              "[SendIn] Task {} Lightbeam async Send FAILED with error code {}",
+              origin_task->task_id_, rc);
+        continue;
+      }
+
+      HILOG(kInfo, "[DEBUG] SendIn - task {} sent to node {} (rc={})",
+            task_copy->task_id_, target_node_id, rc);
     }
-
-    HILOG(kDebug, "[SEND] Task {} sent to node {}", task_copy->task_id_,
-          target_node_id);
   }
 
-  HILOG(kDebug, "=== [SendIn END] Task {} completed sending to {} targets ===",
-        origin_task->task_id_, num_replicas);
+  HILOG(kInfo, "[DEBUG] SendIn END - completed sending to {} targets",
+        num_replicas);
   task->SetReturnCode(0);
 }
 
@@ -512,32 +550,44 @@ void Runtime::SendOut(hipc::FullPtr<SendTask> task) {
       continue;
     }
 
-    // Create Lightbeam client using configured port
+    // Get or create persistent Lightbeam client using connection pool
     auto *config_manager = CHI_CONFIG_MANAGER;
     int port = static_cast<int>(config_manager->GetPort());
-    auto lbm_client = hshm::lbm::TransportFactory::GetClient(
-        target_host->ip_address, hshm::lbm::Transport::kZeroMq, "tcp", port);
+    hshm::lbm::Client *lbm_client =
+        ipc_manager->GetOrCreateClient(target_host->ip_address, port);
+
+    if (!lbm_client) {
+      HELOG(kError, "[SendOut] Task {} FAILED: Could not get client for {}:{}",
+            origin_task->task_id_, target_host->ip_address, port);
+      continue;
+    }
 
     // Create SaveTaskArchive with SerializeOut mode and lbm_client
     // The client will automatically call Expose internally during serialization
-    chi::SaveTaskArchive archive(chi::MsgType::kSerializeOut, lbm_client.get());
+    chi::SaveTaskArchive archive(chi::MsgType::kSerializeOut, lbm_client);
 
     // Serialize the task outputs using container->SaveTask (Expose called
     // automatically)
     container->SaveTask(origin_task->method_, archive, origin_task);
 
-    // Use non-timed, non-sync context for SendOut
-    hshm::lbm::LbmContext ctx(0);
-    int rc = lbm_client->Send(archive, ctx);
-    if (rc != 0) {
-      HELOG(kError,
-            "[SendOut] Task {} Lightbeam Send FAILED with error code {}",
-            origin_task->task_id_, rc);
-      continue;
-    }
+    // Lock the client send mutex to prevent multi-part message interleaving
+    // ZeroMQ sockets are not thread-safe - concurrent sends corrupt message boundaries
+    {
+      chi::ScopedCoMutex send_lock(client_send_locks_[target_node_id]);
 
-    HILOG(kDebug, "[SEND] Task {} outputs sent back to node {}",
-          origin_task->task_id_, target_node_id);
+      // Use non-timed, non-sync context for SendOut
+      hshm::lbm::LbmContext ctx(0);
+      int rc = lbm_client->Send(archive, ctx);
+      if (rc != 0) {
+        HELOG(kError,
+              "[SendOut] Task {} Lightbeam Send FAILED with error code {}",
+              origin_task->task_id_, rc);
+        continue;
+      }
+
+      HILOG(kDebug, "[SEND] Task {} outputs sent back to node {}",
+            origin_task->task_id_, target_node_id);
+    }
   }
 
   // Delete the task after sending outputs
@@ -872,10 +922,20 @@ void Runtime::RecvOut(hipc::FullPtr<RecvTask> task,
  * Main Recv function - receives metadata and dispatches based on mode
  */
 void Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rctx) {
+  static thread_local int recv_call_count = 0;
+  recv_call_count++;
+  // Only log every 100 calls to avoid spam
+  if (recv_call_count <= 5 || recv_call_count % 100 == 0) {
+    HILOG(kInfo, "[DEBUG] Recv called (count={})", recv_call_count);
+  }
+
   // Get the main server from CHI_IPC (already bound during initialization)
   auto *ipc_manager = CHI_IPC;
   hshm::lbm::Server *lbm_server = ipc_manager->GetMainServer();
   if (!lbm_server) {
+    if (recv_call_count <= 5) {
+      HILOG(kInfo, "[DEBUG] Recv - lbm_server is null!");
+    }
     chi::Worker *worker = CHI_CUR_WORKER;
     if (worker) {
       worker->SetTaskDidWork(false);
@@ -883,29 +943,10 @@ void Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rctx) {
     return;
   }
 
-  // Add ZeroMQ file descriptor to current worker's epoll (one-time setup)
-  static thread_local bool zmq_fd_added = false;
-  if (!zmq_fd_added) {
-    chi::Worker *worker = CHI_CUR_WORKER;
-    if (worker) {
-      // Cast to ZeroMqServer to access GetFd()
-      auto *zmq_server = static_cast<hshm::lbm::ZeroMqServer *>(lbm_server);
-      int zmq_fd = zmq_server->GetFd();
-
-      // Add ZeroMQ FD to worker's epoll for event-driven polling
-      struct epoll_event ev;
-      ev.events = EPOLLIN;
-      ev.data.fd = zmq_fd;
-      int epoll_fd = worker->GetEpollFd();
-      if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, zmq_fd, &ev) == -1) {
-        HELOG(kError, "Admin: Failed to add ZeroMQ FD to worker epoll");
-      } else {
-        zmq_fd_added = true;
-        HILOG(kDebug, "Admin: Added ZeroMQ FD {} to worker {} epoll", zmq_fd,
-              worker->GetId());
-      }
-    }
-  }
+  // NOTE: ZeroMQ FD epoll integration removed - was causing receive issues.
+  // ZeroMQ FD is edge-triggered by design, but was being added to multiple
+  // worker epoll instances with level-triggered EPOLLIN, which caused
+  // interference with ZeroMQ's internal event handling.
 
   // Lock the socket to prevent race conditions during multi-part receive
   // The lock is held until RecvBulks completes in RecvIn/RecvOut
@@ -925,6 +966,7 @@ void Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rctx) {
     task->SetReturnCode(0);
     return;
   }
+  HILOG(kInfo, "[DEBUG] Recv - RecvMetadata returned rc={}, has_more_parts={}", rc, has_more_parts);
   if (rc != 0) {
     // Error receiving metadata - could be various causes
     if (rc == -1) {

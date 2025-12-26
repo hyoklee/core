@@ -5,9 +5,12 @@
 #include <cereal/archives/binary.hpp>
 #include <cereal/types/string.hpp>
 #include <cereal/types/vector.hpp>
+#include <chrono>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <sstream>
+#include <thread>
 #include <unistd.h>
 
 #include "hermes_shm/util/logging.h"
@@ -47,29 +50,85 @@ struct LbmContext {
 };
 
 class ZeroMqClient : public Client {
+ private:
+  /**
+   * Get or create the shared ZeroMQ context for all clients
+   * Uses a static local variable for thread-safe singleton initialization
+   */
+  static void* GetSharedContext() {
+    static void* shared_ctx = nullptr;
+    static std::mutex ctx_mutex;
+
+    std::lock_guard<std::mutex> lock(ctx_mutex);
+    if (!shared_ctx) {
+      shared_ctx = zmq_ctx_new();
+      // Set I/O threads to 2 for better throughput
+      zmq_ctx_set(shared_ctx, ZMQ_IO_THREADS, 2);
+      HILOG(kInfo, "[ZeroMqClient] Created shared context with 2 I/O threads");
+    }
+    return shared_ctx;
+  }
+
  public:
   explicit ZeroMqClient(const std::string& addr,
                         const std::string& protocol = "tcp", int port = 8192)
       : addr_(addr),
         protocol_(protocol),
         port_(port),
-        ctx_(zmq_ctx_new()),
+        ctx_(GetSharedContext()),
+        owns_ctx_(false),
         socket_(zmq_socket(ctx_, ZMQ_PUSH)) {
     std::string full_url =
         protocol_ + "://" + addr_ + ":" + std::to_string(port_);
+    HILOG(kInfo, "[DEBUG] ZeroMqClient connecting to URL: {}", full_url);
+
+    // Disable ZMQ_IMMEDIATE - let messages queue until connection is established
+    // With ZMQ_IMMEDIATE=1, messages may be dropped if no peer is immediately available
+    int immediate = 0;
+    zmq_setsockopt(socket_, ZMQ_IMMEDIATE, &immediate, sizeof(immediate));
+
+    // Set a reasonable send timeout (5 seconds)
+    int timeout = 5000;
+    zmq_setsockopt(socket_, ZMQ_SNDTIMEO, &timeout, sizeof(timeout));
+
     int rc = zmq_connect(socket_, full_url.c_str());
     if (rc == -1) {
       std::string err = "ZeroMqClient failed to connect to URL '" + full_url +
                         "': " + zmq_strerror(zmq_errno());
       zmq_close(socket_);
-      zmq_ctx_destroy(ctx_);
       throw std::runtime_error(err);
     }
+
+    // Wait for socket to become writable (connection established)
+    // zmq_connect is asynchronous, so we use poll to verify readiness
+    zmq_pollitem_t poll_item = {socket_, 0, ZMQ_POLLOUT, 0};
+    int poll_timeout_ms = 5000;  // 5 second timeout for connection
+    int poll_rc = zmq_poll(&poll_item, 1, poll_timeout_ms);
+
+    if (poll_rc < 0) {
+      HELOG(kError, "[ZeroMqClient] Poll failed for {}: {}", full_url,
+            zmq_strerror(zmq_errno()));
+    } else if (poll_rc == 0) {
+      HELOG(kWarning, "[ZeroMqClient] Poll timeout - connection to {} may not be ready",
+            full_url);
+    } else if (poll_item.revents & ZMQ_POLLOUT) {
+      HILOG(kInfo, "[ZeroMqClient] Socket ready for writing to {}", full_url);
+    }
+
+    HILOG(kInfo, "[DEBUG] ZeroMqClient connected to {} (poll_rc={})",
+          full_url, poll_rc);
   }
 
   ~ZeroMqClient() override {
+    HILOG(kInfo, "[DEBUG] ZeroMqClient destructor - closing socket to {}:{}", addr_, port_);
+
+    // Set linger to ensure any remaining messages are sent
+    int linger = 5000;
+    zmq_setsockopt(socket_, ZMQ_LINGER, &linger, sizeof(linger));
+
     zmq_close(socket_);
-    zmq_ctx_destroy(ctx_);
+    // Don't destroy the shared context - it's shared across all clients
+    HILOG(kInfo, "[DEBUG] ZeroMqClient destructor - socket closed");
   }
 
   // Base Expose implementation - accepts hipc::FullPtr
@@ -84,6 +143,8 @@ class ZeroMqClient : public Client {
 
   template <typename MetaT>
   int Send(MetaT& meta, const LbmContext& ctx = LbmContext()) {
+    HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - START to {}:{}", addr_, port_);
+
     // Serialize metadata (includes both send and recv vectors)
     std::ostringstream oss(std::ios::binary);
     {
@@ -91,6 +152,8 @@ class ZeroMqClient : public Client {
       ar(meta);
     }
     std::string meta_str = oss.str();
+    HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - serialized metadata size={}",
+          meta_str.size());
 
     // Count bulks marked for WRITE
     size_t write_bulk_count = 0;
@@ -100,9 +163,14 @@ class ZeroMqClient : public Client {
       }
     }
 
-    // Determine send flags based on context
-    // Use ZMQ_DONTWAIT only if LBM_SYNC is not set
-    int base_flags = ctx.IsSync() ? 0 : ZMQ_DONTWAIT;
+    // IMPORTANT: Always use blocking send for distributed messaging
+    // ZMQ_DONTWAIT with newly-created connections causes messages to be lost
+    // because the connection may not be established when send is called
+    int base_flags = 0;  // Use blocking sends
+
+    HILOG(kInfo,
+          "[DEBUG] ZeroMqClient::Send - write_bulk_count={}, base_flags={}",
+          write_bulk_count, base_flags);
 
     // Send metadata - use ZMQ_SNDMORE only if there are WRITE bulks to follow
     int flags = base_flags;
@@ -111,7 +179,11 @@ class ZeroMqClient : public Client {
     }
 
     int rc = zmq_send(socket_, meta_str.data(), meta_str.size(), flags);
+    HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - zmq_send metadata rc={}, errno={}",
+          rc, rc == -1 ? zmq_errno() : 0);
     if (rc == -1) {
+      HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - FAILED: {}",
+            zmq_strerror(zmq_errno()));
       return zmq_errno();
     }
 
@@ -130,9 +202,18 @@ class ZeroMqClient : public Client {
 
       rc = zmq_send(socket_, meta.send[i].data.ptr_, meta.send[i].size, flags);
       if (rc == -1) {
+        HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - bulk {} FAILED: {}", i,
+              zmq_strerror(zmq_errno()));
         return zmq_errno();
       }
     }
+
+    HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - SUCCESS to {}:{}", addr_, port_);
+
+    // Give TCP stack time to transmit the message before socket is destroyed.
+    // This is a diagnostic workaround - proper fix would be to reuse connections.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    HILOG(kInfo, "[DEBUG] ZeroMqClient::Send - post-send delay completed");
 
     return 0;  // Success
   }
@@ -142,6 +223,7 @@ class ZeroMqClient : public Client {
   std::string protocol_;
   int port_;
   void* ctx_;
+  bool owns_ctx_;  // Whether this client owns the context (should destroy on cleanup)
   void* socket_;
 };
 
@@ -156,6 +238,7 @@ class ZeroMqServer : public Server {
         socket_(zmq_socket(ctx_, ZMQ_PULL)) {
     std::string full_url =
         protocol_ + "://" + addr_ + ":" + std::to_string(port_);
+    HILOG(kInfo, "[DEBUG] ZeroMqServer binding to URL: {}", full_url);
     int rc = zmq_bind(socket_, full_url.c_str());
     if (rc == -1) {
       std::string err = "ZeroMqServer failed to bind to URL '" + full_url +
@@ -164,6 +247,8 @@ class ZeroMqServer : public Server {
       zmq_ctx_destroy(ctx_);
       throw std::runtime_error(err);
     }
+    HILOG(kInfo, "[DEBUG] ZeroMqServer bound successfully to {} (socket={})",
+          full_url, reinterpret_cast<uintptr_t>(socket_));
   }
 
   ~ZeroMqServer() override {
@@ -183,6 +268,21 @@ class ZeroMqServer : public Server {
 
   template <typename MetaT>
   int RecvMetadata(MetaT& meta, bool* has_more_parts = nullptr) {
+    static thread_local int recv_attempt_count = 0;
+    recv_attempt_count++;
+
+    // Check socket events periodically for diagnostics
+    if (recv_attempt_count % 1000 == 1) {
+      int events = 0;
+      size_t events_size = sizeof(events);
+      zmq_getsockopt(socket_, ZMQ_EVENTS, &events, &events_size);
+      HILOG(kInfo, "[DEBUG] ZeroMqServer::RecvMetadata - ZMQ_EVENTS={} "
+            "(POLLIN={}, POLLOUT={}), attempt={}, socket={}",
+            events, (events & ZMQ_POLLIN) ? 1 : 0,
+            (events & ZMQ_POLLOUT) ? 1 : 0,
+            recv_attempt_count, reinterpret_cast<uintptr_t>(socket_));
+    }
+
     // Receive metadata message (non-blocking)
     zmq_msg_t msg;
     zmq_msg_init(&msg);
@@ -191,8 +291,20 @@ class ZeroMqServer : public Server {
     if (rc == -1) {
       int err = zmq_errno();
       zmq_msg_close(&msg);
+      // Only log every 1000th EAGAIN to avoid spam
+      if (err != EAGAIN || recv_attempt_count % 1000 == 0) {
+        HILOG(kInfo,
+              "[DEBUG] ZeroMqServer::RecvMetadata - err={} ({}), attempt={}, socket={}",
+              err, zmq_strerror(err), recv_attempt_count,
+              reinterpret_cast<uintptr_t>(socket_));
+      }
       return err;
     }
+
+    HILOG(kInfo,
+          "[DEBUG] ZeroMqServer::RecvMetadata - RECEIVED message! size={}, "
+          "attempt={}",
+          zmq_msg_size(&msg), recv_attempt_count);
 
     // Check if there are more message parts (bulk data following metadata)
     int more = 0;

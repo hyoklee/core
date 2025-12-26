@@ -842,5 +842,44 @@ void IpcManager::FreeBuffer(FullPtr<char> buffer_ptr) {
   }
 }
 
+hshm::lbm::Client* IpcManager::GetOrCreateClient(const std::string& addr,
+                                                  int port) {
+  // Create key for the pool map
+  std::string key = addr + ":" + std::to_string(port);
+
+  // Lock the pool for thread-safe access
+  std::lock_guard<std::mutex> lock(client_pool_mutex_);
+
+  // Check if client already exists
+  auto it = client_pool_.find(key);
+  if (it != client_pool_.end()) {
+    HILOG(kDebug, "[ClientPool] Reusing existing connection to {}", key);
+    return it->second.get();
+  }
+
+  // Create new persistent client connection
+  HILOG(kInfo, "[ClientPool] Creating new persistent connection to {}", key);
+  auto client = hshm::lbm::TransportFactory::GetClient(
+      addr, hshm::lbm::Transport::kZeroMq, "tcp", port);
+
+  if (!client) {
+    HELOG(kError, "[ClientPool] Failed to create client for {}", key);
+    return nullptr;
+  }
+
+  // Store in pool and return raw pointer
+  hshm::lbm::Client* raw_ptr = client.get();
+  client_pool_[key] = std::move(client);
+
+  HILOG(kInfo, "[ClientPool] Connection established to {}", key);
+  return raw_ptr;
+}
+
+void IpcManager::ClearClientPool() {
+  std::lock_guard<std::mutex> lock(client_pool_mutex_);
+  HILOG(kInfo, "[ClientPool] Clearing {} persistent connections",
+        client_pool_.size());
+  client_pool_.clear();
+}
 
 } // namespace chi

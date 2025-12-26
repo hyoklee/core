@@ -60,6 +60,10 @@ private:
   mutable std::vector<chi::CoMutex> send_map_locks_;
   mutable std::vector<chi::CoMutex> recv_map_locks_;
 
+  // CoMutex vector for synchronizing ZeroMQ client sends (one per destination)
+  // Prevents multi-part message interleaving when multiple threads send to same node
+  mutable std::vector<chi::CoMutex> client_send_locks_;
+
 public:
   /**
    * Constructor

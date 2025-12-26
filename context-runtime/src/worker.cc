@@ -453,14 +453,21 @@ bool Worker::RouteTask(Future<Task> &future, TaskLane *lane,
   // Get task pointer from future
   FullPtr<Task> task_ptr = future.GetTaskPtr();
 
+  HILOG(kInfo, "[DEBUG] Worker::RouteTask START - worker_id={}, method={}, pool_id={}",
+        worker_id_, task_ptr.IsNull() ? 0 : task_ptr->method_,
+        task_ptr.IsNull() ? PoolId() : task_ptr->pool_id_);
+
   if (task_ptr.IsNull()) {
+    HILOG(kInfo, "[DEBUG] Worker::RouteTask - task_ptr is null, returning false");
     return false;
   }
 
   // Check if task has already been routed - if so, return true immediately
   if (task_ptr->IsRouted()) {
+    HILOG(kInfo, "[DEBUG] Worker::RouteTask - task already routed, getting container");
     auto *pool_manager = CHI_POOL_MANAGER;
     container = pool_manager->GetContainer(task_ptr->pool_id_);
+    HILOG(kInfo, "[DEBUG] Worker::RouteTask - already routed, container={}", (void*)container);
     return (container != nullptr);
   }
 
@@ -470,10 +477,15 @@ bool Worker::RouteTask(Future<Task> &future, TaskLane *lane,
     run_ctx->exec_mode = ExecMode::kExec;
   }
 
+  HILOG(kInfo, "[DEBUG] Worker::RouteTask - routing_mode={}",
+        static_cast<int>(task_ptr->pool_query_.GetRoutingMode()));
+
   // Resolve pool query and route task to container
   // Note: ResolveDynamicQuery may override exec_mode to kDynamicSchedule
   std::vector<PoolQuery> pool_queries =
       ResolvePoolQuery(task_ptr->pool_query_, task_ptr->pool_id_, task_ptr);
+
+  HILOG(kInfo, "[DEBUG] Worker::RouteTask - pool_queries.size()={}", pool_queries.size());
 
   // Check if pool_queries is empty - this indicates an error in resolution
   if (pool_queries.empty()) {
@@ -490,13 +502,20 @@ bool Worker::RouteTask(Future<Task> &future, TaskLane *lane,
   }
 
   // Check if task should be processed locally
-  if (IsTaskLocal(task_ptr, pool_queries)) {
+  bool is_local = IsTaskLocal(task_ptr, pool_queries);
+  HILOG(kInfo, "[DEBUG] Worker::RouteTask - IsTaskLocal={}", is_local);
+
+  if (is_local) {
     // Route task locally using container query and Monitor with kLocalSchedule
-    return RouteLocal(future, lane, container);
+    bool route_result = RouteLocal(future, lane, container);
+    HILOG(kInfo, "[DEBUG] Worker::RouteTask - RouteLocal returned {}", route_result);
+    return route_result;
   } else {
     // Route task globally using admin client's ClientSendTaskIn method
     // RouteGlobal never fails, so no need for fallback logic
+    HILOG(kInfo, "[DEBUG] Worker::RouteTask - calling RouteGlobal");
     RouteGlobal(future, pool_queries);
+    HILOG(kInfo, "[DEBUG] Worker::RouteTask - RouteGlobal done, returning false (no local exec)");
     return false;  // No local execution needed
   }
 }
@@ -597,9 +616,19 @@ bool Worker::RouteGlobal(Future<Task> &future,
   // Get task pointer from future
   FullPtr<Task> task_ptr = future.GetTaskPtr();
 
+  HILOG(kInfo, "[DEBUG] Worker::RouteGlobal START - method={}, pool_id={}, num_queries={}",
+        task_ptr->method_, task_ptr->pool_id_, pool_queries.size());
+
+  for (size_t i = 0; i < pool_queries.size(); ++i) {
+    HILOG(kInfo, "[DEBUG] Worker::RouteGlobal - query[{}] routing_mode={}, node_id={}",
+          i, static_cast<int>(pool_queries[i].GetRoutingMode()),
+          pool_queries[i].GetNodeId());
+  }
+
   try {
     // Create admin client to send task to target node
     chimaera::admin::Client admin_client(kAdminPoolId);
+    HILOG(kInfo, "[DEBUG] Worker::RouteGlobal - created admin_client, calling AsyncSend");
 
     // Send task using unified Send API with SerializeIn mode
     admin_client.AsyncSend(
@@ -607,6 +636,8 @@ bool Worker::RouteGlobal(Future<Task> &future,
         task_ptr,                    // Task pointer to send
         pool_queries                 // Pool queries vector for target nodes
     );
+
+    HILOG(kInfo, "[DEBUG] Worker::RouteGlobal - AsyncSend completed");
 
     // Set TASK_ROUTED flag on original task
     task_ptr->SetFlags(TASK_ROUTED);
@@ -616,10 +647,12 @@ bool Worker::RouteGlobal(Future<Task> &future,
 
   } catch (const std::exception &e) {
     // Handle any exceptions - still never fail
+    HELOG(kError, "[DEBUG] Worker::RouteGlobal - exception: {}", e.what());
     task_ptr->SetFlags(TASK_ROUTED);
     return true;
   } catch (...) {
     // Handle unknown exceptions - still never fail
+    HELOG(kError, "[DEBUG] Worker::RouteGlobal - unknown exception");
     task_ptr->SetFlags(TASK_ROUTED);
     return true;
   }
@@ -663,21 +696,27 @@ std::vector<PoolQuery> Worker::ResolveLocalQuery(
 
 std::vector<PoolQuery> Worker::ResolveDynamicQuery(
     const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
+  HILOG(kInfo, "[DEBUG] Worker::ResolveDynamicQuery START - pool_id={}, method={}",
+        pool_id, task_ptr->method_);
+
   // Use the current RunContext that was allocated by BeginTask
   RunContext *run_ctx = task_ptr->run_ctx_;
   if (run_ctx == nullptr) {
+    HILOG(kInfo, "[DEBUG] Worker::ResolveDynamicQuery - run_ctx is nullptr, returning empty");
     return {};  // Return empty vector if no RunContext
   }
 
   // Set execution mode to kDynamicSchedule
   // This tells ExecTask to call RerouteDynamicTask instead of EndTask
   run_ctx->exec_mode = ExecMode::kDynamicSchedule;
+  HILOG(kInfo, "[DEBUG] Worker::ResolveDynamicQuery - set exec_mode=kDynamicSchedule");
 
   // Return Local query for execution
   // After task completes, RerouteDynamicTask will re-route with updated
   // pool_query
   std::vector<PoolQuery> result;
   result.push_back(PoolQuery::Local());
+  HILOG(kInfo, "[DEBUG] Worker::ResolveDynamicQuery - returning Local query");
   return result;
 }
 
@@ -804,20 +843,30 @@ std::vector<PoolQuery> Worker::ResolveRangeQuery(
 
 std::vector<PoolQuery> Worker::ResolveBroadcastQuery(
     const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
+  HILOG(kInfo, "[DEBUG] Worker::ResolveBroadcastQuery START - pool_id={}, method={}",
+        pool_id, task_ptr->method_);
+
   auto *pool_manager = CHI_POOL_MANAGER;
   if (pool_manager == nullptr) {
+    HILOG(kInfo, "[DEBUG] Worker::ResolveBroadcastQuery - pool_manager is null, returning original query");
     return {query};  // Fallback to original query
   }
 
   // Get pool info to find the total number of containers
   const PoolInfo *pool_info = pool_manager->GetPoolInfo(pool_id);
   if (pool_info == nullptr || pool_info->num_containers_ == 0) {
+    HILOG(kInfo, "[DEBUG] Worker::ResolveBroadcastQuery - pool_info is null or 0 containers, returning original query");
     return {query};  // Fallback to original query
   }
 
+  HILOG(kInfo, "[DEBUG] Worker::ResolveBroadcastQuery - num_containers={}, creating Range query",
+        pool_info->num_containers_);
+
   // Create a Range query that covers all containers, then resolve it
   PoolQuery range_query = PoolQuery::Range(0, pool_info->num_containers_);
-  return ResolveRangeQuery(range_query, pool_id, task_ptr);
+  auto result = ResolveRangeQuery(range_query, pool_id, task_ptr);
+  HILOG(kInfo, "[DEBUG] Worker::ResolveBroadcastQuery - ResolveRangeQuery returned {} queries", result.size());
+  return result;
 }
 
 std::vector<PoolQuery> Worker::ResolvePhysicalQuery(
@@ -1031,6 +1080,12 @@ void Worker::ResumeFiber(const FullPtr<Task> &task_ptr, RunContext *run_ctx) {
 
 void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
                       bool is_started) {
+  HILOG(kInfo, "[DEBUG] Worker::ExecTask START - method={}, pool_id={}, is_started={}, exec_mode={}",
+        task_ptr.IsNull() ? 0 : task_ptr->method_,
+        task_ptr.IsNull() ? PoolId() : task_ptr->pool_id_,
+        is_started,
+        run_ctx ? static_cast<int>(run_ctx->exec_mode) : -1);
+
   // Set task_did_work_ to true by default (tasks can override via
   // CHI_CUR_WORKER)
   // This comes before the null check since the task was scheduled
@@ -1038,16 +1093,22 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
 
   // Check if task is null or run context is null
   if (task_ptr.IsNull() || !run_ctx) {
+    HILOG(kInfo, "[DEBUG] Worker::ExecTask - null task or run_ctx, returning");
     return;  // Consider null tasks as completed
   }
 
   // Call appropriate fiber function based on task state
   if (is_started) {
+    HILOG(kInfo, "[DEBUG] Worker::ExecTask - calling ResumeFiber");
     ResumeFiber(task_ptr, run_ctx);
   } else {
+    HILOG(kInfo, "[DEBUG] Worker::ExecTask - calling BeginFiber");
     BeginFiber(task_ptr, run_ctx, FiberExecutionFunction);
     task_ptr->SetFlags(TASK_STARTED);
   }
+
+  HILOG(kInfo, "[DEBUG] Worker::ExecTask - fiber returned, is_yielded_={}, exec_mode={}",
+        run_ctx->is_yielded_, static_cast<int>(run_ctx->exec_mode));
 
   // Only set did_work_ if the task actually did work
   if (GetTaskDidWork() && run_ctx->exec_mode != ExecMode::kDynamicSchedule) {
@@ -1057,12 +1118,14 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   // Common cleanup logic for both fiber and direct execution
   if (run_ctx->is_yielded_) {
     // Task is blocked - don't clean up, will be resumed later
+    HILOG(kInfo, "[DEBUG] Worker::ExecTask - task yielded, returning (blocked)");
     return;  // Task is not completed, blocked for later resume
   }
 
   // Check if this is a dynamic scheduling task
   if (run_ctx->exec_mode == ExecMode::kDynamicSchedule) {
     // Dynamic scheduling - re-route task with updated pool_query
+    HILOG(kInfo, "[DEBUG] Worker::ExecTask - calling RerouteDynamicTask");
     RerouteDynamicTask(task_ptr, run_ctx);
     return;
   }
@@ -1156,6 +1219,10 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
 
 void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
                                 RunContext *run_ctx) {
+  HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask START - method={}, pool_id={}, new_routing_mode={}",
+        task_ptr->method_, task_ptr->pool_id_,
+        static_cast<int>(task_ptr->pool_query_.GetRoutingMode()));
+
   // Dynamic scheduling complete - now re-route task with updated pool_query
   // The task's pool_query_ should have been updated during execution
   // (e.g., from Dynamic to Local or Broadcast)
@@ -1165,17 +1232,25 @@ void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
 
   // Reset the TASK_STARTED flag so the task can be executed again
   task_ptr->ClearFlags(TASK_STARTED | TASK_ROUTED);
+  HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask - cleared TASK_STARTED|TASK_ROUTED flags");
 
   // Re-route the task using the updated pool_query
+  HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask - calling RouteTask");
   if (RouteTask(run_ctx->future_, lane, container)) {
+    HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask - RouteTask returned true, exec_mode={}",
+          static_cast<int>(run_ctx->exec_mode));
     // Avoids recursive call to RerouteDynamicTask
     if (run_ctx->exec_mode == ExecMode::kDynamicSchedule) {
+      HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask - still kDynamicSchedule, calling EndTask");
       EndTask(task_ptr, run_ctx, true, false);
       return;
     }
     // Successfully re-routed - execute the task again
     // Note: ExecTask will call BeginFiber since TASK_STARTED is unset
+    HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask - calling ExecTask");
     ExecTask(task_ptr, run_ctx, false);
+  } else {
+    HILOG(kInfo, "[DEBUG] Worker::RerouteDynamicTask - RouteTask returned false (routed globally)");
   }
 }
 

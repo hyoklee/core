@@ -4,6 +4,7 @@
 #include <atomic>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -486,6 +487,22 @@ class IpcManager {
     return hipc::FullPtr<T>();
   }
 
+  /**
+   * Get or create a persistent ZeroMQ client connection from the pool
+   * Creates a new connection if one doesn't exist for the given address:port
+   * Thread-safe using internal mutex protection
+   * @param addr IP address to connect to
+   * @param port Port number to connect to
+   * @return Pointer to the ZeroMQ client (owned by the pool)
+   */
+  hshm::lbm::Client* GetOrCreateClient(const std::string& addr, int port);
+
+  /**
+   * Clear all cached client connections
+   * Should be called during shutdown
+   */
+  void ClearClientPool();
+
  private:
   /**
    * Map task to lane ID using the configured policy
@@ -611,6 +628,12 @@ class IpcManager {
       30;  // CHI_WAIT_SERVER: timeout in seconds (default 30)
   u32 poll_server_interval_ =
       1;  // CHI_POLL_SERVER: poll interval in seconds (default 1)
+
+  // Persistent ZeroMQ client connection pool
+  // Key format: "ip_address:port"
+  std::unordered_map<std::string, std::unique_ptr<hshm::lbm::Client>>
+      client_pool_;
+  mutable std::mutex client_pool_mutex_;  // Mutex for thread-safe pool access
 };
 
 }  // namespace chi

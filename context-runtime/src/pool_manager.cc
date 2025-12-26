@@ -497,15 +497,23 @@ void PoolManager::UpdatePoolMetadata(PoolId pool_id, const PoolInfo& info) {
 
 u32 PoolManager::GetContainerNodeId(PoolId pool_id,
                                     ContainerId container_id) const {
+  HILOG(kInfo, "[DEBUG] GetContainerNodeId - pool_id={}, container_id={}",
+        pool_id, container_id);
+
   if (!is_initialized_) {
+    HILOG(kInfo, "[DEBUG] GetContainerNodeId - not initialized, returning 0");
     return 0;  // Default to local node
   }
 
   // Get pool metadata
   const PoolInfo* pool_info = GetPoolInfo(pool_id);
   if (!pool_info) {
+    HILOG(kInfo, "[DEBUG] GetContainerNodeId - pool not found, returning 0");
     return 0;  // Pool not found, assume local
   }
+
+  HILOG(kInfo, "[DEBUG] GetContainerNodeId - pool has {} containers",
+        pool_info->num_containers_);
 
   // Create global address for the container
   Address global_address(pool_id, Group::kGlobal, container_id);
@@ -515,9 +523,12 @@ u32 PoolManager::GetContainerNodeId(PoolId pool_id,
   if (pool_info->address_table_.GlobalToPhysical(global_address,
                                                  physical_address)) {
     // Return the minor_id which represents the node ID
+    HILOG(kInfo, "[DEBUG] GetContainerNodeId - found mapping: container_id={} -> node_id={}",
+          container_id, physical_address.minor_id_);
     return physical_address.minor_id_;
   }
 
+  HILOG(kInfo, "[DEBUG] GetContainerNodeId - mapping not found, returning 0");
   // Default to local node if mapping not found
   return 0;
 }
