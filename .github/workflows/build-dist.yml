@@ -40,6 +40,20 @@ jobs:
         twine check dist/*.tar.gz
         ls -lh dist/
 
+    - name: Verify submodules in source distribution
+      run: |
+        echo "=== Verifying submodule content in sdist ==="
+        tar -tzf dist/*.tar.gz | grep -E "external/(yaml-cpp|Catch2|cereal|nanobind)" | head -20 || echo "WARNING: No submodule files found in tarball!"
+        echo ""
+        echo "Checking for yaml-cpp files:"
+        tar -tzf dist/*.tar.gz | grep "external/yaml-cpp" | wc -l || echo "0"
+        echo "Checking for Catch2 files:"
+        tar -tzf dist/*.tar.gz | grep "external/Catch2" | wc -l || echo "0"
+        echo "Checking for cereal files:"
+        tar -tzf dist/*.tar.gz | grep "external/cereal" | wc -l || echo "0"
+        echo "Checking for nanobind files:"
+        tar -tzf dist/*.tar.gz | grep "external/nanobind" | wc -l || echo "0"
+
     - name: Upload source distribution
       uses: actions/upload-artifact@v4
       with:

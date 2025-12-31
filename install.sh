@@ -155,18 +155,73 @@ if [ -d ".git" ]; then
     echo -e "${BLUE}>>> Initializing git submodules...${NC}"
     git submodule update --init --recursive
     echo ""
-elif [ -d "external/yaml-cpp" ] && [ "$(ls -A external/yaml-cpp 2>/dev/null)" ]; then
-    echo -e "${GREEN}>>> Using bundled submodule content (source distribution)${NC}"
-    echo "    external/yaml-cpp: $(ls -1 external/yaml-cpp 2>/dev/null | wc -l) files"
-    echo "    external/cereal: $(ls -1 external/cereal 2>/dev/null | wc -l) files"
-    echo "    external/Catch2: $(ls -1 external/Catch2 2>/dev/null | wc -l) files"
-    echo "    external/nanobind: $(ls -1 external/nanobind 2>/dev/null | wc -l) files"
-    echo ""
 else
-    echo -e "${RED}ERROR: Not a git repository and no bundled submodule content found${NC}"
-    echo "       Cannot proceed with build - missing external dependencies"
+    # Not a git repository - check for bundled submodule content (source distribution)
+    echo -e "${BLUE}>>> Checking for bundled submodule content (source distribution)...${NC}"
+
+    # Check each required submodule directory
+    MISSING_SUBMODULES=()
+
+    # Function to check if directory exists and is not empty
+    check_submodule() {
+        local submodule_path="$1"
+        local submodule_name=$(basename "$submodule_path")
+
+        if [ ! -d "$submodule_path" ]; then
+            MISSING_SUBMODULES+=("$submodule_name (directory does not exist)")
+            return 1
+        fi
+
+        local file_count=$(find "$submodule_path" -type f 2>/dev/null | wc -l)
+        if [ "$file_count" -eq 0 ]; then
+            MISSING_SUBMODULES+=("$submodule_name (directory is empty)")
+            return 1
+        fi
+
+        echo -e "    ${GREEN}✓${NC} $submodule_name: $file_count files"
+        return 0
+    }
+
+    # Check all required submodules
+    check_submodule "external/yaml-cpp"
+    check_submodule "external/cereal"
+    check_submodule "external/Catch2"
+    check_submodule "external/nanobind"
+
+    # If any submodules are missing, report error
+    if [ ${#MISSING_SUBMODULES[@]} -gt 0 ]; then
+        echo ""
+        echo -e "${RED}======================================================================"
+        echo -e "ERROR: Missing external dependencies (git submodules)"
+        echo -e "======================================================================${NC}"
+        echo ""
+        echo -e "${YELLOW}Missing or incomplete submodules:${NC}"
+        for missing in "${MISSING_SUBMODULES[@]}"; do
+            echo "  - $missing"
+        done
+        echo ""
+        echo -e "${YELLOW}Possible causes:${NC}"
+        echo "1. Source distribution was not properly created with submodules"
+        echo "2. Tarball extraction failed to preserve directory structure"
+        echo "3. MANIFEST.in is not including all submodule files"
+        echo ""
+        echo -e "${YELLOW}If you downloaded a source distribution (sdist), it may be incomplete.${NC}"
+        echo "Please try one of the following:"
+        echo ""
+        echo "1. Clone from git and initialize submodules:"
+        echo "   git clone --recursive https://github.com/iowarp/core.git"
+        echo "   cd core"
+        echo "   ./install.sh"
+        echo ""
+        echo "2. Or if already cloned, initialize submodules manually:"
+        echo "   git submodule update --init --recursive"
+        echo "   ./install.sh"
+        echo ""
+        exit 1
+    fi
+
+    echo -e "${GREEN}>>> All required submodules found in source distribution${NC}"
     echo ""
-    exit 1
 fi
 
 # Build the conda package

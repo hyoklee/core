@@ -58,17 +58,122 @@ class CustomSDist(sdist):
                     for line in result.stdout.strip().split('\n'):
                         print(f"  {line}")
 
+                # Verify that each required submodule directory has content
+                required_submodules = [
+                    "external/yaml-cpp",
+                    "external/cereal",
+                    "external/Catch2",
+                    "external/nanobind"
+                ]
+
+                print("\nVerifying submodule content:")
+                all_present = True
+                for submodule_path in required_submodules:
+                    if not os.path.exists(submodule_path):
+                        print(f"  ✗ {submodule_path}: MISSING")
+                        all_present = False
+                        continue
+
+                    # Count files in the submodule directory
+                    file_count = sum(1 for _ in Path(submodule_path).rglob('*') if _.is_file())
+                    if file_count == 0:
+                        print(f"  ✗ {submodule_path}: EMPTY (no files)")
+                        all_present = False
+                    else:
+                        print(f"  ✓ {submodule_path}: {file_count} files")
+
+                if not all_present:
+                    raise RuntimeError(
+                        "One or more required submodules are missing or empty. "
+                        "Run 'git submodule update --init --recursive' and try again."
+                    )
+
                 print("\nNote: MANIFEST.in will include submodule files in the tarball")
                 print("")
 
             except subprocess.CalledProcessError as e:
-                print(f"Warning: Could not initialize git submodules: {e}")
-                print("Source distribution may be incomplete!")
+                print(f"Error: Could not initialize git submodules: {e}")
+                print("Source distribution will be incomplete!")
+                raise
         else:
             print("Not a git repository - skipping submodule initialization")
 
         # Call parent sdist command to create the distribution
         super().run()
+
+        # After creating the distribution, verify submodules are in the tarball
+        if os.path.exists(".git"):
+            self.verify_sdist_contents()
+
+    def verify_sdist_contents(self):
+        """Verify that the created sdist tarball includes all required submodules."""
+        import tarfile
+        import time
+
+        # Find the created tarball
+        dist_dir = Path("dist")
+        if not dist_dir.exists():
+            print("Warning: dist directory not found, skipping sdist verification")
+            return
+
+        # Wait for tarball to be written and renamed from temporary file
+        # The build system creates a temporary file first, then renames it
+        max_wait = 5.0  # seconds
+        wait_interval = 0.1
+        waited = 0.0
+        tarballs = []
+
+        while not tarballs and waited < max_wait:
+            time.sleep(wait_interval)
+            waited += wait_interval
+            tarballs = list(dist_dir.glob("iowarp-core-*.tar.gz"))
+
+        if not tarballs:
+            print("Note: Tarball verification skipped (file still being written)")
+            print(f"The tarball will be verified in the GitHub Actions workflow.")
+            return
+
+        tarball_path = tarballs[0]
+        print("\n" + "="*60)
+        print(f"Verifying sdist contents: {tarball_path.name}")
+        print("="*60 + "\n")
+
+        required_submodules = [
+            "external/yaml-cpp",
+            "external/cereal",
+            "external/Catch2",
+            "external/nanobind"
+        ]
+
+        try:
+            with tarfile.open(tarball_path, 'r:gz') as tar:
+                # Get all file names in the tarball
+                all_files = tar.getnames()
+
+                # Check each submodule
+                all_found = True
+                for submodule in required_submodules:
+                    # Count files for this submodule in the tarball
+                    # Tarball paths are prefixed with package name and version
+                    submodule_files = [f for f in all_files if submodule in f]
+                    file_count = len(submodule_files)
+
+                    if file_count == 0:
+                        print(f"  ✗ {submodule}: NOT FOUND in tarball")
+                        all_found = False
+                    else:
+                        print(f"  ✓ {submodule}: {file_count} files in tarball")
+
+                if not all_found:
+                    raise RuntimeError(
+                        "Source distribution is incomplete - missing submodule files!\n"
+                        "This may indicate an issue with MANIFEST.in or git submodule initialization."
+                    )
+
+                print("\n✓ All required submodules are present in the source distribution\n")
+
+        except Exception as e:
+            print(f"Warning: Could not verify tarball contents: {e}")
 
 
 class CMakeBuild(build_ext):
