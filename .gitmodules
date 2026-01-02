@@ -10,3 +10,7 @@
 	path = external/cereal
 	url = https://github.com/USCiLab/cereal.git
 	branch = v1.3.2
+[submodule "external/yaml-cpp"]
+	path = external/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git
+	branch = master

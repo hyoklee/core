@@ -11,7 +11,17 @@
       "Bash(cat:*)",
       "Bash(git -C /workspace submodule status:*)",
       "WebSearch",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(tar:*)",
+      "Bash(ls:*)",
+      "Bash(git config:*)",
+      "Bash(git describe:*)",
+      "Bash(git submodule:*)",
+      "Bash(git rm:*)",
+      "Bash(git restore:*)",
+      "Bash(python -m pip install:*)",
+      "Bash(python3 -m pip:*)",
+      "Bash(uv build:*)"
     ],
     "deny": [],
     "ask": []
