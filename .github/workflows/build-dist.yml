@@ -165,6 +165,7 @@ jobs:
       shell: bash -l {0}
       run: |
         conda install -y \
+          conda \
           conda-build \
           cereal \
           catch2 \

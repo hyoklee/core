@@ -21,7 +21,8 @@
       "Bash(git restore:*)",
       "Bash(python -m pip install:*)",
       "Bash(python3 -m pip:*)",
-      "Bash(uv build:*)"
+      "Bash(uv build:*)",
+      "Bash(git tag:*)"
     ],
     "deny": [],
     "ask": []
