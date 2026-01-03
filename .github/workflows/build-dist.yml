@@ -200,6 +200,22 @@ jobs:
       run: |
         python -m pip install --upgrade pip setuptools wheel nanobind setuptools-scm
 
+    - name: Set up conda environment for build
+      shell: bash -l {0}
+      run: |
+        # Get Python version
+        PY_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        echo "Python version: $PY_VERSION"
+
+        # Ensure conda module is in PYTHONPATH for conda-build
+        CONDA_SITE_PACKAGES="$CONDA_PREFIX/lib/python${PY_VERSION}/site-packages"
+        echo "CONDA_PREFIX=$CONDA_PREFIX" >> $GITHUB_ENV
+        echo "PYTHONPATH=$CONDA_SITE_PACKAGES:$PYTHONPATH" >> $GITHUB_ENV
+
+        # Verify conda module is importable
+        python -c "import sys; print('Python path:', sys.path)"
+        python -c "import conda; print('conda module found:', conda.__version__)"
+
     - name: Install from source distribution
       shell: bash -l {0}
       run: |
