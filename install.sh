@@ -260,18 +260,30 @@ echo ""
 if [ -n "$CONDA_PREFIX" ]; then
     PY_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.10")
     export PYTHONPATH="$CONDA_PREFIX/lib/python${PY_VERSION}/site-packages:$PYTHONPATH"
+
+    # Also set CONDA_PYTHON_EXE to ensure conda uses the right Python
+    export CONDA_PYTHON_EXE="$(which python)"
+    export CONDA_EXE="$(which conda)"
+
     echo -e "${BLUE}Set PYTHONPATH for conda-build: $PYTHONPATH${NC}"
+    echo -e "${BLUE}Set CONDA_PYTHON_EXE: $CONDA_PYTHON_EXE${NC}"
+    echo -e "${BLUE}Set CONDA_EXE: $CONDA_EXE${NC}"
 
     # Verify conda module is importable
     if python -c "import conda" 2>/dev/null; then
-        echo -e "${GREEN}✓ conda module is importable${NC}"
+        echo -e "${GREEN}✓ conda module is importable from Python${NC}"
     else
-        echo -e "${YELLOW}Warning: conda module not importable, but continuing anyway${NC}"
+        echo -e "${RED}ERROR: conda module is NOT importable${NC}"
+        echo -e "${YELLOW}Python path:${NC}"
+        python -c "import sys; print('\n'.join(sys.path))"
+        echo -e "${YELLOW}Attempting to fix by installing conda via pip...${NC}"
+        pip install --force-reinstall --no-deps conda-package-handling conda-package-streaming
+        pip install --upgrade --force-reinstall conda
     fi
     echo ""
 fi
 
-if ! conda build "$RECIPE_DIR" -c conda-forge; then
+if ! PYTHONPATH="$PYTHONPATH" conda build "$RECIPE_DIR" -c conda-forge; then
     echo ""
     echo -e "${RED}======================================================================"
     echo -e "Build failed!"
