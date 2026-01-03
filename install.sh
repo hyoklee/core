@@ -251,11 +251,7 @@ if ! command -v conda-build &> /dev/null; then
     exit 1
 fi
 
-echo -e "${BLUE}Using conda-build: $(which conda-build)${NC}"
-echo -e "${BLUE}Conda build output directory: $(conda info --base)/conda-bld${NC}"
-echo ""
-
-# Set PYTHONPATH to ensure conda module is importable
+# Set PYTHONPATH to ensure conda module is importable BEFORE any conda commands
 # This is critical for conda-build to work properly
 if [ -n "$CONDA_PREFIX" ]; then
     PY_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.10")
@@ -268,20 +264,35 @@ if [ -n "$CONDA_PREFIX" ]; then
     echo -e "${BLUE}Set PYTHONPATH for conda-build: $PYTHONPATH${NC}"
     echo -e "${BLUE}Set CONDA_PYTHON_EXE: $CONDA_PYTHON_EXE${NC}"
     echo -e "${BLUE}Set CONDA_EXE: $CONDA_EXE${NC}"
+    echo ""
 
     # Verify conda module is importable
     if python -c "import conda" 2>/dev/null; then
         echo -e "${GREEN}✓ conda module is importable from Python${NC}"
     else
         echo -e "${RED}ERROR: conda module is NOT importable${NC}"
-        echo -e "${YELLOW}Python path:${NC}"
+        echo -e "${YELLOW}Python sys.path:${NC}"
         python -c "import sys; print('\n'.join(sys.path))"
+        echo ""
         echo -e "${YELLOW}Attempting to fix by installing conda via pip...${NC}"
         pip install --force-reinstall --no-deps conda-package-handling conda-package-streaming
         pip install --upgrade --force-reinstall conda
+        echo ""
+
+        # Verify the fix worked
+        if python -c "import conda" 2>/dev/null; then
+            echo -e "${GREEN}✓ conda module is now importable after pip install${NC}"
+        else
+            echo -e "${RED}FATAL: conda module still not importable after pip install${NC}"
+            exit 1
+        fi
     fi
     echo ""
 fi
+
+echo -e "${BLUE}Using conda-build: $(which conda-build)${NC}"
+echo -e "${BLUE}Conda build output directory: $(conda info --base)/conda-bld${NC}"
+echo ""
 
 if ! PYTHONPATH="$PYTHONPATH" conda build "$RECIPE_DIR" -c conda-forge; then
     echo ""
