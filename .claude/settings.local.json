@@ -22,7 +22,9 @@
       "Bash(python -m pip install:*)",
       "Bash(python3 -m pip:*)",
       "Bash(uv build:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "Bash(chmod:*)",
+      "Bash(./test_sdist_install.sh:*)"
     ],
     "deny": [],
     "ask": []
