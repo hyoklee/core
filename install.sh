@@ -255,6 +255,22 @@ echo -e "${BLUE}Using conda-build: $(which conda-build)${NC}"
 echo -e "${BLUE}Conda build output directory: $(conda info --base)/conda-bld${NC}"
 echo ""
 
+# Set PYTHONPATH to ensure conda module is importable
+# This is critical for conda-build to work properly
+if [ -n "$CONDA_PREFIX" ]; then
+    PY_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.10")
+    export PYTHONPATH="$CONDA_PREFIX/lib/python${PY_VERSION}/site-packages:$PYTHONPATH"
+    echo -e "${BLUE}Set PYTHONPATH for conda-build: $PYTHONPATH${NC}"
+
+    # Verify conda module is importable
+    if python -c "import conda" 2>/dev/null; then
+        echo -e "${GREEN}✓ conda module is importable${NC}"
+    else
+        echo -e "${YELLOW}Warning: conda module not importable, but continuing anyway${NC}"
+    fi
+    echo ""
+fi
+
 if ! conda build "$RECIPE_DIR" -c conda-forge; then
     echo ""
     echo -e "${RED}======================================================================"
