@@ -8,26 +8,36 @@
 namespace iowarp {
 
 ContextInterface::ContextInterface() : is_initialized_(false) {
+  // Lazy initialization - defer Chimaera/CAE/CTE init until first operation
+  // This allows object construction without requiring a running runtime
+}
+
+bool ContextInterface::EnsureInitialized() {
+  if (is_initialized_) {
+    return true;
+  }
+
   // Initialize Chimaera as a client for the context interface
   if (!chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, false)) {
     std::cerr << "Error: Failed to initialize Chimaera client" << std::endl;
-    return;
+    return false;
   }
 
   // Initialize CAE client (which initializes CTE internally)
   if (!WRP_CAE_CLIENT_INIT()) {
     std::cerr << "Error: Failed to initialize CAE client" << std::endl;
-    return;
+    return false;
   }
 
   // Verify Chimaera IPC is available
   auto* ipc_manager = CHI_IPC;
   if (!ipc_manager) {
     std::cerr << "Error: Chimaera IPC not initialized. Is the runtime running?" << std::endl;
-    return;
+    return false;
   }
 
   is_initialized_ = true;
+  return true;
 }
 
 ContextInterface::~ContextInterface() {
@@ -36,8 +46,8 @@ ContextInterface::~ContextInterface() {
 
 int ContextInterface::ContextBundle(
     const std::vector<wrp_cae::core::AssimilationCtx> &bundle) {
-  if (!is_initialized_) {
-    std::cerr << "Error: ContextInterface not initialized" << std::endl;
+  if (!EnsureInitialized()) {
+    std::cerr << "Error: ContextInterface failed to initialize" << std::endl;
     return 1;
   }
 
@@ -77,8 +87,8 @@ std::vector<std::string> ContextInterface::ContextQuery(
     const std::string &tag_re,
     const std::string &blob_re,
     unsigned int max_results) {
-  if (!is_initialized_) {
-    std::cerr << "Error: ContextInterface not initialized" << std::endl;
+  if (!EnsureInitialized()) {
+    std::cerr << "Error: ContextInterface failed to initialize" << std::endl;
     return std::vector<std::string>();
   }
 
@@ -119,8 +129,8 @@ std::vector<std::string> ContextInterface::ContextRetrieve(
     unsigned int max_results,
     size_t max_context_size,
     unsigned int batch_size) {
-  if (!is_initialized_) {
-    std::cerr << "Error: ContextInterface not initialized" << std::endl;
+  if (!EnsureInitialized()) {
+    std::cerr << "Error: ContextInterface failed to initialize" << std::endl;
     return std::vector<std::string>();
   }
 
@@ -279,8 +289,8 @@ int ContextInterface::ContextSplice(
 
 int ContextInterface::ContextDestroy(
     const std::vector<std::string> &context_names) {
-  if (!is_initialized_) {
-    std::cerr << "Error: ContextInterface not initialized" << std::endl;
+  if (!EnsureInitialized()) {
+    std::cerr << "Error: ContextInterface failed to initialize" << std::endl;
     return 1;
   }
 
