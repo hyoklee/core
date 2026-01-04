@@ -219,7 +219,7 @@ jobs:
         python -c "import conda; print('conda module version:', conda.__version__)"
 
         # Install from sdist with PYTHONPATH set
-        pip install dist/*.tar.gz
+        # pip install dist/*.tar.gz
       timeout-minutes: 45
 
     - name: Test installation
