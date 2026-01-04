@@ -243,7 +243,7 @@ class ChiModGenerator {
     oss << "#include \"" << namespace_name << "/" << module_name << "/" << chimod_name << "_runtime.h\"\n";
     oss << "#include \"" << namespace_name << "/" << module_name << "/autogen/" << chimod_name << "_methods.h\"\n";
     oss << "#include <chimaera/chimaera.h>\n";
-    oss << "#include <chimaera/future.h>  // For TaskResume coroutine return type\n";
+    oss << "#include <chimaera/task.h>  // For TaskResume coroutine return type\n";
     oss << "\n";
     oss << "namespace " << namespace_name << "::" << chimod_name << " {\n";
     oss << "\n";

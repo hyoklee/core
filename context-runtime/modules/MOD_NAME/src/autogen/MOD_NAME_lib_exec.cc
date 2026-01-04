@@ -10,7 +10,7 @@
 #include "chimaera/MOD_NAME/MOD_NAME_runtime.h"
 #include "chimaera/MOD_NAME/autogen/MOD_NAME_methods.h"
 #include <chimaera/chimaera.h>
-#include <chimaera/future.h>  // For TaskResume coroutine return type
+#include <chimaera/task.h>  // For TaskResume coroutine return type
 
 namespace chimaera::MOD_NAME {
 

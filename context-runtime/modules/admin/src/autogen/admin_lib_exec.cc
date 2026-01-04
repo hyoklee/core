@@ -10,7 +10,7 @@
 #include "chimaera/admin/admin_runtime.h"
 #include "chimaera/admin/autogen/admin_methods.h"
 #include <chimaera/chimaera.h>
-#include <chimaera/future.h>  // For TaskResume coroutine return type
+#include <chimaera/task.h>  // For TaskResume coroutine return type
 
 namespace chimaera::admin {
 

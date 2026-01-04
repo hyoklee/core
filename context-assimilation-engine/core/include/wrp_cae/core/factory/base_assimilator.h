@@ -2,7 +2,7 @@
 #define WRP_CAE_CORE_BASE_ASSIMILATOR_H_
 
 #include <wrp_cae/core/factory/assimilation_ctx.h>
-#include <chimaera/future.h>
+#include <chimaera/task.h>
 
 namespace wrp_cae::core {
 

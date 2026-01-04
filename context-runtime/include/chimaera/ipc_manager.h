@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "chimaera/chimaera_manager.h"
-#include "chimaera/future.h"
+#include "chimaera/task.h"
 #include "chimaera/local_task_archives.h"
 #include "chimaera/task.h"
 #include "chimaera/task_queue.h"

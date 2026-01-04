@@ -22,7 +22,7 @@
 // resolution
 #include "chimaera/admin/admin_client.h"
 #include "chimaera/container.h"
-#include "chimaera/future.h"
+#include "chimaera/task.h"
 #include "chimaera/pool_manager.h"
 #include "chimaera/singletons.h"
 #include "chimaera/task.h"

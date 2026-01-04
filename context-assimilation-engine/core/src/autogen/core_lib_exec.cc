@@ -10,7 +10,7 @@
 #include "wrp_cae/core/core_runtime.h"
 #include "wrp_cae/core/autogen/core_methods.h"
 #include <chimaera/chimaera.h>
-#include <chimaera/future.h>  // For TaskResume coroutine return type
+#include <chimaera/task.h>  // For TaskResume coroutine return type
 
 namespace wrp_cae::core {
 
