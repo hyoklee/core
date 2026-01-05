@@ -10,12 +10,6 @@
 // Main HSHM include
 #include <hermes_shm/hermes_shm.h>
 
-// Boost Fiber includes
-#include <boost/context/fiber_fcontext.hpp>
-
-// Namespace alias for boost::context::detail
-namespace bctx = boost::context::detail;
-
 /**
  * Core type definitions for Chimaera distributed task execution framework
  */

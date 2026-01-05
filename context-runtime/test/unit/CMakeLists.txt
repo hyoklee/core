@@ -33,23 +33,6 @@ set(BDEV_TEST_SOURCES
   test_bdev_chimod.cc
 )
 
-# Boost Fiber test executable (separate test for boost context validation)
-set(FIBER_TEST_TARGET chimaera_boost_fiber_tests)
-set(FIBER_TEST_SOURCES
-  test_boost_fiber.cc
-)
-
-# Worker Fiber Pattern test executable (test for worker.cc/task.cc pattern)
-set(WORKER_FIBER_TEST_TARGET chimaera_worker_fiber_pattern_tests)
-set(WORKER_FIBER_TEST_SOURCES
-  test_worker_fiber_pattern.cc
-)
-
-# Segfault Debug test executable (debug segfault in ExecTask is_started)
-set(SEGFAULT_DEBUG_TEST_TARGET chimaera_segfault_debug_tests)
-set(SEGFAULT_DEBUG_TEST_SOURCES
-  test_segfault_debug.cc
-)
 
 # CoMutex test executable (test for CoMutex and CoRwLock synchronization primitives)
 set(COMUTEX_TEST_TARGET chimaera_comutex_tests)
@@ -228,86 +211,6 @@ set_target_properties(${BDEV_TEST_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-# Create boost fiber test executable
-add_executable(${FIBER_TEST_TARGET} ${FIBER_TEST_SOURCES})
-
-# Include directories for fiber tests
-target_include_directories(${FIBER_TEST_TARGET} PRIVATE
-  ${CHIMAERA_ROOT}/include
-)
-
-# Find Boost context library for fiber tests
-# Boost is already found by root CMakeLists.txt
-
-# Link against hermes-shm target for fiber tests (which includes boost)
-target_link_libraries(${FIBER_TEST_TARGET}
-  hshm::cxx                       # Hermes-SHM target (includes boost dependencies)
-  Boost::context                  # Boost context library for fiber operations
-  ${CMAKE_THREAD_LIBS_INIT}       # Threading support
-)
-
-# Set C++ standard for fiber tests
-set_target_properties(${FIBER_TEST_TARGET} PROPERTIES
-  CXX_STANDARD 17
-  CXX_STANDARD_REQUIRED ON
-)
-
-# Copy fiber test executable to bin directory
-set_target_properties(${FIBER_TEST_TARGET} PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-
-# Create worker fiber pattern test executable
-add_executable(${WORKER_FIBER_TEST_TARGET} ${WORKER_FIBER_TEST_SOURCES})
-
-# Include directories for worker fiber pattern tests
-target_include_directories(${WORKER_FIBER_TEST_TARGET} PRIVATE
-  ${CHIMAERA_ROOT}/include
-)
-
-# Link against hermes-shm target for worker fiber pattern tests
-target_link_libraries(${WORKER_FIBER_TEST_TARGET}
-  hshm::cxx                       # Hermes-SHM target (includes boost dependencies)
-  Boost::context                  # Boost context library for fiber operations
-  ${CMAKE_THREAD_LIBS_INIT}       # Threading support
-)
-
-# Set C++ standard for worker fiber pattern tests
-set_target_properties(${WORKER_FIBER_TEST_TARGET} PROPERTIES
-  CXX_STANDARD 17
-  CXX_STANDARD_REQUIRED ON
-)
-
-# Copy worker fiber pattern test executable to bin directory
-set_target_properties(${WORKER_FIBER_TEST_TARGET} PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
-
-# Create segfault debug test executable
-add_executable(${SEGFAULT_DEBUG_TEST_TARGET} ${SEGFAULT_DEBUG_TEST_SOURCES})
-
-# Include directories for segfault debug tests
-target_include_directories(${SEGFAULT_DEBUG_TEST_TARGET} PRIVATE
-  ${CHIMAERA_ROOT}/include
-)
-
-# Link against hermes-shm target for segfault debug tests
-target_link_libraries(${SEGFAULT_DEBUG_TEST_TARGET}
-  hshm::cxx                       # Hermes-SHM target (includes boost dependencies)
-  Boost::context                  # Boost context library for fiber operations
-  ${CMAKE_THREAD_LIBS_INIT}       # Threading support
-)
-
-# Set C++ standard for segfault debug tests
-set_target_properties(${SEGFAULT_DEBUG_TEST_TARGET} PROPERTIES
-  CXX_STANDARD 17
-  CXX_STANDARD_REQUIRED ON
-)
-
-# Copy segfault debug test executable to bin directory
-set_target_properties(${SEGFAULT_DEBUG_TEST_TARGET} PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-)
 
 # Create CoMutex test executable
 add_executable(${COMUTEX_TEST_TARGET} ${COMUTEX_TEST_SOURCES})
@@ -1340,7 +1243,7 @@ add_custom_target(test_all_unit
 )
 
 # Install test executables (optional)
-install(TARGETS ${TEST_TARGET} ${TASK_ARCHIVE_TEST_TARGET} ${FLUSH_TEST_TARGET} ${BDEV_TEST_TARGET} ${FIBER_TEST_TARGET} ${WORKER_FIBER_TEST_TARGET} ${SEGFAULT_DEBUG_TEST_TARGET} ${COMUTEX_TEST_TARGET} ${WAIT_FUNCTIONALITY_TEST_TARGET} ${IPC_ALLOCATE_BUFFER_TEST_TARGET} ${UNORDERED_MAP_LL_TEST_TARGET} ${SAVE_LOAD_TASK_TEST_TARGET} ${COMPOSE_TEST_TARGET} ${LOCAL_TASK_ARCHIVE_TEST_TARGET}
+install(TARGETS ${TEST_TARGET} ${TASK_ARCHIVE_TEST_TARGET} ${FLUSH_TEST_TARGET} ${BDEV_TEST_TARGET} ${COMUTEX_TEST_TARGET} ${WAIT_FUNCTIONALITY_TEST_TARGET} ${IPC_ALLOCATE_BUFFER_TEST_TARGET} ${UNORDERED_MAP_LL_TEST_TARGET} ${SAVE_LOAD_TASK_TEST_TARGET} ${COMPOSE_TEST_TARGET} ${LOCAL_TASK_ARCHIVE_TEST_TARGET}
   RUNTIME DESTINATION bin
 )
 

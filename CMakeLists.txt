@@ -266,12 +266,6 @@ if(yaml-cpp_FOUND)
     resolve_yaml_cpp_target()
 endif()
 
-# Boost components - find from system or install.sh installation
-find_package(Boost REQUIRED COMPONENTS fiber context system)
-if(Boost_FOUND)
-    message(STATUS "found boost at ${Boost_INCLUDE_DIRS}")
-endif()
-
 # Cereal - find from system or install.sh installation
 find_package(cereal REQUIRED)
 if(cereal_FOUND)
@@ -515,15 +509,7 @@ if(IN_CONDA_BUILD)
     message(STATUS "  Adding Conda lib to RPATH: $ENV{CONDA_PREFIX}/lib")
 endif()
 
-# 3. Add Boost library directories (ABSOLUTE paths from find_package)
-if(Boost_LIBRARY_DIRS)
-    foreach(BOOST_LIB_DIR ${Boost_LIBRARY_DIRS})
-        list(APPEND ABSOLUTE_RPATH_LIST "${BOOST_LIB_DIR}")
-        message(STATUS "  Adding Boost lib to RPATH: ${BOOST_LIB_DIR}")
-    endforeach()
-endif()
-
-# 4. Add HDF5 library directories if enabled
+# 3. Add HDF5 library directories if enabled
 if(WRP_CORE_ENABLE_HDF5 AND HDF5_LIBRARY_DIRS)
     foreach(HDF5_LIB_DIR ${HDF5_LIBRARY_DIRS})
         list(APPEND ABSOLUTE_RPATH_LIST "${HDF5_LIB_DIR}")
@@ -785,7 +771,7 @@ if(WRP_CORE_ENABLE_CPACK)
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "IOWarp Team <grc@illinoistech.edu>")
     set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libboost-fiber-dev, libboost-context-dev, libboost-filesystem-dev, libzmq3-dev, libyaml-cpp-dev")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libzmq3-dev, libyaml-cpp-dev")
 
     # Component installation
     set(CPACK_COMPONENTS_ALL libraries headers cmake)
