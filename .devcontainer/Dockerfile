@@ -105,6 +105,14 @@ RUN echo '' >> /home/iowarp/.bashrc \
     && echo 'export NVIDIA_VISIBLE_DEVICES=all' >> /home/iowarp/.bashrc \
     && echo 'export NVIDIA_DRIVER_CAPABILITIES=compute,utility' >> /home/iowarp/.bashrc
 
+# Install Jarvis (IOWarp runtime deployment tool)
+# RUN cd /home/iowarp \
+#     && git clone https://github.com/iowarp/runtime-deployment.git \
+#     && cd runtime-deployment \
+#     && python3 -m pip install -e . -r requirements.txt \
+#     && jarvis init \
+#     && jarvis rg build
+
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

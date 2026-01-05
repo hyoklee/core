@@ -292,6 +292,153 @@ ctest -R cte                # Context transfer engine tests
 ctest -R omni               # Context assimilation engine tests
 ```
 
+## Benchmarking
+
+IOWarp Core includes performance benchmarks for measuring runtime and I/O throughput.
+
+### Starting the Runtime
+
+Before running benchmarks, start the Chimaera runtime:
+
+```bash
+# Start with default configuration
+chimaera_start_runtime
+
+# Start with custom configuration
+export CHI_SERVER_CONF=/path/to/config.yaml
+chimaera_start_runtime
+
+# Run in background
+chimaera_start_runtime &
+```
+
+**Environment Variables:**
+| Variable | Description |
+|----------|-------------|
+| `CHI_SERVER_CONF` | Primary path to Chimaera configuration file (checked first) |
+| `WRP_RUNTIME_CONF` | Fallback configuration path (used if CHI_SERVER_CONF not set) |
+
+### Chimaera Configuration
+
+Configuration uses YAML format. Example configuration:
+
+```yaml
+# Memory segment configuration
+memory:
+  main_segment_size: 1073741824           # 1GB main segment
+  client_data_segment_size: 536870912     # 512MB client data
+  runtime_data_segment_size: 536870912    # 512MB runtime data
+
+# Network configuration
+networking:
+  port: 5555                              # ZeroMQ port
+  neighborhood_size: 32                   # Max nodes for range queries
+
+# Runtime configuration
+runtime:
+  sched_threads: 4                        # Scheduler worker threads
+  slow_threads: 0                         # Slow worker threads (long tasks)
+  stack_size: 65536                       # 64KB per task
+  queue_depth: 10000                      # Maximum queue depth
+  lane_map_policy: "round_robin"          # Options: map_by_pid_tid, round_robin, random
+
+# Compose section for declarative pool creation
+compose:
+  - mod_name: wrp_cte_core
+    pool_name: wrp_cte
+    pool_query: local
+    pool_id: 512.0
+
+    targets:
+      neighborhood: 1
+      default_target_timeout_ms: 30000
+
+    storage:
+      - path: "ram::cte_storage"          # RAM-based storage
+        bdev_type: "ram"
+        capacity_limit: "16GB"
+        score: 1.0                        # Higher = faster tier (0.0-1.0)
+
+    dpe:
+      dpe_type: "max_bw"                  # Options: random, round_robin, max_bw
+```
+
+### Runtime Throughput Benchmark (wrp_run_thrpt_benchmark)
+
+Measures task throughput and latency for the Chimaera runtime.
+
+```bash
+wrp_run_thrpt_benchmark [options]
+```
+
+**Parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--test-case <case>` | bdev_io | Test case to run |
+| `--threads <N>` | 4 | Number of client worker threads |
+| `--duration <seconds>` | 10.0 | Duration to run benchmark |
+| `--max-file-size <size>` | 1g | Maximum file size (supports k, m, g suffixes) |
+| `--io-size <size>` | 4k | I/O size per operation |
+| `--lane-policy <P>` | (from config) | Lane policy: map_by_pid_tid, round_robin, random |
+| `--output-dir <dir>` | /tmp/wrp_benchmark | Output directory for files |
+| `--verbose, -v` | false | Enable verbose output |
+
+**Test Cases:**
+- `bdev_io` - Full I/O throughput (Allocate → Write → Free)
+- `bdev_allocation` - Allocation-only throughput
+- `bdev_task_alloc` - Task allocation/deletion overhead
+- `latency` - Round-trip task latency
+
+**Examples:**
+
+```bash
+# Full I/O benchmark with 8 threads for 30 seconds
+wrp_run_thrpt_benchmark --test-case bdev_io --threads 8 --duration 30
+
+# Latency benchmark with verbose output
+wrp_run_thrpt_benchmark --test-case latency --threads 4 --verbose
+
+# Large I/O with 1MB blocks
+wrp_run_thrpt_benchmark --test-case bdev_io --io-size 1m --threads 16
+```
+
+### CTE Benchmark (wrp_cte_bench)
+
+Measures Context Transfer Engine Put/Get performance.
+
+```bash
+wrp_cte_bench <test_case> <num_threads> <depth> <io_size> <io_count>
+```
+
+**Parameters:**
+
+| Parameter | Position | Description |
+|-----------|----------|-------------|
+| `test_case` | 1 | Put, Get, or PutGet |
+| `num_threads` | 2 | Number of worker threads |
+| `depth` | 3 | Number of async requests per thread |
+| `io_size` | 4 | Size per operation (supports k, m, g suffixes) |
+| `io_count` | 5 | Number of operations per thread |
+
+**Examples:**
+
+```bash
+# Put benchmark: 4 threads, 8 async depth, 1MB I/O, 200 operations each
+wrp_cte_bench Put 4 8 1m 200
+
+# Get benchmark: 2 threads, 4 async depth, 4KB I/O, 1000 operations each
+wrp_cte_bench Get 2 4 4k 1000
+
+# Combined Put/Get: 8 threads, 16 async depth, 16MB I/O, 50 operations each
+wrp_cte_bench PutGet 8 16 16m 50
+```
+
+**Output Metrics:**
+- Total execution time (ms)
+- Per-thread bandwidth: min, max, avg (MB/s)
+- Aggregate bandwidth across all threads
+
 ## Documentation
 
 Comprehensive documentation is available for each component:
