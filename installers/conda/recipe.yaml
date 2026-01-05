@@ -27,8 +27,16 @@ build:
       CMAKE_GENERATOR: Ninja
       # Suppress GCC false positive warnings from aggressive inlining (GCC bugs #99578, #100611)
       CXXFLAGS: "-Wno-array-bounds -Wno-maybe-uninitialized -Wno-stringop-overflow"
+      # Force CMake to use only conda packages, not system libraries
+      CMAKE_PREFIX_PATH: ${{ PREFIX }}
+      PKG_CONFIG_PATH: ${{ PREFIX }}/lib/pkgconfig:${{ PREFIX }}/share/pkgconfig
+      # Prevent finding system libraries
+      CMAKE_FIND_ROOT_PATH: ${{ PREFIX }}
+      CMAKE_FIND_ROOT_PATH_MODE_LIBRARY: ONLY
+      CMAKE_FIND_ROOT_PATH_MODE_INCLUDE: ONLY
+      CMAKE_FIND_ROOT_PATH_MODE_PACKAGE: ONLY
     content:
-      - cmake --preset=${{ preset }} -DCMAKE_INSTALL_PREFIX=${{ PREFIX }}
+      - cmake --preset=${{ preset }} -DCMAKE_INSTALL_PREFIX=${{ PREFIX }} -DCMAKE_PREFIX_PATH=${{ PREFIX }} -DCMAKE_FIND_ROOT_PATH=${{ PREFIX }}
       - cmake --build build --parallel
       - cmake --install build
 
@@ -48,6 +56,12 @@ requirements:
     - libaio
   run:
     - python
+    - zeromq
+    - yaml-cpp
+    - cereal
+    - hdf5
+    - catch2
+    - libaio
 
 tests:
   - script:
