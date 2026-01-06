@@ -588,7 +588,10 @@ struct ShmPtrBase : public ShmPointer {
   }
 
   /** Default constructor - initializes to null */
-  HSHM_INLINE_CROSS_FUN ShmPtrBase() { alloc_id_.SetNull(); }
+  HSHM_INLINE_CROSS_FUN ShmPtrBase() {
+    alloc_id_.SetNull();
+    off_.SetNull();
+  }
 
   /** Full constructor */
   HSHM_INLINE_CROSS_FUN explicit ShmPtrBase(AllocatorId id, size_t off)
@@ -788,7 +791,9 @@ struct FullPtr : public ShmPointer {
   }
 
   /** Default constructor - initializes to null */
-  HSHM_INLINE_CROSS_FUN FullPtr() : ptr_(nullptr) {}
+  HSHM_INLINE_CROSS_FUN FullPtr() : ptr_(nullptr), shm_() {
+    shm_.SetNull();
+  }
 
   /** Full constructor */
   HSHM_INLINE_CROSS_FUN FullPtr(const T *ptr, const PointerT &shm)
@@ -985,7 +990,10 @@ struct FullPtr : public ShmPointer {
   }
 
   /** Set to null */
-  HSHM_INLINE_CROSS_FUN void SetNull() { ptr_ = nullptr; }
+  HSHM_INLINE_CROSS_FUN void SetNull() {
+    ptr_ = nullptr;
+    shm_.SetNull();
+  }
 
   /** Reintrepret cast to other internal type */
   template <typename U, bool ATOMIC2 = ATOMIC>

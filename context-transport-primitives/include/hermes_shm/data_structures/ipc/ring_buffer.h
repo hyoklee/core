@@ -44,17 +44,18 @@ enum RingQueueFlag : uint32_t {
 };
 
 /**
- * Ring buffer entry with validation bits.
+ * Ring buffer entry with atomic ready flag.
  *
- * This structure combines a bitfield for validation flags with user data.
- * Bit 0 is used to mark when data is ready for consumption.
+ * This structure combines an atomic bitfield for the ready flag with user data.
+ * The ready flag is used to mark when data is ready for consumption,
+ * with proper memory ordering to ensure data visibility across threads.
  *
  * @tparam T The type of data to store in the entry
  */
 template <typename T>
 struct RingBufferEntry {
-  bitfield64_t flags_; /**< Validation flags (bit 0 = data ready) */
-  T data_;             /**< The actual data */
+  abitfield32_t flags_; /**< Atomic flags (bit 0 = data ready) */
+  T data_;              /**< The actual data */
 
   /**
    * Default constructor
@@ -71,20 +72,31 @@ struct RingBufferEntry {
   explicit RingBufferEntry(const T& data) : flags_(0), data_(data) {}
 
   /**
-   * Get reference to flags
+   * Check if entry is ready for consumption (acquire semantics)
    *
-   * @return Reference to the bitfield
+   * @return True if entry is ready
    */
   HSHM_INLINE_CROSS_FUN
-  bitfield64_t& GetFlags() { return flags_; }
+  bool IsReady() const {
+    return flags_.Any(1);
+  }
 
   /**
-   * Get const reference to flags
-   *
-   * @return Const reference to the bitfield
+   * Mark entry as ready (release semantics)
+   * Call this AFTER writing data to ensure visibility
    */
   HSHM_INLINE_CROSS_FUN
-  const bitfield64_t& GetFlags() const { return flags_; }
+  void SetReady() {
+    flags_.SetBits(1);
+  }
+
+  /**
+   * Clear ready flag
+   */
+  HSHM_INLINE_CROSS_FUN
+  void ClearReady() {
+    flags_.UnsetBits(1);
+  }
 
   /**
    * Get reference to data
@@ -402,7 +414,7 @@ class ring_buffer : public ShmContainer<AllocT> {
     size_t idx = tail % queue.size();
     auto& entry = queue[idx];
     entry.data_ = T(std::forward<Args>(args)...);
-    entry.flags_.SetBits(1);  // Mark as ready for consumption
+    entry.SetReady();  // Mark as ready with release semantics
 
     return true;
   }
@@ -425,9 +437,9 @@ class ring_buffer : public ShmContainer<AllocT> {
     // Pop the element, but only if it's marked valid
     size_t idx = head % queue_.size();
     entry_type& entry = queue_[idx];
-    if (entry.flags_.Any(1)) {
+    if (entry.IsReady()) {  // Acquire semantics ensure data visibility
       val = entry.data_;
-      entry.flags_.Clear();
+      entry.ClearReady();
       head_.fetch_add(1);
       return true;
     }
