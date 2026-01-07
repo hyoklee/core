@@ -31,12 +31,33 @@ class Hdf5FileAssimilator : public BaseAssimilator {
 
   /**
    * Schedule assimilation tasks for an HDF5 file
+   * This is a coroutine that uses co_await for async CTE operations.
    * @param ctx Assimilation context with source, destination, and metadata
-   * @return 0 on success, non-zero error code on failure
+   * @param error_code Output: 0 on success, non-zero error code on failure
+   * @return TaskResume for coroutine suspension/resumption
    */
-  int Schedule(const AssimilationCtx& ctx) override;
+  chi::TaskResume Schedule(const AssimilationCtx& ctx, int& error_code) override;
 
  private:
+  /**
+   * Check if a dataset path matches the filter patterns
+   * @param dataset_path Dataset path to check (e.g., "/data/temperature")
+   * @param include_patterns Glob patterns to include (empty means include all)
+   * @param exclude_patterns Glob patterns to exclude
+   * @return true if dataset should be included, false otherwise
+   */
+  bool MatchesFilter(const std::string& dataset_path,
+                     const std::vector<std::string>& include_patterns,
+                     const std::vector<std::string>& exclude_patterns);
+
+  /**
+   * Check if a string matches a glob pattern
+   * @param str String to check
+   * @param pattern Glob pattern (supports *, ?, [])
+   * @return true if string matches pattern
+   */
+  bool MatchGlobPattern(const std::string& str, const std::string& pattern);
+
   /**
    * Open HDF5 file in read-only mode (serial)
    * @param file_path Path to the HDF5 file
@@ -60,13 +81,15 @@ class Hdf5FileAssimilator : public BaseAssimilator {
 
   /**
    * Process a single dataset: create tag, store description, transfer chunks
+   * This is a coroutine that uses co_await for async CTE operations.
    * @param file_id HDF5 file ID
    * @param dataset_path Path to dataset within file (e.g., "/data/temperature")
    * @param tag_prefix Prefix for tag name (destination path without protocol)
-   * @return 0 on success, non-zero error code on failure
+   * @param error_code Output: 0 on success, non-zero error code on failure
+   * @return TaskResume for coroutine suspension/resumption
    */
-  int ProcessDataset(hid_t file_id, const std::string& dataset_path,
-                     const std::string& tag_prefix);
+  chi::TaskResume ProcessDataset(hid_t file_id, const std::string& dataset_path,
+                                  const std::string& tag_prefix, int& error_code);
 
   /**
    * Get human-readable type name for HDF5 datatype

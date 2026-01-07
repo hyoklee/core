@@ -58,12 +58,12 @@ public:
   /**
    * Execute a method on a task
    */
-  void Run(chi::u32 method, chi::Future<chi::Task>& task_future, chi::RunContext& rctx) override;
+  chi::TaskResume Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr, chi::RunContext& rctx) override;
 
   /**
    * Delete/cleanup a task
    */
-  void Del(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
+  void DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
 
   //===========================================================================
   // Method implementations
@@ -91,8 +91,9 @@ public:
 
   /**
    * Handle WaitTest task
+   * Returns TaskResume for coroutine-based async operations
    */
-  void WaitTest(hipc::FullPtr<WaitTestTask> task, chi::RunContext& rctx);
+  chi::TaskResume WaitTest(hipc::FullPtr<WaitTestTask> task, chi::RunContext& rctx);
 
   /**
    * Handle Destroy task - Alias for DestroyPool (DestroyTask = DestroyPoolTask)
@@ -112,38 +113,53 @@ public:
   /**
    * Serialize task parameters for network transfer (unified method)
    */
-  void SaveTask(chi::u32 method, chi::SaveTaskArchive& archive, chi::Future<chi::Task>& task_future) override;
+  void SaveTask(chi::u32 method, chi::SaveTaskArchive& archive, hipc::FullPtr<chi::Task> task_ptr) override;
 
   /**
-   * Deserialize task parameters from network transfer (unified method)
+   * Deserialize task parameters into an existing task from network transfer
    */
-  void LoadTask(chi::u32 method, chi::LoadTaskArchive& archive, chi::Future<chi::Task>& task_future) override;
+  void LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
+                hipc::FullPtr<chi::Task> task_ptr) override;
 
   /**
-   * Deserialize task input parameters using LocalSerialize (for local transfers)
+   * Allocate and deserialize task parameters from network transfer
    */
-  void LocalLoadIn(chi::u32 method, chi::LocalLoadTaskArchive& archive,
-                   chi::Future<chi::Task>& task_future) override;
+  hipc::FullPtr<chi::Task> AllocLoadTask(chi::u32 method, chi::LoadTaskArchive& archive) override;
+
+  /**
+   * Deserialize task input parameters into an existing task using LocalSerialize
+   */
+  void LocalLoadTask(chi::u32 method, chi::LocalLoadTaskArchive& archive,
+                     hipc::FullPtr<chi::Task> task_ptr) override;
+
+  /**
+   * Allocate and deserialize task input parameters using LocalSerialize
+   */
+  hipc::FullPtr<chi::Task> LocalAllocLoadTask(chi::u32 method, chi::LocalLoadTaskArchive& archive) override;
 
   /**
    * Serialize task output parameters using LocalSerialize (for local transfers)
    */
-  void LocalSaveOut(chi::u32 method, chi::LocalSaveTaskArchive& archive,
-                    chi::Future<chi::Task>& task_future) override;
+  void LocalSaveTask(chi::u32 method, chi::LocalSaveTaskArchive& archive,
+                     hipc::FullPtr<chi::Task> task_ptr) override;
 
   /**
    * Create a new copy of a task (deep copy for distributed execution)
    */
-  void NewCopy(chi::u32 method,
-               chi::Future<chi::Task>& orig_future,
-               chi::Future<chi::Task>& dup_future, bool deep) override;
+  hipc::FullPtr<chi::Task> NewCopyTask(chi::u32 method,
+                                        hipc::FullPtr<chi::Task> orig_task_ptr, bool deep) override;
+
+  /**
+   * Create a new task of the specified method type
+   */
+  hipc::FullPtr<chi::Task> NewTask(chi::u32 method) override;
 
   /**
    * Aggregate a replica task into the origin task (for merging replica results)
    */
   void Aggregate(chi::u32 method,
-                 chi::Future<chi::Task>& origin_future,
-                 chi::Future<chi::Task>& replica_future) override;
+                 hipc::FullPtr<chi::Task> origin_task_ptr,
+                 hipc::FullPtr<chi::Task> replica_task_ptr) override;
 };
 
 } // namespace chimaera::MOD_NAME

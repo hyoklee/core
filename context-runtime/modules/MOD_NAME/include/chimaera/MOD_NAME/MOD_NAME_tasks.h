@@ -81,15 +81,17 @@ struct CustomTask : public chi::Task {
    */
   template<typename Archive>
   void SerializeIn(Archive& ar) {
+    Task::SerializeIn(ar);
     ar(data_, operation_id_);
   }
-  
+
   /**
    * Serialize OUT and INOUT parameters for network transfer
    * This includes: data_
    */
   template<typename Archive>
   void SerializeOut(Archive& ar) {
+    Task::SerializeOut(ar);
     ar(data_);
   }
 
@@ -99,9 +101,19 @@ struct CustomTask : public chi::Task {
    */
   void Copy(const hipc::FullPtr<CustomTask> &other) {
     // Copy base Task fields
+    Task::Copy(other.template Cast<Task>());
     // Copy CustomTask-specific fields
     data_ = other->data_;
     operation_id_ = other->operation_id_;
+  }
+
+  /**
+   * Aggregate replica results into this task
+   * @param other Pointer to the replica task to aggregate from
+   */
+  void Aggregate(const hipc::FullPtr<CustomTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
   }
 };
 
@@ -135,11 +147,13 @@ struct CoMutexTestTask : public chi::Task {
 
   template<typename Archive>
   void SerializeIn(Archive& ar) {
+    Task::SerializeIn(ar);
     ar(test_id_, hold_duration_ms_);
   }
 
   template<typename Archive>
   void SerializeOut(Archive& ar) {
+    Task::SerializeOut(ar);
     // No output parameters for this task
   }
 
@@ -149,9 +163,19 @@ struct CoMutexTestTask : public chi::Task {
    */
   void Copy(const hipc::FullPtr<CoMutexTestTask> &other) {
     // Copy base Task fields
+    Task::Copy(other.template Cast<Task>());
     // Copy CoMutexTestTask-specific fields
     test_id_ = other->test_id_;
     hold_duration_ms_ = other->hold_duration_ms_;
+  }
+
+  /**
+   * Aggregate replica results into this task
+   * @param other Pointer to the replica task to aggregate from
+   */
+  void Aggregate(const hipc::FullPtr<CoMutexTestTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
   }
 };
 
@@ -187,11 +211,13 @@ struct CoRwLockTestTask : public chi::Task {
 
   template<typename Archive>
   void SerializeIn(Archive& ar) {
+    Task::SerializeIn(ar);
     ar(test_id_, is_writer_, hold_duration_ms_);
   }
 
   template<typename Archive>
   void SerializeOut(Archive& ar) {
+    Task::SerializeOut(ar);
     // No output parameters for this task
   }
 
@@ -201,10 +227,20 @@ struct CoRwLockTestTask : public chi::Task {
    */
   void Copy(const hipc::FullPtr<CoRwLockTestTask> &other) {
     // Copy base Task fields
+    Task::Copy(other.template Cast<Task>());
     // Copy CoRwLockTestTask-specific fields
     test_id_ = other->test_id_;
     is_writer_ = other->is_writer_;
     hold_duration_ms_ = other->hold_duration_ms_;
+  }
+
+  /**
+   * Aggregate replica results into this task
+   * @param other Pointer to the replica task to aggregate from
+   */
+  void Aggregate(const hipc::FullPtr<CoRwLockTestTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
   }
 };
 
@@ -240,11 +276,13 @@ struct WaitTestTask : public chi::Task {
 
   template<typename Archive>
   void SerializeIn(Archive& ar) {
+    Task::SerializeIn(ar);
     ar(depth_, test_id_, current_depth_);
   }
 
   template<typename Archive>
   void SerializeOut(Archive& ar) {
+    Task::SerializeOut(ar);
     ar(current_depth_);  // Return the final depth reached
   }
 
@@ -254,10 +292,20 @@ struct WaitTestTask : public chi::Task {
    */
   void Copy(const hipc::FullPtr<WaitTestTask> &other) {
     // Copy base Task fields
+    Task::Copy(other.template Cast<Task>());
     // Copy WaitTestTask-specific fields
     depth_ = other->depth_;
     test_id_ = other->test_id_;
     current_depth_ = other->current_depth_;
+  }
+
+  /**
+   * Aggregate replica results into this task
+   * @param other Pointer to the replica task to aggregate from
+   */
+  void Aggregate(const hipc::FullPtr<WaitTestTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
   }
 };
 

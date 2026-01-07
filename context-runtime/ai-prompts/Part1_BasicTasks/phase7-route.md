@@ -116,3 +116,58 @@ Comment out the admin SendIn, LoadIn, SendOut, and LoadOut method bodies. We wil
 ## EndTask
 1. Use container->LocalSaveOut to serialize task outputs into the hipc::vector in the future.
 2. Call Future->Complete(). 
+
+@CLAUDE.md
+
+Add a new method to chi_refresh_repo called NewTask. 
+NewTask will be a switch-case that does the following: 
+``auto new_task_ptr = ipc_manager->NewTask<TASK_NAME>(); return new_task_ptr.template Cast<Task>();``
+It should return a ``FullPtr<Task>``.
+Call chi_refresh_repo on each chimod and ensure everything still compiles afterwards.
+
+@CLAUDE.md
+Update ProcessNewTasks, EndTask, and FutureShm.
+FutureShm should also container the method_id from the task, not just the PoolId.
+
+## ProcessNewTasks
+Call container->NewTask to create a task based on the method_id, rather than NewTask directly.
+Construct a ``Future<Task>`` object from the FullPtr<FutureShm> and the FullPtr<Task>. It should have a constructor
+for this if it does not.
+RunContext should store ``Future<Task>`` instead of FutureShm. 
+
+## EndTask
+EndTask should do:
+1. container->LocalSaveOut(run_ctx->future_);
+2. run_ctx->future_.SetComplete();
+3. container->DelTask(run_ctx->future_.task_);
+
+@CLAUDE.md
+
+Let's divide the Future class into two classes Future and Promise.
+Future should have the constructor ``Future(AllocT* alloc, hipc::FullPtr<TaskT> task_ptr)``.
+Future should expose IsComplete() and Wait().
+Promise should have the constructor ``Future(hipc::FullPtr<FutureT> future_shm, hipc::FullPtr<TaskT> task_ptr)``.
+Promise should expose SetComplete().
+RunContext should store Promise instead of Future.
+We should update chi_refresh_repo to do Promise instead of Future for all inputs.
+
+Let's add a new hipc::mpsc_queue to the WorkOrchestrator.
+This queue should be called network_queue. 
+
+
+@CLAUDE.md
+
+# Task
+Add a new flag called TASK_FIRE_AND_FORGET.
+Add the SetFireAndForget, IsFireAndForget, and UnsetFireAndForget methods.
+
+# Worker::EndTask
+If the task is marked as TASK_FIRE_AND_FORGET, then delete the task.
+It should check ``run_ctx->destroy_in_end_task_ || task->flags_.Any(TASK_FIRE_AND_FORGET)``
+when deciding if to delete the task.
+TASK_FIRE_AND_FORGET should only be checked in the non-remote part of the method.
+
+# Admin::SendTask
+Mark this task as TASK_FIRE_AND_FORGET.
+Both SendIn and SendOut will never be awaited.
+

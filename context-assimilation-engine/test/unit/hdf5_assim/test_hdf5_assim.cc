@@ -25,7 +25,9 @@
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <memory>
+#include <algorithm>
 
 // HDF5 library
 #include <hdf5.h>
@@ -139,6 +141,286 @@ bool GenerateTestHDF5File(const std::string& file_path) {
 }
 
 /**
+ * Verify dataset data by comparing HDF5 source with CTE tag data
+ *
+ * @param file_path Path to the HDF5 file
+ * @param dataset_path Path to the dataset within the HDF5 file
+ * @param tag_name Full tag name in CTE
+ * @param cte_client Pointer to CTE client
+ * @return true if data matches, false otherwise
+ */
+bool VerifyDatasetData(const std::string& file_path,
+                       const std::string& dataset_path,
+                       const std::string& tag_name,
+                       wrp_cte::core::Client* cte_client) {
+  std::cout << "  Verifying data for dataset: " << dataset_path << std::endl;
+
+  // Open HDF5 file and dataset
+  hid_t file_id = H5Fopen(file_path.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (file_id < 0) {
+    std::cerr << "    ERROR: Failed to open HDF5 file: " << file_path << std::endl;
+    return false;
+  }
+
+  hid_t dataset_id = H5Dopen2(file_id, dataset_path.c_str(), H5P_DEFAULT);
+  if (dataset_id < 0) {
+    std::cerr << "    ERROR: Failed to open dataset: " << dataset_path << std::endl;
+    H5Fclose(file_id);
+    return false;
+  }
+
+  // Get dataset properties
+  hid_t dataspace_id = H5Dget_space(dataset_id);
+  hid_t datatype_id = H5Dget_type(dataset_id);
+
+  hssize_t num_elements = H5Sget_simple_extent_npoints(dataspace_id);
+  if (num_elements < 0) {
+    std::cerr << "    ERROR: Failed to get number of elements" << std::endl;
+    H5Tclose(datatype_id);
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+    return false;
+  }
+
+  size_t element_size = H5Tget_size(datatype_id);
+  size_t total_size = num_elements * element_size;
+
+  std::cout << "    Dataset info: " << num_elements << " elements, "
+            << element_size << " bytes per element, "
+            << total_size << " total bytes" << std::endl;
+
+  // Allocate buffer for HDF5 data
+  std::vector<char> hdf5_data(total_size);
+
+  // Read data from HDF5
+  herr_t status = H5Dread(dataset_id, datatype_id, H5S_ALL, H5S_ALL, H5P_DEFAULT, hdf5_data.data());
+  if (status < 0) {
+    std::cerr << "    ERROR: Failed to read data from HDF5 dataset" << std::endl;
+    H5Tclose(datatype_id);
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+    return false;
+  }
+
+  // Get CTE tag
+  auto tag_task = cte_client->AsyncGetOrCreateTag(tag_name);
+  tag_task.Wait();
+  wrp_cte::core::TagId tag_id = tag_task->tag_id_;
+  if (tag_id.IsNull()) {
+    std::cerr << "    ERROR: Tag not found in CTE: " << tag_name << std::endl;
+    H5Tclose(datatype_id);
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+    return false;
+  }
+
+  // Get tag size from CTE
+  auto size_task = cte_client->AsyncGetTagSize(tag_id);
+  size_task.Wait();
+  size_t cte_tag_size = size_task->tag_size_;
+  std::cout << "    CTE tag size: " << cte_tag_size << " bytes" << std::endl;
+
+  // Check if sizes match
+  if (cte_tag_size != total_size) {
+    std::cerr << "    ERROR: Size mismatch - HDF5: " << total_size
+              << " bytes, CTE: " << cte_tag_size << " bytes" << std::endl;
+    H5Tclose(datatype_id);
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+    return false;
+  }
+
+  // Allocate buffer for CTE data
+  std::vector<char> cte_data(total_size);
+
+  // Read data from CTE by getting all blobs (chunks)
+  // For datasets <= 1MB, data is in "chunk_0"
+  // For larger datasets, data is split across "chunk_0", "chunk_1", etc.
+  auto blobs_task = cte_client->AsyncGetContainedBlobs(tag_id);
+  blobs_task.Wait();
+  std::vector<std::string> blob_names = blobs_task->blob_names_;
+  std::cout << "    Found " << blob_names.size() << " blobs in tag" << std::endl;
+
+  // Filter out the "description" blob and get only chunk blobs
+  std::vector<std::string> chunk_blobs;
+  for (const auto& blob_name : blob_names) {
+    if (blob_name.find("chunk_") == 0) {
+      chunk_blobs.push_back(blob_name);
+    }
+  }
+
+  // Sort chunk blobs by number to ensure correct order
+  std::sort(chunk_blobs.begin(), chunk_blobs.end(), [](const std::string& a, const std::string& b) {
+    // Extract chunk numbers and compare
+    size_t a_num = std::stoul(a.substr(6)); // Skip "chunk_"
+    size_t b_num = std::stoul(b.substr(6));
+    return a_num < b_num;
+  });
+
+  std::cout << "    Found " << chunk_blobs.size() << " data chunks" << std::endl;
+
+  // Read all chunks and reconstruct data
+  size_t bytes_read = 0;
+  for (const auto& blob_name : chunk_blobs) {
+    // Get blob size
+    auto blob_size_task = cte_client->AsyncGetBlobSize(tag_id, blob_name);
+    blob_size_task.Wait();
+    chi::u64 blob_size = blob_size_task->size_;
+    std::cout << "    Reading blob '" << blob_name << "' (size: " << blob_size << " bytes)" << std::endl;
+
+    if (bytes_read + blob_size > total_size) {
+      std::cerr << "    ERROR: Total blob size exceeds expected size" << std::endl;
+      H5Tclose(datatype_id);
+      H5Sclose(dataspace_id);
+      H5Dclose(dataset_id);
+      H5Fclose(file_id);
+      return false;
+    }
+
+    // Allocate shared memory buffer for this blob
+    auto blob_buffer = CHI_IPC->AllocateBuffer(blob_size);
+
+    // Read blob into shared memory buffer
+    hipc::ShmPtr<> blob_shm_ptr = blob_buffer.shm_.template Cast<void>();
+    auto get_blob_task = cte_client->AsyncGetBlob(tag_id, blob_name, 0, blob_size, 0, blob_shm_ptr);
+    get_blob_task.Wait();
+    bool success = (get_blob_task->GetReturnCode() == 0);
+    if (!success) {
+      std::cerr << "    ERROR: Failed to read blob '" << blob_name << "'" << std::endl;
+      CHI_IPC->FreeBuffer(blob_buffer);
+      H5Tclose(datatype_id);
+      H5Sclose(dataspace_id);
+      H5Dclose(dataset_id);
+      H5Fclose(file_id);
+      return false;
+    }
+
+    // Copy from shared memory to our local buffer
+    std::memcpy(cte_data.data() + bytes_read, blob_buffer.ptr_, blob_size);
+
+    // Free the shared memory buffer
+    CHI_IPC->FreeBuffer(blob_buffer);
+
+    bytes_read += blob_size;
+  }
+
+  if (bytes_read != total_size) {
+    std::cerr << "    ERROR: Failed to read complete data from CTE - expected "
+              << total_size << " bytes, got " << bytes_read << " bytes" << std::endl;
+    H5Tclose(datatype_id);
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+    return false;
+  }
+
+  std::cout << "    Successfully read " << bytes_read << " bytes from CTE" << std::endl;
+
+  // Determine data type for comparison
+  H5T_class_t type_class = H5Tget_class(datatype_id);
+  bool data_matches = true;
+  size_t mismatch_count = 0;
+
+  if (type_class == H5T_INTEGER) {
+    // Integer comparison - byte-by-byte
+    std::cout << "    Comparing integer data..." << std::endl;
+    for (size_t i = 0; i < total_size; ++i) {
+      if (hdf5_data[i] != cte_data[i]) {
+        if (mismatch_count == 0) {
+          std::cerr << "    First mismatch at byte " << i << ": HDF5="
+                    << static_cast<int>(hdf5_data[i]) << ", CTE="
+                    << static_cast<int>(cte_data[i]) << std::endl;
+        }
+        mismatch_count++;
+        data_matches = false;
+      }
+    }
+  } else if (type_class == H5T_FLOAT) {
+    // Floating-point comparison with epsilon
+    if (element_size == sizeof(double)) {
+      std::cout << "    Comparing double data (epsilon=1e-10)..." << std::endl;
+      const double* hdf5_doubles = reinterpret_cast<const double*>(hdf5_data.data());
+      const double* cte_doubles = reinterpret_cast<const double*>(cte_data.data());
+      const double epsilon = 1e-10;
+
+      for (size_t i = 0; i < static_cast<size_t>(num_elements); ++i) {
+        double diff = std::abs(hdf5_doubles[i] - cte_doubles[i]);
+        if (diff > epsilon) {
+          if (mismatch_count == 0) {
+            std::cerr << "    First mismatch at element " << i << ": HDF5="
+                      << hdf5_doubles[i] << ", CTE=" << cte_doubles[i]
+                      << ", diff=" << diff << std::endl;
+          }
+          mismatch_count++;
+          data_matches = false;
+        }
+      }
+    } else if (element_size == sizeof(float)) {
+      std::cout << "    Comparing float data (epsilon=1e-6)..." << std::endl;
+      const float* hdf5_floats = reinterpret_cast<const float*>(hdf5_data.data());
+      const float* cte_floats = reinterpret_cast<const float*>(cte_data.data());
+      const float epsilon = 1e-6f;
+
+      for (size_t i = 0; i < static_cast<size_t>(num_elements); ++i) {
+        float diff = std::abs(hdf5_floats[i] - cte_floats[i]);
+        if (diff > epsilon) {
+          if (mismatch_count == 0) {
+            std::cerr << "    First mismatch at element " << i << ": HDF5="
+                      << hdf5_floats[i] << ", CTE=" << cte_floats[i]
+                      << ", diff=" << diff << std::endl;
+          }
+          mismatch_count++;
+          data_matches = false;
+        }
+      }
+    } else {
+      std::cerr << "    WARNING: Unsupported float size: " << element_size << " bytes" << std::endl;
+      // Fall back to byte-by-byte comparison
+      for (size_t i = 0; i < total_size; ++i) {
+        if (hdf5_data[i] != cte_data[i]) {
+          mismatch_count++;
+          data_matches = false;
+        }
+      }
+    }
+  } else {
+    // Unknown type - byte-by-byte comparison
+    std::cout << "    Comparing as raw bytes..." << std::endl;
+    for (size_t i = 0; i < total_size; ++i) {
+      if (hdf5_data[i] != cte_data[i]) {
+        if (mismatch_count == 0) {
+          std::cerr << "    First mismatch at byte " << i << ": HDF5="
+                    << static_cast<int>(hdf5_data[i]) << ", CTE="
+                    << static_cast<int>(cte_data[i]) << std::endl;
+        }
+        mismatch_count++;
+        data_matches = false;
+      }
+    }
+  }
+
+  // Cleanup HDF5 resources
+  H5Tclose(datatype_id);
+  H5Sclose(dataspace_id);
+  H5Dclose(dataset_id);
+  H5Fclose(file_id);
+
+  // Print comparison results
+  if (data_matches) {
+    std::cout << "    SUCCESS: Data verification passed - all values match" << std::endl;
+  } else {
+    std::cerr << "    FAILURE: Data verification failed - " << mismatch_count
+              << " mismatches out of " << total_size << " bytes" << std::endl;
+  }
+
+  return data_matches;
+}
+
+/**
  * Clean up test file
  */
 void CleanupTestFile(const std::string& file_path) {
@@ -198,11 +480,12 @@ int main(int argc, char* argv[]) {
     wrp_cae::core::Client cae_client;
     wrp_cae::core::CreateParams params;
 
-    cae_client.Create(
+    auto create_task = cae_client.AsyncCreate(
         chi::PoolQuery::Local(),
         "test_cae_pool",
         wrp_cae::core::kCaePoolId,
         params);
+    create_task.Wait();
 
     std::cout << "CAE pool created with ID: " << cae_client.pool_id_ << std::endl;
 
@@ -224,8 +507,10 @@ int main(int argc, char* argv[]) {
     // Step 5: Call ParseOmni with vector containing single context
     std::cout << "\n[STEP 5] Calling ParseOmni..." << std::endl;
     std::vector<wrp_cae::core::AssimilationCtx> contexts = {ctx};
-    chi::u32 num_tasks_scheduled = 0;
-    chi::u32 result_code = cae_client.ParseOmni(contexts, num_tasks_scheduled);
+    auto parse_task = cae_client.AsyncParseOmni(contexts);
+    parse_task.Wait();
+    chi::u32 result_code = parse_task->GetReturnCode();
+    chi::u32 num_tasks_scheduled = parse_task->num_tasks_scheduled_;
 
     std::cout << "ParseOmni completed:" << std::endl;
     std::cout << "  result_code: " << result_code << std::endl;
@@ -261,13 +546,17 @@ int main(int argc, char* argv[]) {
     std::cout << "Expected " << expected_datasets.size() << " datasets to be created" << std::endl;
 
     size_t datasets_found = 0;
+    size_t datasets_verified = 0;
     for (const auto& dataset_name : expected_datasets) {
       std::string full_tag_name = kTestTagBase + "/" + dataset_name;
+      std::string dataset_path = "/" + dataset_name;
       std::cout << "\nChecking dataset: " << dataset_name << std::endl;
       std::cout << "  Full tag name: " << full_tag_name << std::endl;
 
       // Check if tag exists
-      wrp_cte::core::TagId tag_id = cte_client->GetOrCreateTag(full_tag_name);
+      auto tag_task = cte_client->AsyncGetOrCreateTag(full_tag_name);
+      tag_task.Wait();
+      wrp_cte::core::TagId tag_id = tag_task->tag_id_;
       if (tag_id.IsNull()) {
         std::cerr << "  WARNING: Tag not found in CTE: " << full_tag_name << std::endl;
         continue;
@@ -277,19 +566,30 @@ int main(int argc, char* argv[]) {
       std::cout << "  Tag found (ID: " << tag_id << ")" << std::endl;
 
       // Get tag size
-      size_t tag_size = cte_client->GetTagSize(tag_id);
+      auto size_task = cte_client->AsyncGetTagSize(tag_id);
+      size_task.Wait();
+      size_t tag_size = size_task->tag_size_;
       std::cout << "  Tag size: " << tag_size << " bytes" << std::endl;
 
       if (tag_size == 0) {
         std::cerr << "  WARNING: Tag size is 0, no data transferred" << std::endl;
+        continue;
+      }
+
+      // Verify dataset data by comparing with original HDF5 data
+      bool data_verified = VerifyDatasetData(kTestFileName, dataset_path, full_tag_name, cte_client);
+      if (data_verified) {
+        datasets_verified++;
       } else {
-        std::cout << "  SUCCESS: Data verified in CTE" << std::endl;
+        std::cerr << "  ERROR: Data verification failed for dataset: " << dataset_name << std::endl;
+        exit_code = 1;
       }
     }
 
     std::cout << "\nDataset verification summary:" << std::endl;
     std::cout << "  Expected datasets: " << expected_datasets.size() << std::endl;
     std::cout << "  Found datasets: " << datasets_found << std::endl;
+    std::cout << "  Verified datasets: " << datasets_verified << std::endl;
 
     if (datasets_found == 0) {
       std::cerr << "ERROR: No datasets found in CTE" << std::endl;
@@ -299,8 +599,12 @@ int main(int argc, char* argv[]) {
       std::cerr << "WARNING: Not all datasets were found (" << datasets_found
                 << "/" << expected_datasets.size() << ")" << std::endl;
       // Not a hard failure - HDF5 assimilator may be under development
+    } else if (datasets_verified < datasets_found) {
+      std::cerr << "ERROR: Not all datasets passed data verification (" << datasets_verified
+                << "/" << datasets_found << ")" << std::endl;
+      exit_code = 1;
     } else {
-      std::cout << "SUCCESS: All expected datasets found in CTE" << std::endl;
+      std::cout << "SUCCESS: All expected datasets found and verified in CTE" << std::endl;
     }
 
     // Step 8: Cleanup

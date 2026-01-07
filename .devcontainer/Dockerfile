@@ -17,20 +17,6 @@ RUN apt-get update && apt-get install -y \
     iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Remove system HDF5 packages to prevent conflicts with conda HDF5
-# System HDF5 was built against different libcurl than conda, causing linker errors
-RUN apt-get update && apt-get remove -y \
-    libhdf5-dev \
-    libhdf5-103-1t64 \
-    libhdf5-cpp-103-1t64 \
-    libhdf5-fortran-102t64 \
-    libhdf5-hl-100t64 \
-    libhdf5-hl-cpp-100t64 \
-    libhdf5-hl-fortran-100t64 \
-    hdf5-helpers \
-    hdf5-tools \
-    && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
 
 # Add Docker's official GPG key and repository
 RUN install -m 0755 -d /etc/apt/keyrings \
@@ -58,10 +44,10 @@ RUN getent group docker || groupadd docker
 
 # Set up Docker socket permissions script
 RUN echo '#!/bin/bash\n\
-if [ -S /var/run/docker.sock ]; then\n\
+    if [ -S /var/run/docker.sock ]; then\n\
     sudo chmod 666 /var/run/docker.sock\n\
-fi\n\
-exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
+    fi\n\
+    exec "$@"' > /usr/local/bin/docker-entrypoint.sh \
     && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Allow iowarp user to manage docker socket permissions without password
@@ -71,8 +57,8 @@ RUN echo "iowarp ALL=(ALL) NOPASSWD: /bin/chmod 666 /var/run/docker.sock" >> /et
 # Install NVIDIA Container Toolkit repository
 RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
     && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-        sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-        tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
 
 # Install CUDA from NVIDIA's official repository
 # This installs the complete CUDA toolkit + runtime libraries for actual GPU execution
@@ -81,19 +67,19 @@ RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86
     && rm cuda-keyring_1.1-1_all.deb \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        cuda-toolkit-12-6 \
-        cuda-cudart-12-6 \
-        cuda-libraries-12-6 \
-        cuda-nvrtc-12-6 \
-        cuda-nvml-dev-12-6 \
-        libcublas-12-6 \
-        libcufft-12-6 \
-        libcurand-12-6 \
-        libcusolver-12-6 \
-        libcusparse-12-6 \
-        libnpp-12-6 \
-        libnvidia-container-tools \
-        libnvidia-container1 \
+    cuda-toolkit-12-6 \
+    cuda-cudart-12-6 \
+    cuda-libraries-12-6 \
+    cuda-nvrtc-12-6 \
+    cuda-nvml-dev-12-6 \
+    libcublas-12-6 \
+    libcufft-12-6 \
+    libcurand-12-6 \
+    libcusolver-12-6 \
+    libcusparse-12-6 \
+    libnpp-12-6 \
+    libnvidia-container-tools \
+    libnvidia-container1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set CUDA environment variables for runtime execution
@@ -103,10 +89,14 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${CUDA_HOME}/lib64/stubs:/usr/lib/x86_64-
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# Switch to iowarp user for conda and venv setup
+# Switch to iowarp user for venv setup
+# Note: conda is already installed in the base image (iowarp/iowarp-deps:latest)
+# with all development dependencies (boost, hdf5, yaml-cpp, zeromq, etc.)
 USER iowarp
 WORKDIR /home/iowarp
 
+# Add CUDA paths to bashrc
+# Note: conda is inherited from base image with all dev dependencies pre-installed
 # Install Miniconda
 RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
     && bash /tmp/miniconda.sh -b -p /home/iowarp/miniconda3 \
@@ -214,6 +204,25 @@ RUN echo '' >> /home/iowarp/.bashrc \
     && echo 'export PATH=/usr/local/cuda-12.6/bin:$PATH' >> /home/iowarp/.bashrc \
     && echo 'export LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:/usr/local/cuda-12.6/lib64/stubs:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH' >> /home/iowarp/.bashrc \
     && echo 'export NVIDIA_VISIBLE_DEVICES=all' >> /home/iowarp/.bashrc \
+    && echo 'export NVIDIA_DRIVER_CAPABILITIES=compute,utility' >> /home/iowarp/.bashrc
+
+# Install libaio for Linux AIO support (required by bdev ChiMod)
+SHELL ["/bin/bash", "-c"]
+RUN source /home/iowarp/miniconda3/etc/profile.d/conda.sh \
+    && conda activate base \
+    && conda install -y libaio -c conda-forge
+
+# Install Jarvis (IOWarp runtime deployment tool)
+# Note: Must source conda in non-interactive shell since .bashrc isn't loaded during build
+RUN cd /home/iowarp \
+    && git clone https://github.com/iowarp/runtime-deployment.git \
+    && cd runtime-deployment \
+    && source /home/iowarp/miniconda3/etc/profile.d/conda.sh \
+    && conda activate base \
+    && pip install -e . -r requirements.txt  \
+    && jarvis init \
+    && jarvis rg build
+
     && echo 'export NVIDIA_DRIVER_CAPABILITIES=compute,utility' >> /home/iowarp/.bashrc \
     && echo '' >> /home/iowarp/.bashrc \
     && echo '# >>> conda initialize >>>' >> /home/iowarp/.bashrc \

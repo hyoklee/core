@@ -138,6 +138,77 @@ The following Worker methods return `void`, not `bool`:
 
 These methods handle task execution flow internally and do not return success/failure status.
 
+## PoolManager Coroutine Methods
+
+The following PoolManager methods are coroutines that return `TaskResume`:
+- `CreatePool()` - Creates a pool and co_awaits the container's Create method
+- `DestroyPool()` - Destroys a pool (coroutine for consistency)
+
+**Why Coroutines:**
+These methods are coroutines to properly handle nested pool creation. When a ChiMod's Create method (e.g., CTE Create) needs to create sub-pools (e.g., bdev for storage), it uses `co_await`. The coroutine chain allows proper suspension and resumption:
+1. Admin's `GetOrCreatePool` co_awaits `PoolManager::CreatePool`
+2. `PoolManager::CreatePool` co_awaits `container->Run()` (the Create method)
+3. The Create method can co_await nested pool creations (e.g., bdev Create)
+4. When nested operations complete, the chain resumes automatically
+
+**Admin Runtime Methods:**
+The following admin runtime methods are also coroutines:
+- `GetOrCreatePool()` - co_awaits PoolManager::CreatePool
+- `DestroyPool()` - co_awaits PoolManager::DestroyPool
+- `Destroy()` - co_awaits DestroyPool (alias)
+
+## Task Wait and Future Pattern
+
+### Task::Wait() Signature and Usage
+
+`Task::Wait()` takes an `is_complete` reference parameter from the Future object:
+
+```cpp
+void Task::Wait(std::atomic<u32>& is_complete, double block_time_us = 0.0);
+```
+
+**Key Points:**
+- Task::Wait() checks the `is_complete` flag from Future, not internal task state
+- The method yields execution in a loop until `is_complete` is set to 1
+- In runtime mode, uses cooperative multitasking with blocked queue mechanism
+- In client mode, busy-waits on the `is_complete` flag with yielding
+
+**Correct Usage Pattern:**
+```cpp
+// From IpcManager::Recv()
+template <typename TaskT> void Recv(Future<TaskT>& future) {
+  auto& future_shm = future.GetFutureShm();
+  TaskT* task_ptr = future.get();
+  task_ptr->Wait(future_shm->is_complete_);  // Pass future's is_complete flag
+  // ... deserialization logic ...
+}
+```
+
+**User-Facing API:**
+Users should call `Future::Wait()` instead of `Task::Wait()` directly:
+```cpp
+auto task = client.AsyncCreate(/* ... */);
+task.Wait();  // Calls IpcManager::Recv() which calls Task::Wait()
+```
+
+### Task::Yield() for Cooperative Yielding
+
+`Task::Yield()` is used for cooperative yielding during blocking operations (I/O, locks, etc.) without waiting for a specific completion condition:
+
+```cpp
+void Task::Yield(double block_time_us = 0.0);
+```
+
+**Usage Examples:**
+- CoMutex lock contention: `task->Yield();`
+- Async I/O polling: `task->Yield();`
+- Admin flush waiting: `task->Yield(25);`
+
+**Implementation:**
+- Adds task to blocked queue with specified blocking duration
+- Yields execution back to worker
+- Does NOT track subtask completion (unlike Wait)
+
 ## Type Aliases
 
 Use the `WorkQueue` typedef for worker queue types:

@@ -101,12 +101,6 @@ class WorkOrchestrator {
   bool AreWorkersRunning() const;
 
   /**
-   * Get stack growth direction (detected during initialization)
-   * @return true if stack grows downward, false if upward
-   */
-  bool IsStackDownward() const;
-
-  /**
    * Map a lane to a specific worker by setting the worker ID in the lane's header
    * @param lane Raw pointer to the TaskLane
    * @param worker_id Worker ID to assign to this lane
@@ -126,6 +120,12 @@ class WorkOrchestrator {
    * @param task_ptr Full pointer to task to assign to the worker type
    */
   void AssignToWorkerType(ThreadType thread_type, const FullPtr<Task>& task_ptr);
+
+  /**
+   * Get the dedicated network worker
+   * @return Pointer to the network worker
+   */
+  Worker* GetNetWorker() const { return net_worker_; }
 
  private:
   /**
@@ -157,7 +157,6 @@ class WorkOrchestrator {
 
   bool is_initialized_ = false;
   bool workers_running_ = false;
-  bool stack_is_downward_ = true; // Stack growth direction (detected at initialization)
 
   // Worker containers organized by type
   std::vector<std::unique_ptr<Worker>> sched_workers_;
@@ -168,6 +167,7 @@ class WorkOrchestrator {
   // Worker groups for task routing based on execution characteristics
   std::vector<Worker*> scheduler_workers_; ///< Fast task workers (EstCpuTime < 50us)
   std::vector<Worker*> slow_workers_;      ///< Slow task workers (EstCpuTime >= 50us)
+  Worker* net_worker_;                     ///< Dedicated network worker for Send/Recv tasks
 
   // Active lanes pointer to IPC Manager worker queues
   void* active_lanes_;

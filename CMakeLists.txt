@@ -111,6 +111,7 @@ option(HSHM_ENABLE_PTHREADS "Support spawning pthreads" OFF)
 option(HSHM_ENABLE_WINDOWS_THREADS "Support spawning windows threads" OFF)
 option(HSHM_DEBUG_LOCK "Used for debugging locks" OFF)
 option(HSHM_NO_COMPILE "Disable compiling / installing this library" OFF)
+set(HSHM_LOG_LEVEL "1" CACHE STRING "Log level threshold (0=Debug, 1=Info, 2=Warning, 3=Error, 4=Fatal)")
 
 #------------------------------------------------------------------------------
 # Chimaera (context-runtime) Options
@@ -263,12 +264,6 @@ find_package(yaml-cpp REQUIRED)
 if(yaml-cpp_FOUND)
     message(STATUS "found yaml-cpp at ${yaml-cpp_DIR}")
     resolve_yaml_cpp_target()
-endif()
-
-# Boost components - find from system or install.sh installation
-find_package(Boost REQUIRED COMPONENTS fiber context system)
-if(Boost_FOUND)
-    message(STATUS "found boost at ${Boost_INCLUDE_DIRS}")
 endif()
 
 # Cereal - find from system or install.sh installation
@@ -513,8 +508,17 @@ endif()
 # Global Settings
 #------------------------------------------------------------------------------
 # C++ Standard - Applied to all subdirectories
-set(CMAKE_CXX_STANDARD_20)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# C++20 Coroutines support
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-fcoroutines)
+  message(STATUS "GCC detected - enabling coroutines with -fcoroutines")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  # Clang 14+ supports coroutines in C++20 mode natively
+  message(STATUS "Clang detected - coroutines enabled via C++20 mode")
+endif()
 
 # Export compile commands for IDE integration - Applied to all subdirectories
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -541,15 +545,7 @@ if(IN_CONDA_BUILD)
     message(STATUS "  Adding Conda lib to RPATH: $ENV{CONDA_PREFIX}/lib")
 endif()
 
-# 3. Add Boost library directories (ABSOLUTE paths from find_package)
-if(Boost_LIBRARY_DIRS)
-    foreach(BOOST_LIB_DIR ${Boost_LIBRARY_DIRS})
-        list(APPEND ABSOLUTE_RPATH_LIST "${BOOST_LIB_DIR}")
-        message(STATUS "  Adding Boost lib to RPATH: ${BOOST_LIB_DIR}")
-    endforeach()
-endif()
-
-# 4. Add HDF5 library directories if enabled
+# 3. Add HDF5 library directories if enabled
 if(WRP_CORE_ENABLE_HDF5 AND HDF5_LIBRARY_DIRS)
     foreach(HDF5_LIB_DIR ${HDF5_LIBRARY_DIRS})
         list(APPEND ABSOLUTE_RPATH_LIST "${HDF5_LIB_DIR}")
@@ -811,7 +807,7 @@ if(WRP_CORE_ENABLE_CPACK)
     set(CPACK_DEBIAN_PACKAGE_MAINTAINER "IOWarp Team <grc@illinoistech.edu>")
     set(CPACK_DEBIAN_PACKAGE_SECTION "devel")
     set(CPACK_DEBIAN_PACKAGE_PRIORITY "optional")
-    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libboost-fiber-dev, libboost-context-dev, libboost-filesystem-dev, libzmq3-dev, libyaml-cpp-dev")
+    set(CPACK_DEBIAN_PACKAGE_DEPENDS "libzmq3-dev, libyaml-cpp-dev")
 
     # Component installation
     set(CPACK_COMPONENTS_ALL libraries headers cmake)

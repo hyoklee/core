@@ -597,10 +597,8 @@ function(add_chimod_runtime)
     message(FATAL_ERROR "Neither chimaera::cxx, hermes_shm::cxx, HermesShm::cxx nor cxx target found")
   endif()
 
-  # Runtime-specific link libraries (includes Boost for runtime)
+  # Runtime-specific link libraries
   set(CHIMAERA_RUNTIME_LIBS
-    Boost::fiber
-    Boost::context
     Threads::Threads
   )
 

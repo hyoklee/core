@@ -69,7 +69,11 @@ TEST_CASE("FlushTask with MOD_NAME Container and Async Tasks",
     // pool if needed
     auto pool_query = chi::PoolQuery::Local();
     std::string pool_name = "flush_test_mod_name_pool";
-    bool success = mod_name_client.Create(pool_query, pool_name, mod_name_pool_id);
+    auto create_task = mod_name_client.AsyncCreate(pool_query, pool_name, mod_name_pool_id);
+    create_task.Wait();
+    mod_name_client.pool_id_ = create_task->new_pool_id_;
+    mod_name_client.return_code_ = create_task->return_code_;
+    bool success = (create_task->return_code_ == 0);
     REQUIRE(success);
 
     // Send multiple async Custom tasks to the MOD_NAME runtime
@@ -98,10 +102,6 @@ TEST_CASE("FlushTask with MOD_NAME Container and Async Tasks",
 
       flush_result_code.store(flush_task->return_code_);
       flush_completed.store(true);
-
-      // Clean up flush task
-      auto* ipc_manager = CHI_IPC;
-      ipc_manager->DelTask(flush_task.GetTaskPtr());
     });
 
     // Give the flush a moment to start
@@ -117,12 +117,6 @@ TEST_CASE("FlushTask with MOD_NAME Container and Async Tasks",
     flush_thread.join();
     REQUIRE(flush_completed.load());
     REQUIRE(flush_result_code.load() == 0);
-
-    // Clean up async tasks
-    auto* cleanup_ipc_manager = CHI_IPC;
-    for (auto& async_task : async_tasks) {
-      cleanup_ipc_manager->DelTask(async_task.GetTaskPtr());
-    }
 
     INFO("MOD_NAME flush test completed - flush works with async Custom tasks");
   }

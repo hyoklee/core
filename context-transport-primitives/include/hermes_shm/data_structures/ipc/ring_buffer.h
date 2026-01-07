@@ -13,10 +13,12 @@
 #ifndef HSHM_DATA_STRUCTURES_IPC_RING_BUFFER_H_
 #define HSHM_DATA_STRUCTURES_IPC_RING_BUFFER_H_
 
+#include <sys/types.h>
+
+#include "hermes_shm/constants/macros.h"
 #include "hermes_shm/data_structures/ipc/shm_container.h"
 #include "hermes_shm/data_structures/ipc/vector.h"
 #include "hermes_shm/memory/allocator/allocator.h"
-#include "hermes_shm/constants/macros.h"
 #include "hermes_shm/types/atomic.h"
 #include "hermes_shm/types/bitfield.h"
 
@@ -42,17 +44,18 @@ enum RingQueueFlag : uint32_t {
 };
 
 /**
- * Ring buffer entry with validation bits.
+ * Ring buffer entry with atomic ready flag.
  *
- * This structure combines a bitfield for validation flags with user data.
- * Bit 0 is used to mark when data is ready for consumption.
+ * This structure combines an atomic bitfield for the ready flag with user data.
+ * The ready flag is used to mark when data is ready for consumption,
+ * with proper memory ordering to ensure data visibility across threads.
  *
  * @tparam T The type of data to store in the entry
  */
-template<typename T>
+template <typename T>
 struct RingBufferEntry {
-  bitfield64_t flags_;  /**< Validation flags (bit 0 = data ready) */
-  T data_;               /**< The actual data */
+  abitfield32_t flags_; /**< Atomic flags (bit 0 = data ready) */
+  T data_;              /**< The actual data */
 
   /**
    * Default constructor
@@ -69,20 +72,31 @@ struct RingBufferEntry {
   explicit RingBufferEntry(const T& data) : flags_(0), data_(data) {}
 
   /**
-   * Get reference to flags
+   * Check if entry is ready for consumption (acquire semantics)
    *
-   * @return Reference to the bitfield
+   * @return True if entry is ready
    */
   HSHM_INLINE_CROSS_FUN
-  bitfield64_t& GetFlags() { return flags_; }
+  bool IsReady() const {
+    return flags_.Any(1);
+  }
 
   /**
-   * Get const reference to flags
-   *
-   * @return Const reference to the bitfield
+   * Mark entry as ready (release semantics)
+   * Call this AFTER writing data to ensure visibility
    */
   HSHM_INLINE_CROSS_FUN
-  const bitfield64_t& GetFlags() const { return flags_; }
+  void SetReady() {
+    flags_.SetBits(1);
+  }
+
+  /**
+   * Clear ready flag
+   */
+  HSHM_INLINE_CROSS_FUN
+  void ClearReady() {
+    flags_.UnsetBits(1);
+  }
 
   /**
    * Get reference to data
@@ -99,62 +113,6 @@ struct RingBufferEntry {
    */
   HSHM_INLINE_CROSS_FUN
   const T& GetData() const { return data_; }
-};
-
-/**
- * Token to track ring buffer operations (position and uniqueness).
- *
- * Used to identify specific entries in the ring buffer.
- */
-struct qtok_id {
-  u64 id_;  /**< Unique identifier */
-
-  /**
-   * Default constructor
-   */
-  HSHM_INLINE_CROSS_FUN
-  qtok_id() : id_(0) {}
-
-  /**
-   * Constructor with ID
-   *
-   * @param id The token ID
-   */
-  HSHM_INLINE_CROSS_FUN
-  explicit qtok_id(u64 id) : id_(id) {}
-
-  /**
-   * Comparison operators
-   */
-  HSHM_INLINE_CROSS_FUN
-  bool operator==(const qtok_id& other) const { return id_ == other.id_; }
-
-  HSHM_INLINE_CROSS_FUN
-  bool operator!=(const qtok_id& other) const { return id_ != other.id_; }
-
-  HSHM_INLINE_CROSS_FUN
-  bool operator<(const qtok_id& other) const { return id_ < other.id_; }
-
-  HSHM_INLINE_CROSS_FUN
-  bool operator<=(const qtok_id& other) const { return id_ <= other.id_; }
-
-  HSHM_INLINE_CROSS_FUN
-  bool operator>(const qtok_id& other) const { return id_ > other.id_; }
-
-  HSHM_INLINE_CROSS_FUN
-  bool operator>=(const qtok_id& other) const { return id_ >= other.id_; }
-
-  /**
-   * Arithmetic operators
-   */
-  HSHM_INLINE_CROSS_FUN
-  qtok_id operator+(u64 count) const { return qtok_id(id_ + count); }
-
-  HSHM_INLINE_CROSS_FUN
-  qtok_id operator-(u64 count) const { return qtok_id(id_ - count); }
-
-  HSHM_INLINE_CROSS_FUN
-  u64 operator-(const qtok_id& other) const { return id_ - other.id_; }
 };
 
 /**
@@ -177,9 +135,9 @@ struct qtok_id {
  * @tparam AllocT The allocator type for shared memory allocation
  * @tparam FLAGS Configuration flags controlling buffer behavior
  */
-template<typename T,
-         typename AllocT,
-         uint32_t FLAGS = (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_FIXED_SIZE | RING_BUFFER_ERROR_ON_NO_SPACE)>
+template <typename T, typename AllocT,
+          uint32_t FLAGS = (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_FIXED_SIZE |
+                            RING_BUFFER_ERROR_ON_NO_SPACE)>
 class ring_buffer : public ShmContainer<AllocT> {
  public:
   using allocator_type = AllocT;
@@ -194,8 +152,10 @@ class ring_buffer : public ShmContainer<AllocT> {
   // Configuration constants derived from FLAGS
   static constexpr bool IsSPSC = (FLAGS & RING_BUFFER_SPSC_FLAGS) != 0;
   static constexpr bool IsMPSC = (FLAGS & RING_BUFFER_MPSC_FLAGS) != 0;
-  static constexpr bool WaitForSpace = (FLAGS & RING_BUFFER_WAIT_FOR_SPACE) != 0;
-  static constexpr bool ErrorOnNoSpace = (FLAGS & RING_BUFFER_ERROR_ON_NO_SPACE) != 0;
+  static constexpr bool WaitForSpace =
+      (FLAGS & RING_BUFFER_WAIT_FOR_SPACE) != 0;
+  static constexpr bool ErrorOnNoSpace =
+      (FLAGS & RING_BUFFER_ERROR_ON_NO_SPACE) != 0;
   static constexpr bool DynamicSize = (FLAGS & RING_BUFFER_DYNAMIC_SIZE) != 0;
   static constexpr bool IsAtomic = IsMPSC;
 
@@ -204,10 +164,16 @@ class ring_buffer : public ShmContainer<AllocT> {
   using tail_type = hipc::opt_atomic<u64, IsAtomic>;
 
  private:
-  entry_vector queue_;      /**< Internal vector storing entries */
-  head_type head_;           /**< Consumer head pointer */
-  tail_type tail_;           /**< Producer tail pointer */
-  u32 assigned_worker_id_;   /**< Assigned worker ID for this lane (set by orchestrator) */
+  entry_vector queue_;     /**< Internal vector storing entries */
+  head_type head_;         /**< Consumer head pointer */
+  tail_type tail_;         /**< Producer tail pointer */
+  u32 assigned_worker_id_; /**< Assigned worker ID for this lane (set by
+                              orchestrator) */
+  int signal_fd_;          /**< Signal file descriptor for awakening worker */
+  pid_t tid_;              /**< Thread ID of the worker owning this lane */
+  hipc::opt_atomic<bool, IsAtomic>
+      active_; /**< Whether worker is accepting tasks (true) or blocked in
+                  epoll_wait (false) */
 
  public:
   /**
@@ -217,26 +183,35 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @param depth The initial capacity (number of entries)
    */
   HSHM_CROSS_FUN
-  explicit ring_buffer(AllocT *alloc, size_t depth = 1024)
+  explicit ring_buffer(AllocT* alloc, size_t depth = 1024)
       : ShmContainer<AllocT>(alloc),
         queue_(alloc, depth + 1),
         head_(0),
-        tail_(0) {
+        tail_(0),
+        assigned_worker_id_(0),
+        signal_fd_(-1),
+        tid_(0),
+        active_(true) {
     // Allocate depth + 1 to account for the one reserved slot
   }
 
   /**
    * Copy constructor
    *
-   * Creates a new ring_buffer with the same configuration and contents as another.
-   * Used when ring_buffers are stored in shared memory containers like vector.
+   * Creates a new ring_buffer with the same configuration and contents as
+   * another. Used when ring_buffers are stored in shared memory containers like
+   * vector.
    */
   HSHM_CROSS_FUN
-  ring_buffer(const ring_buffer &other)
+  ring_buffer(const ring_buffer& other)
       : ShmContainer<AllocT>(other.GetAllocator()),
         queue_(other.GetAllocator(), other.queue_.size() - 1),
         head_(other.head_),
-        tail_(other.tail_) {
+        tail_(other.tail_),
+        assigned_worker_id_(other.assigned_worker_id_),
+        signal_fd_(other.signal_fd_),
+        tid_(other.tid_),
+        active_(other.active_.load()) {
     // Copy the contents of the queue from other
     for (size_t i = 0; i < other.queue_.size(); ++i) {
       queue_[i] = other.queue_[i];
@@ -248,7 +223,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    *
    * IPC data structures must be allocated via allocator, not moved on stack.
    */
-  ring_buffer(ring_buffer &&other) noexcept = delete;
+  ring_buffer(ring_buffer&& other) noexcept = delete;
 
   /**
    * Destructor
@@ -264,9 +239,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @return The worker ID assigned to this lane
    */
   HSHM_INLINE_CROSS_FUN
-  u32 GetAssignedWorkerId() const {
-    return assigned_worker_id_;
-  }
+  u32 GetAssignedWorkerId() const { return assigned_worker_id_; }
 
   /**
    * Set assigned worker ID for this lane
@@ -274,9 +247,55 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @param worker_id The worker ID to assign
    */
   HSHM_INLINE_CROSS_FUN
-  void SetAssignedWorkerId(u32 worker_id) {
-    assigned_worker_id_ = worker_id;
-  }
+  void SetAssignedWorkerId(u32 worker_id) { assigned_worker_id_ = worker_id; }
+
+  /**
+   * Get signal file descriptor for this lane
+   *
+   * @return The signal file descriptor
+   */
+  HSHM_INLINE_CROSS_FUN
+  int GetSignalFd() const { return signal_fd_; }
+
+  /**
+   * Set signal file descriptor for this lane
+   *
+   * @param signal_fd The signal file descriptor to set
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetSignalFd(int signal_fd) { signal_fd_ = signal_fd; }
+
+  /**
+   * Get thread ID of the worker owning this lane
+   *
+   * @return The thread ID
+   */
+  HSHM_INLINE_CROSS_FUN
+  pid_t GetTid() const { return tid_; }
+
+  /**
+   * Set thread ID of the worker owning this lane
+   *
+   * @param tid The thread ID to set
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetTid(pid_t tid) { tid_ = tid; }
+
+  /**
+   * Check if worker is active (accepting tasks) or blocked in epoll_wait
+   *
+   * @return true if worker is active, false if blocked
+   */
+  HSHM_INLINE_CROSS_FUN
+  bool IsActive() const { return active_.load(); }
+
+  /**
+   * Set worker active status
+   *
+   * @param active true if worker is active, false if blocked in epoll_wait
+   */
+  HSHM_INLINE_CROSS_FUN
+  void SetActive(bool active) { active_.store(active); }
 
   /**
    * Get current size (number of items in buffer)
@@ -312,9 +331,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @return Number of allocated slots in vector
    */
   HSHM_INLINE_CROSS_FUN
-  size_t GetDepth() const {
-    return queue_.size();
-  }
+  size_t GetDepth() const { return queue_.size(); }
 
   /**
    * Check if buffer is empty
@@ -322,9 +339,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @return True if buffer contains no items
    */
   HSHM_INLINE_CROSS_FUN
-  bool Empty() const {
-    return head_.load() == tail_.load();
-  }
+  bool Empty() const { return head_.load() == tail_.load(); }
 
   /**
    * Check if buffer is full
@@ -344,12 +359,11 @@ class ring_buffer : public ShmContainer<AllocT> {
    * Push an element into the buffer
    *
    * @param val The value to push
-   * @return True if push succeeded, false if buffer is full (when using ErrorOnNoSpace)
+   * @return True if push succeeded, false if buffer is full (when using
+   * ErrorOnNoSpace)
    */
   HSHM_CROSS_FUN
-  bool Push(const T& val) {
-    return Emplace(val);
-  }
+  bool Push(const T& val) { return Emplace(val); }
 
   /**
    * Try to push an element (alias for Push)
@@ -358,9 +372,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @return True if push succeeded, false if buffer is full
    */
   HSHM_INLINE_CROSS_FUN
-  bool TryPush(const T& val) {
-    return Push(val);
-  }
+  bool TryPush(const T& val) { return Push(val); }
 
   /**
    * Emplace an element (same as push)
@@ -369,15 +381,15 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @return True if emplace succeeded, false if buffer is full
    */
   template <typename... Args>
-  HSHM_CROSS_FUN
-  bool Emplace(Args&&... args) {
+  HSHM_CROSS_FUN bool Emplace(Args&&... args) {
     // Load head and allocate a slot atomically
     u64 head = head_.load();
     u64 tail = tail_.fetch_add(1);
     entry_vector& queue = queue_;
 
     // Check if there's space in the queue
-    // We need to keep one slot empty as a sentinel, so size must be < queue.size()
+    // We need to keep one slot empty as a sentinel, so size must be <
+    // queue.size()
     if constexpr (WaitForSpace) {
       size_t size = tail - head + 1;
       while (size >= queue.size()) {
@@ -402,7 +414,7 @@ class ring_buffer : public ShmContainer<AllocT> {
     size_t idx = tail % queue.size();
     auto& entry = queue[idx];
     entry.data_ = T(std::forward<Args>(args)...);
-    entry.flags_.SetBits(1);  // Mark as ready for consumption
+    entry.SetReady();  // Mark as ready with release semantics
 
     return true;
   }
@@ -425,9 +437,9 @@ class ring_buffer : public ShmContainer<AllocT> {
     // Pop the element, but only if it's marked valid
     size_t idx = head % queue_.size();
     entry_type& entry = queue_[idx];
-    if (entry.flags_.Any(1)) {
+    if (entry.IsReady()) {  // Acquire semantics ensure data visibility
       val = entry.data_;
-      entry.flags_.Clear();
+      entry.ClearReady();
       head_.fetch_add(1);
       return true;
     }
@@ -441,9 +453,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    * @return True if pop succeeded, false if buffer is empty
    */
   HSHM_INLINE_CROSS_FUN
-  bool TryPop(T& val) {
-    return Pop(val);
-  }
+  bool TryPop(T& val) { return Pop(val); }
 
   /**
    * Clear the buffer
@@ -462,9 +472,7 @@ class ring_buffer : public ShmContainer<AllocT> {
    * Reset the buffer (alias for Clear)
    */
   HSHM_INLINE_CROSS_FUN
-  void Reset() {
-    Clear();
-  }
+  void Reset() { Clear(); }
 
   /**
    * Resize the buffer to a new depth
@@ -490,9 +498,9 @@ class ring_buffer : public ShmContainer<AllocT> {
  * making it suitable for scenarios where size cannot be predicted upfront.
  * NOT thread-safe for multiple producers.
  */
-template<typename T, typename AllocT = hipc::Allocator>
-using ext_ring_buffer = ring_buffer<T, AllocT,
-    (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_DYNAMIC_SIZE)>;
+template <typename T, typename AllocT = hipc::Allocator>
+using ext_ring_buffer =
+    ring_buffer<T, AllocT, (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_DYNAMIC_SIZE)>;
 
 /**
  * Typedef for fixed-size SPSC (Single Producer Single Consumer) ring buffer.
@@ -500,9 +508,11 @@ using ext_ring_buffer = ring_buffer<T, AllocT,
  * This ring buffer is optimized for single-threaded scenarios and will
  * return an error when attempting to push beyond capacity.
  */
-template<typename T, typename AllocT = hipc::Allocator>
-using spsc_ring_buffer = ring_buffer<T, AllocT,
-    (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_FIXED_SIZE | RING_BUFFER_ERROR_ON_NO_SPACE)>;
+template <typename T, typename AllocT = hipc::Allocator>
+using spsc_ring_buffer =
+    ring_buffer<T, AllocT,
+                (RING_BUFFER_SPSC_FLAGS | RING_BUFFER_FIXED_SIZE |
+                 RING_BUFFER_ERROR_ON_NO_SPACE)>;
 
 /**
  * Typedef for fixed-size MPSC (Multiple Producer Single Consumer) ring buffer.
@@ -511,21 +521,24 @@ using spsc_ring_buffer = ring_buffer<T, AllocT,
  * but only one thread consumes. Uses atomic operations for thread-safe
  * multi-producer access while supporting single consumer.
  */
-template<typename T, typename AllocT = hipc::Allocator>
-using mpsc_ring_buffer = ring_buffer<T, AllocT,
-    (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE | RING_BUFFER_WAIT_FOR_SPACE)>;
+template <typename T, typename AllocT = hipc::Allocator>
+using mpsc_ring_buffer =
+    ring_buffer<T, AllocT,
+                (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE |
+                 RING_BUFFER_WAIT_FOR_SPACE)>;
 
 /**
- * Typedef for circular fixed-size MPSC (Multiple Producer Single Consumer) ring buffer.
+ * Typedef for circular fixed-size MPSC (Multiple Producer Single Consumer) ring
+ * buffer.
  *
  * This ring buffer is optimized for scenarios where multiple threads push
  * but only one thread consumes. Uses atomic operations for thread-safe
  * multi-producer access while supporting single consumer. Wraps around
  * when full instead of waiting.
  */
-template<typename T, typename AllocT = hipc::Allocator>
-using circular_mpsc_ring_buffer = ring_buffer<T, AllocT,
-    (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE)>;
+template <typename T, typename AllocT = hipc::Allocator>
+using circular_mpsc_ring_buffer =
+    ring_buffer<T, AllocT, (RING_BUFFER_MPSC_FLAGS | RING_BUFFER_FIXED_SIZE)>;
 
 }  // namespace hshm::ipc
 
