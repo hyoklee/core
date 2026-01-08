@@ -66,6 +66,11 @@ if(ENABLE_RPATH)
         "${CONDA_PREFIX}/lib"
     )
 
+    # Set RPATH for build tree binaries too (so they work without LD_LIBRARY_PATH)
+    set(CMAKE_BUILD_RPATH
+        "${CONDA_PREFIX}/lib"
+    )
+
     message(STATUS "RPATH enabled (old-style, checked before LD_LIBRARY_PATH):")
     message(STATUS "  Install RPATH: ${CMAKE_INSTALL_RPATH}")
     message(STATUS "  Build RPATH: ${CMAKE_BUILD_RPATH}")

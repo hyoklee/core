@@ -92,7 +92,12 @@ ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 USER iowarp
 WORKDIR /home/iowarp
 
-# Initialize conda for bash (conda is inherited from base image)
+# Install Miniconda
+RUN wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh \
+    && bash /tmp/miniconda.sh -b -p /home/iowarp/miniconda3 \
+    && rm /tmp/miniconda.sh
+
+# Initialize conda for bash
 RUN /home/iowarp/miniconda3/bin/conda init bash \
     && /home/iowarp/miniconda3/bin/conda config --add channels conda-forge \
     && /home/iowarp/miniconda3/bin/conda config --set channel_priority strict
@@ -174,8 +179,9 @@ RUN cd /tmp \
     && ldconfig \
     && cd /tmp && rm -rf sz3_src
 
-# Install ADIOS2 from source (conda version has broken headers)
-# Build with examples enabled to ensure full functionality
+# Install ADIOS2 from source
+# Build with system libraries (NOT conda) to avoid OpenSSL version conflicts
+# This allows gray-scott binaries to run without LD_LIBRARY_PATH
 RUN cd /tmp \
     && git clone https://github.com/ornladios/ADIOS2.git ADIOS2 \
     && mkdir -p adios2-build && cd adios2-build \
@@ -186,10 +192,9 @@ RUN cd /tmp \
     -DBUILD_SHARED_LIBS=ON \
     -DBUILD_TESTING=OFF \
     -DADIOS2_USE_MPI=ON \
-    -DADIOS2_USE_HDF5=ON \
-    -DADIOS2_USE_ZeroMQ=ON \
+    -DADIOS2_USE_HDF5=OFF \
+    -DADIOS2_USE_ZeroMQ=OFF \
     -DADIOS2_USE_Python=OFF \
-    -DCMAKE_PREFIX_PATH="/home/iowarp/miniconda3" \
     && make -j$(nproc) \
     && make install \
     && ldconfig \
@@ -236,6 +241,7 @@ RUN echo 'export NVIDIA_DRIVER_CAPABILITIES=compute,utility' >> /home/iowarp/.ba
     && echo '# This includes: boost, hdf5, yaml-cpp, zeromq, cereal, catch2, pytest, etc.' >> /home/iowarp/.bashrc \
     && echo '# Compression libraries: zlib, bzip2, lzo, zstd, lz4, xz, brotli, snappy (via conda)' >> /home/iowarp/.bashrc \
     && echo '# Lossy compression: ZFP (via conda), SZ3, FPZIP (built from source)' >> /home/iowarp/.bashrc \
+    && echo '# ADIOS2: Built from source (installed in /usr/local)' >> /home/iowarp/.bashrc \
     && echo '# Create custom environments if needed: conda create -n myenv' >> /home/iowarp/.bashrc \
     && echo 'eval "$(/home/iowarp/miniconda3/bin/conda shell.bash hook)"' >> /home/iowarp/.bashrc \
     && echo '# <<< conda initialize <<<' >> /home/iowarp/.bashrc \
