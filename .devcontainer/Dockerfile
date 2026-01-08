@@ -102,7 +102,7 @@ RUN /home/iowarp/miniconda3/bin/conda init bash \
 # Dependencies installed:
 #   - Build tools: cmake, ninja, conda-build, pkg-config
 #   - Core libraries: boost, hdf5, yaml-cpp, zeromq, cppzmq, cereal
-#   - Testing: catch2
+#   - Testing: catch2, pytest
 #   - Network: libcurl, openssl
 #   - Compression libraries: zlib, bzip2, lzo, zstd, lz4, xz (lzma), brotli, snappy
 #   - Lossy compression: sz3, zfp (scientific compressors, available via conda)
@@ -135,6 +135,7 @@ RUN /home/iowarp/miniconda3/bin/conda tos accept --override-channels --channel h
     zfp \
     poco \
     nlohmann_json \
+    pytest \
     && /home/iowarp/miniconda3/bin/conda clean -ya
 
 # Switch to root to install lossy compression libraries from source
@@ -232,7 +233,7 @@ RUN echo 'export NVIDIA_DRIVER_CAPABILITIES=compute,utility' >> /home/iowarp/.ba
     && echo '' >> /home/iowarp/.bashrc \
     && echo '# >>> conda initialize >>>' >> /home/iowarp/.bashrc \
     && echo '# Conda base environment is auto-activated with all dev dependencies' >> /home/iowarp/.bashrc \
-    && echo '# This includes: boost, hdf5, yaml-cpp, zeromq, cereal, catch2, etc.' >> /home/iowarp/.bashrc \
+    && echo '# This includes: boost, hdf5, yaml-cpp, zeromq, cereal, catch2, pytest, etc.' >> /home/iowarp/.bashrc \
     && echo '# Compression libraries: zlib, bzip2, lzo, zstd, lz4, xz, brotli, snappy (via conda)' >> /home/iowarp/.bashrc \
     && echo '# Lossy compression: ZFP (via conda), SZ3, FPZIP (built from source)' >> /home/iowarp/.bashrc \
     && echo '# Create custom environments if needed: conda create -n myenv' >> /home/iowarp/.bashrc \

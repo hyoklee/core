@@ -84,4 +84,30 @@ if(BUILD_TESTING)
         PROPERTIES
         DEPENDS wrp_cte_core_ext
     )
+
+    # PollTelemetryLog focused test (requires runtime initialization)
+    # This test specifically validates telemetry logging functionality
+    # Requires: CHIMAERA_WITH_RUNTIME=1 and WRP_RUNTIME_CONF set
+    add_test(
+        NAME python_telemetry_test
+        COMMAND ${Python_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/test_cte_telemetry.py
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:wrp_cte_core_ext>
+    )
+
+    # Configure telemetry test with runtime initialization
+    # Uses the same config as ADIOS2 adapter tests
+    set_tests_properties(
+        python_telemetry_test
+        PROPERTIES
+        LABELS "python;bindings;telemetry"
+        TIMEOUT 180
+        ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1;WRP_RUNTIME_CONF=${CMAKE_SOURCE_DIR}/context-transfer-engine/test/unit/adapters/adios2/cte_config.yaml;LD_LIBRARY_PATH=/home/iowarp/miniconda3/lib:$ENV{LD_LIBRARY_PATH}"
+    )
+
+    # Ensure test depends on the built module
+    set_tests_properties(
+        python_telemetry_test
+        PROPERTIES
+        DEPENDS wrp_cte_core_ext
+    )
 endif()
