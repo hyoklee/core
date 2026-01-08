@@ -179,9 +179,9 @@ RUN cd /tmp \
     && ldconfig \
     && cd /tmp && rm -rf sz3_src
 
-# Install ADIOS2 from source
-# Build with system libraries (NOT conda) to avoid OpenSSL version conflicts
-# This allows gray-scott binaries to run without LD_LIBRARY_PATH
+# Install ADIOS2 from source with HDF5 and ZeroMQ support
+# Uses conda's HDF5 and ZeroMQ libraries (CMAKE_PREFIX_PATH points to conda)
+# RPATH configuration ensures gray-scott binaries work without wrapper scripts
 RUN cd /tmp \
     && git clone https://github.com/ornladios/ADIOS2.git ADIOS2 \
     && mkdir -p adios2-build && cd adios2-build \
@@ -192,9 +192,10 @@ RUN cd /tmp \
     -DBUILD_SHARED_LIBS=ON \
     -DBUILD_TESTING=OFF \
     -DADIOS2_USE_MPI=ON \
-    -DADIOS2_USE_HDF5=OFF \
-    -DADIOS2_USE_ZeroMQ=OFF \
+    -DADIOS2_USE_HDF5=ON \
+    -DADIOS2_USE_ZeroMQ=ON \
     -DADIOS2_USE_Python=OFF \
+    -DCMAKE_PREFIX_PATH="/home/iowarp/miniconda3" \
     && make -j$(nproc) \
     && make install \
     && ldconfig \
