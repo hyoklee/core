@@ -151,14 +151,21 @@ void IowarpEngine::DoPutSync_(const adios2::core::Variable<T> &variable,
     throw std::runtime_error("IowarpEngine::DoPutSync_: No active tag");
   }
 
-  // Calculate blob name from variable name and current step
+  // Calculate blob name from variable name, current step, and rank
   std::string blob_name =
-      variable.m_Name + "_step_" + std::to_string(current_step_);
+      variable.m_Name + "_step_" + std::to_string(current_step_) +
+      "_rank_" + std::to_string(rank_);
 
-  // Calculate data size
+  // Calculate data size using m_Count (local selection size), not m_Shape (global)
   size_t element_count = 1;
-  for (size_t dim : variable.m_Shape) {
-    element_count *= dim;
+  if (!variable.m_Count.empty()) {
+    for (size_t dim : variable.m_Count) {
+      element_count *= dim;
+    }
+  } else if (!variable.m_Shape.empty()) {
+    for (size_t dim : variable.m_Shape) {
+      element_count *= dim;
+    }
   }
   size_t data_size = element_count * sizeof(T);
 
@@ -191,23 +198,48 @@ void IowarpEngine::DoPutDeferred_(const adios2::core::Variable<T> &variable,
     throw std::runtime_error("IowarpEngine::DoPutDeferred_: No active tag");
   }
 
-  // Calculate blob name from variable name and current step
+  // Calculate blob name from variable name, current step, and rank
+  // Each rank writes its own portion with a unique blob name
   std::string blob_name =
-      variable.m_Name + "_step_" + std::to_string(current_step_);
+      variable.m_Name + "_step_" + std::to_string(current_step_) +
+      "_rank_" + std::to_string(rank_);
 
-  // Calculate data size
+  // Calculate data size using m_Count (local selection size), not m_Shape (global)
+  // In MPI applications, each rank only has a portion of the global array
   size_t element_count = 1;
-  for (size_t dim : variable.m_Shape) {
-    element_count *= dim;
+  if (!variable.m_Count.empty()) {
+    // Use local count if available (for selections/MPI decomposition)
+    for (size_t dim : variable.m_Count) {
+      element_count *= dim;
+    }
+  } else if (!variable.m_Shape.empty()) {
+    // Fall back to global shape if no selection
+    for (size_t dim : variable.m_Shape) {
+      element_count *= dim;
+    }
   }
   size_t data_size = element_count * sizeof(T);
 
   // Put blob asynchronously
   try {
     auto *ipc_manager = CHI_IPC;
+    if (ipc_manager == nullptr) {
+      throw std::runtime_error("IowarpEngine::DoPutDeferred_: CHI_IPC is null");
+    }
 
     // Allocate shared memory buffer and copy data
     auto buffer = ipc_manager->AllocateBuffer(data_size);
+    if (buffer.ptr_ == nullptr) {
+      throw std::runtime_error(
+          "IowarpEngine::DoPutDeferred_: Failed to allocate buffer");
+    }
+
+    // Check if values pointer is valid
+    if (values == nullptr) {
+      throw std::runtime_error(
+          "IowarpEngine::DoPutDeferred_: values pointer is null");
+    }
+
     std::memcpy(buffer.ptr_, values, data_size);
 
     auto task = current_tag_->AsyncPutBlob(
@@ -241,14 +273,21 @@ void IowarpEngine::DoGetSync_(const adios2::core::Variable<T> &variable,
     throw std::runtime_error("IowarpEngine::DoGetSync_: No active tag");
   }
 
-  // Calculate blob name from variable name and current step
+  // Calculate blob name from variable name, current step, and rank
   std::string blob_name =
-      variable.m_Name + "_step_" + std::to_string(current_step_);
+      variable.m_Name + "_step_" + std::to_string(current_step_) +
+      "_rank_" + std::to_string(rank_);
 
-  // Calculate expected data size
+  // Calculate expected data size using m_Count (local selection size)
   size_t element_count = 1;
-  for (size_t dim : variable.m_Shape) {
-    element_count *= dim;
+  if (!variable.m_Count.empty()) {
+    for (size_t dim : variable.m_Count) {
+      element_count *= dim;
+    }
+  } else if (!variable.m_Shape.empty()) {
+    for (size_t dim : variable.m_Shape) {
+      element_count *= dim;
+    }
   }
   size_t expected_size = element_count * sizeof(T);
 
