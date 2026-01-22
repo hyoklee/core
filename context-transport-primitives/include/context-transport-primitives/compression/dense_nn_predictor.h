@@ -3,7 +3,8 @@
  * @brief Dense Neural Network compression predictor using MiniDNN
  *
  * This header provides a C++ interface for dense neural network models
- * to predict compression ratio and PSNR. Supports both training and inference.
+ * to predict compression metrics. Uses a unified multi-output architecture
+ * that predicts all outputs (ratio, PSNR, time) in a single forward pass.
  * Uses MiniDNN (header-only library based on Eigen) for neural network operations.
  */
 
@@ -96,18 +97,23 @@ class StandardScaler {
 /**
  * @brief Dense Neural Network compression predictor using MiniDNN
  *
- * Uses a multi-layer perceptron to predict compression ratio and PSNR.
+ * Uses a multi-layer perceptron with multi-output architecture to predict
+ * all compression metrics (ratio, PSNR, time) in a single forward pass.
  * MiniDNN is a header-only library based on Eigen, providing fast CPU inference.
  *
  * Example usage:
  * @code
  * DenseNNPredictor predictor;
- * if (predictor.Load("models/densenn")) {
- *   CompressionFeatures features;
- *   features.chunk_size_bytes = 65536;
- *   // ... set other features
- *   auto result = predictor.Predict(features);
- * }
+ *
+ * // Train with multi-output labels
+ * std::vector<TrainingLabels> labels = {...};
+ * predictor.Train(features, labels);
+ *
+ * // Predict all metrics at once
+ * auto result = predictor.Predict(features);
+ * std::cout << "Ratio: " << result.compression_ratio << std::endl;
+ * std::cout << "PSNR: " << result.psnr_db << std::endl;
+ * std::cout << "Time: " << result.compression_time_ms << std::endl;
  * @endcode
  */
 class DenseNNPredictor : public CompressionPredictor {
@@ -173,7 +179,31 @@ class DenseNNPredictor : public CompressionPredictor {
       const std::vector<CompressionFeatures>& batch) override;
 
   /**
-   * @brief Train the compression ratio model
+   * @brief Train the unified multi-output model (override from base class)
+   *
+   * Trains all three networks (ratio, PSNR, time) from a single call.
+   *
+   * @param features Vector of training features
+   * @param labels Vector of training labels (ratio, psnr, time)
+   * @return true if training succeeded
+   */
+  bool Train(const std::vector<CompressionFeatures>& features,
+             const std::vector<TrainingLabels>& labels) override;
+
+  /**
+   * @brief Train the unified model with config
+   *
+   * @param features Vector of training features
+   * @param labels Vector of training labels
+   * @param config Training configuration
+   * @return true if training succeeded
+   */
+  bool TrainWithConfig(const std::vector<CompressionFeatures>& features,
+                       const std::vector<TrainingLabels>& labels,
+                       const TrainingConfig& config);
+
+  /**
+   * @brief Train the compression ratio model (legacy)
    *
    * @param features Training features
    * @param labels Compression ratio labels
@@ -185,7 +215,7 @@ class DenseNNPredictor : public CompressionPredictor {
                        const TrainingConfig& config = TrainingConfig());
 
   /**
-   * @brief Train the PSNR model
+   * @brief Train the PSNR model (legacy)
    *
    * @param features Training features (lossy compression only)
    * @param labels PSNR labels
@@ -193,6 +223,18 @@ class DenseNNPredictor : public CompressionPredictor {
    * @return true if training succeeded
    */
   bool TrainPSNRModel(const std::vector<CompressionFeatures>& features,
+                      const std::vector<float>& labels,
+                      const TrainingConfig& config = TrainingConfig());
+
+  /**
+   * @brief Train the compression time model (legacy)
+   *
+   * @param features Training features
+   * @param labels Compression time labels (ms)
+   * @param config Training configuration
+   * @return true if training succeeded
+   */
+  bool TrainTimeModel(const std::vector<CompressionFeatures>& features,
                       const std::vector<float>& labels,
                       const TrainingConfig& config = TrainingConfig());
 
@@ -282,10 +324,13 @@ class DenseNNPredictor : public CompressionPredictor {
 
   std::unique_ptr<MiniDNN::Network> ratio_network_;  /**< Network for compression ratio */
   std::unique_ptr<MiniDNN::Network> psnr_network_;   /**< Network for PSNR */
+  std::unique_ptr<MiniDNN::Network> time_network_;   /**< Network for compression time */
   StandardScaler ratio_scaler_;                       /**< Scaler for ratio model */
   StandardScaler psnr_scaler_;                        /**< Scaler for PSNR model */
+  StandardScaler time_scaler_;                        /**< Scaler for time model */
   bool ratio_model_ready_;                            /**< Whether ratio model is ready */
   bool psnr_model_ready_;                             /**< Whether PSNR model is ready */
+  bool time_model_ready_;                             /**< Whether time model is ready */
   mutable std::mutex mutex_;                          /**< Mutex for thread safety */
 
   // Architecture storage for save/load
@@ -293,6 +338,8 @@ class DenseNNPredictor : public CompressionPredictor {
   double ratio_dropout_rate_;                         /**< Dropout rate for ratio model */
   std::vector<int> psnr_hidden_layers_;               /**< Hidden layer sizes for PSNR model */
   double psnr_dropout_rate_;                          /**< Dropout rate for PSNR model */
+  std::vector<int> time_hidden_layers_;               /**< Hidden layer sizes for time model */
+  double time_dropout_rate_;                          /**< Dropout rate for time model */
 
   // Reinforcement learning members
   std::deque<RLExperience> experience_buffer_;        /**< Experience replay buffer */

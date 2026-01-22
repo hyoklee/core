@@ -3,7 +3,7 @@
  * @brief XGBoost-based compression prediction model
  *
  * This header provides a C++ interface for XGBoost gradient boosting models
- * to predict compression ratio and PSNR. Supports both training and inference.
+ * to predict compression metrics. Supports both training and inference.
  */
 
 #ifndef HSHM_XGBOOST_PREDICTOR_H
@@ -24,24 +24,23 @@ namespace compress {
 /**
  * @brief XGBoost-based compression performance predictor
  *
- * Uses gradient boosting decision trees to predict compression ratio
- * and PSNR (for lossy compressors) based on data statistics.
- *
- * The model uses two separate boosters:
- * - ratio_booster_: Predicts compression ratio
- * - psnr_booster_: Predicts PSNR (for lossy compression)
+ * Uses gradient boosting decision trees to predict compression metrics.
+ * Predicts all outputs (compression ratio, PSNR, compression time) using
+ * a unified interface with internally managed boosters.
  *
  * Example usage:
  * @code
  * XGBoostPredictor predictor;
- * if (predictor.Load("models/xgboost")) {
- *   CompressionFeatures features;
- *   features.chunk_size_bytes = 65536;
- *   features.shannon_entropy = 3.5;
- *   // ... set other features
- *   auto result = predictor.Predict(features);
- *   std::cout << "Predicted ratio: " << result.compression_ratio << std::endl;
- * }
+ *
+ * // Train with multi-output labels
+ * std::vector<TrainingLabels> labels = {...};
+ * predictor.Train(features, labels);
+ *
+ * // Predict all metrics at once
+ * auto result = predictor.Predict(features);
+ * std::cout << "Ratio: " << result.compression_ratio << std::endl;
+ * std::cout << "PSNR: " << result.psnr_db << std::endl;
+ * std::cout << "Time: " << result.compression_time_ms << std::endl;
  * @endcode
  */
 class XGBoostPredictor : public CompressionPredictor {
@@ -114,7 +113,32 @@ class XGBoostPredictor : public CompressionPredictor {
       const std::vector<CompressionFeatures>& batch) override;
 
   /**
-   * @brief Train the compression ratio model from data
+   * @brief Train the unified multi-output model (override from base class)
+   *
+   * Trains all three boosters (ratio, PSNR, compression time) from
+   * a single training call with multi-output labels.
+   *
+   * @param features Vector of training features
+   * @param labels Vector of training labels (ratio, psnr, time)
+   * @return true if training succeeded
+   */
+  bool Train(const std::vector<CompressionFeatures>& features,
+             const std::vector<TrainingLabels>& labels) override;
+
+  /**
+   * @brief Train the unified multi-output model with config
+   *
+   * @param features Vector of training features
+   * @param labels Vector of training labels (ratio, psnr, time)
+   * @param config Training configuration
+   * @return true if training succeeded
+   */
+  bool TrainWithConfig(const std::vector<CompressionFeatures>& features,
+                       const std::vector<TrainingLabels>& labels,
+                       const XGBoostConfig& config);
+
+  /**
+   * @brief Train the compression ratio model from data (legacy)
    *
    * @param features Vector of training features
    * @param labels Vector of compression ratio labels
@@ -126,7 +150,7 @@ class XGBoostPredictor : public CompressionPredictor {
                        const XGBoostConfig& config = XGBoostConfig());
 
   /**
-   * @brief Train the PSNR model from data
+   * @brief Train the PSNR model from data (legacy)
    *
    * @param features Vector of training features (lossy compression only)
    * @param labels Vector of PSNR labels
@@ -134,6 +158,18 @@ class XGBoostPredictor : public CompressionPredictor {
    * @return true if training succeeded
    */
   bool TrainPSNRModel(const std::vector<CompressionFeatures>& features,
+                      const std::vector<float>& labels,
+                      const XGBoostConfig& config = XGBoostConfig());
+
+  /**
+   * @brief Train the compression time model from data (legacy)
+   *
+   * @param features Vector of training features
+   * @param labels Vector of compression time labels (ms)
+   * @param config Training configuration
+   * @return true if training succeeded
+   */
+  bool TrainTimeModel(const std::vector<CompressionFeatures>& features,
                       const std::vector<float>& labels,
                       const XGBoostConfig& config = XGBoostConfig());
 
@@ -233,6 +269,7 @@ class XGBoostPredictor : public CompressionPredictor {
 
   BoosterHandle ratio_booster_;  /**< Booster for compression ratio */
   BoosterHandle psnr_booster_;   /**< Booster for PSNR prediction */
+  BoosterHandle time_booster_;   /**< Booster for compression time prediction */
   bool is_ready_;                /**< Whether models are loaded */
   mutable std::mutex mutex_;     /**< Mutex for thread safety */
 

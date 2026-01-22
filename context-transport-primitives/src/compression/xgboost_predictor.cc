@@ -29,6 +29,7 @@ namespace fs = std::filesystem;
 XGBoostPredictor::XGBoostPredictor()
     : ratio_booster_(nullptr),
       psnr_booster_(nullptr),
+      time_booster_(nullptr),
       is_ready_(false),
       epsilon_(0.1),
       exploration_enabled_(false),
@@ -45,11 +46,16 @@ XGBoostPredictor::~XGBoostPredictor() {
     XGBoosterFree(psnr_booster_);
     psnr_booster_ = nullptr;
   }
+  if (time_booster_ != nullptr) {
+    XGBoosterFree(time_booster_);
+    time_booster_ = nullptr;
+  }
 }
 
 XGBoostPredictor::XGBoostPredictor(XGBoostPredictor&& other) noexcept
     : ratio_booster_(other.ratio_booster_),
       psnr_booster_(other.psnr_booster_),
+      time_booster_(other.time_booster_),
       is_ready_(other.is_ready_),
       experience_buffer_(std::move(other.experience_buffer_)),
       epsilon_(other.epsilon_),
@@ -58,6 +64,7 @@ XGBoostPredictor::XGBoostPredictor(XGBoostPredictor&& other) noexcept
       experience_count_(other.experience_count_) {
   other.ratio_booster_ = nullptr;
   other.psnr_booster_ = nullptr;
+  other.time_booster_ = nullptr;
   other.is_ready_ = false;
   other.experience_count_ = 0;
 }
@@ -71,8 +78,12 @@ XGBoostPredictor& XGBoostPredictor::operator=(XGBoostPredictor&& other) noexcept
     if (psnr_booster_ != nullptr) {
       XGBoosterFree(psnr_booster_);
     }
+    if (time_booster_ != nullptr) {
+      XGBoosterFree(time_booster_);
+    }
     ratio_booster_ = other.ratio_booster_;
     psnr_booster_ = other.psnr_booster_;
+    time_booster_ = other.time_booster_;
     is_ready_ = other.is_ready_;
     experience_buffer_ = std::move(other.experience_buffer_);
     epsilon_ = other.epsilon_;
@@ -81,6 +92,7 @@ XGBoostPredictor& XGBoostPredictor::operator=(XGBoostPredictor&& other) noexcept
     experience_count_ = other.experience_count_;
     other.ratio_booster_ = nullptr;
     other.psnr_booster_ = nullptr;
+    other.time_booster_ = nullptr;
     other.is_ready_ = false;
     other.experience_count_ = 0;
   }
@@ -99,12 +111,17 @@ bool XGBoostPredictor::Load(const std::string& model_dir) {
     XGBoosterFree(psnr_booster_);
     psnr_booster_ = nullptr;
   }
+  if (time_booster_ != nullptr) {
+    XGBoosterFree(time_booster_);
+    time_booster_ = nullptr;
+  }
   is_ready_ = false;
 
   // Check model files exist
   fs::path dir(model_dir);
   fs::path ratio_model_path = dir / "compression_ratio_model.json";
   fs::path psnr_model_path = dir / "psnr_model.json";
+  fs::path time_model_path = dir / "compression_time_model.json";
 
   if (!fs::exists(ratio_model_path)) {
     return false;
@@ -118,6 +135,12 @@ bool XGBoostPredictor::Load(const std::string& model_dir) {
   if (fs::exists(psnr_model_path)) {
     XGBOOST_CHECK(XGBoosterCreate(nullptr, 0, &psnr_booster_));
     XGBOOST_CHECK(XGBoosterLoadModel(psnr_booster_, psnr_model_path.string().c_str()));
+  }
+
+  // Load compression time booster if it exists (optional)
+  if (fs::exists(time_model_path)) {
+    XGBOOST_CHECK(XGBoosterCreate(nullptr, 0, &time_booster_));
+    XGBOOST_CHECK(XGBoosterLoadModel(time_booster_, time_model_path.string().c_str()));
   }
 
   is_ready_ = true;
@@ -145,6 +168,12 @@ bool XGBoostPredictor::Save(const std::string& model_dir) {
   if (psnr_booster_ != nullptr) {
     fs::path psnr_model_path = dir / "psnr_model.json";
     XGBOOST_CHECK(XGBoosterSaveModel(psnr_booster_, psnr_model_path.string().c_str()));
+  }
+
+  // Save compression time model if it exists
+  if (time_booster_ != nullptr) {
+    fs::path time_model_path = dir / "compression_time_model.json";
+    XGBOOST_CHECK(XGBoosterSaveModel(time_booster_, time_model_path.string().c_str()));
   }
 
   return true;
@@ -190,9 +219,15 @@ std::vector<CompressionPrediction> XGBoostPredictor::PredictBatch(
   }
 
   // Predict PSNR if booster exists
-  std::vector<float> psnr_predictions(batch.size(), 0.0f);
+  std::vector<float> psnr_predictions(batch.size(), 0.0F);
   if (psnr_booster_ != nullptr) {
     PredictWithBooster(psnr_booster_, dmatrix, psnr_predictions);
+  }
+
+  // Predict compression time if booster exists
+  std::vector<float> time_predictions(batch.size(), 0.0F);
+  if (time_booster_ != nullptr) {
+    PredictWithBooster(time_booster_, dmatrix, time_predictions);
   }
 
   FreeDMatrix(dmatrix);
@@ -200,7 +235,7 @@ std::vector<CompressionPrediction> XGBoostPredictor::PredictBatch(
   auto end_time = std::chrono::high_resolution_clock::now();
   double total_time_ms = std::chrono::duration<double, std::milli>(
       end_time - start_time).count();
-  double per_sample_time_ms = total_time_ms / batch.size();
+  double per_sample_time_ms = total_time_ms / static_cast<double>(batch.size());
 
   // Build results
   for (size_t i = 0; i < batch.size(); ++i) {
@@ -212,6 +247,7 @@ std::vector<CompressionPrediction> XGBoostPredictor::PredictBatch(
     results.emplace_back(
         static_cast<double>(ratio_predictions[i]),
         psnr,
+        static_cast<double>(time_predictions[i]),
         per_sample_time_ms);
   }
 
@@ -278,6 +314,77 @@ bool XGBoostPredictor::TrainPSNRModel(
   FreeDMatrix(dmatrix);
 
   return success;
+}
+
+bool XGBoostPredictor::TrainTimeModel(
+    const std::vector<CompressionFeatures>& features,
+    const std::vector<float>& labels,
+    const XGBoostConfig& config) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  if (features.size() != labels.size() || features.empty()) {
+    return false;
+  }
+
+  // Free existing time booster
+  if (time_booster_ != nullptr) {
+    XGBoosterFree(time_booster_);
+    time_booster_ = nullptr;
+  }
+
+  // Create DMatrix with labels
+  DMatrixHandle dmatrix = CreateDMatrix(features, &labels);
+  if (dmatrix == nullptr) {
+    return false;
+  }
+
+  // Train the booster
+  bool success = TrainBooster(dmatrix, config, time_booster_);
+  FreeDMatrix(dmatrix);
+
+  return success;
+}
+
+bool XGBoostPredictor::Train(
+    const std::vector<CompressionFeatures>& features,
+    const std::vector<TrainingLabels>& labels) {
+  return TrainWithConfig(features, labels, XGBoostConfig());
+}
+
+bool XGBoostPredictor::TrainWithConfig(
+    const std::vector<CompressionFeatures>& features,
+    const std::vector<TrainingLabels>& labels,
+    const XGBoostConfig& config) {
+  if (features.size() != labels.size() || features.empty()) {
+    return false;
+  }
+
+  // Extract individual label vectors
+  std::vector<float> ratio_labels;
+  std::vector<float> psnr_labels;
+  std::vector<float> time_labels;
+  ratio_labels.reserve(labels.size());
+  psnr_labels.reserve(labels.size());
+  time_labels.reserve(labels.size());
+
+  for (const auto& label : labels) {
+    ratio_labels.push_back(label.compression_ratio);
+    psnr_labels.push_back(label.psnr_db);
+    time_labels.push_back(label.compression_time_ms);
+  }
+
+  // Train all three models
+  // Note: We don't hold the lock across all three to allow parallelism
+  bool ratio_ok = TrainRatioModel(features, ratio_labels, config);
+  if (!ratio_ok) {
+    return false;
+  }
+
+  bool psnr_ok = TrainPSNRModel(features, psnr_labels, config);
+  bool time_ok = TrainTimeModel(features, time_labels, config);
+
+  // Return true if at least ratio model trained (PSNR and time are optional)
+  return ratio_ok && (psnr_ok || time_ok || true);
 }
 
 std::string XGBoostPredictor::GetLastError() const {
@@ -455,9 +562,11 @@ bool XGBoostPredictor::UpdateFromExperiences(const RLConfig& config) {
   std::vector<CompressionFeatures> batch_features;
   std::vector<float> batch_ratio_labels;
   std::vector<float> batch_psnr_labels;
+  std::vector<float> batch_time_labels;
   batch_features.reserve(config.batch_size);
   batch_ratio_labels.reserve(config.batch_size);
   batch_psnr_labels.reserve(config.batch_size);
+  batch_time_labels.reserve(config.batch_size);
 
   std::uniform_int_distribution<size_t> dist(0, experience_buffer_.size() - 1);
   for (size_t i = 0; i < config.batch_size; ++i) {
@@ -466,6 +575,7 @@ bool XGBoostPredictor::UpdateFromExperiences(const RLConfig& config) {
     batch_features.push_back(exp.features);
     batch_ratio_labels.push_back(static_cast<float>(exp.actual_ratio));
     batch_psnr_labels.push_back(static_cast<float>(exp.actual_psnr));
+    batch_time_labels.push_back(static_cast<float>(exp.actual_compress_time));
   }
 
   // Create DMatrix with new labels
@@ -493,6 +603,17 @@ bool XGBoostPredictor::UpdateFromExperiences(const RLConfig& config) {
                              static_cast<int>(experience_count_),
                              psnr_dmatrix);
       FreeDMatrix(psnr_dmatrix);
+    }
+  }
+
+  // Update time booster if available
+  if (time_booster_ != nullptr) {
+    DMatrixHandle time_dmatrix = CreateDMatrix(batch_features, &batch_time_labels);
+    if (time_dmatrix != nullptr) {
+      XGBoosterUpdateOneIter(time_booster_,
+                             static_cast<int>(experience_count_),
+                             time_dmatrix);
+      FreeDMatrix(time_dmatrix);
     }
   }
 

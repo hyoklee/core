@@ -48,6 +48,7 @@ TEST_CASE("XGBoostPredictor - Single Prediction", "[compression][xgboost]") {
   std::cout << "XGBoost Single Prediction:\n";
   std::cout << "  Compression Ratio: " << result.compression_ratio << "\n";
   std::cout << "  PSNR: " << result.psnr_db << " dB\n";
+  std::cout << "  Compression Time: " << result.compression_time_ms << " ms\n";
   std::cout << "  Inference Time: " << result.inference_time_ms << " ms\n";
 }
 
@@ -213,6 +214,73 @@ TEST_CASE("XGBoostPredictor - Train and Predict In-Memory", "[compression][xgboo
   std::cout << "=== XGBoost Training Test Complete ===\n";
 }
 
+TEST_CASE("XGBoostPredictor - Unified Multi-Output Training", "[compression][xgboost][unified]") {
+  std::cout << "\n=== Testing XGBoost Unified Multi-Output Training ===\n";
+
+  XGBoostPredictor predictor;
+
+  // Generate synthetic training data with all outputs
+  std::vector<CompressionFeatures> train_features;
+  std::vector<TrainingLabels> train_labels;
+
+  for (int i = 0; i < 100; ++i) {
+    CompressionFeatures f;
+    f.chunk_size_bytes = 65536;
+    f.target_cpu_util = 50.0;
+    f.shannon_entropy = 1.0 + (i % 10) * 0.5;
+    f.mad = 1.0 + (i % 5) * 0.2;
+    f.second_derivative_mean = 2.0;
+    f.library_bzip2 = 1;
+    f.library_zfp_tol_0_01 = 0;
+    f.library_zfp_tol_0_1 = 0;
+    f.data_type_char = 0;
+    f.data_type_float = 1;
+    train_features.push_back(f);
+
+    // Synthetic labels
+    TrainingLabels label;
+    label.compression_ratio = 6.0F - static_cast<float>(f.shannon_entropy) * 0.5F;
+    label.psnr_db = 0.0F;  // Lossless
+    label.compression_time_ms = 10.0F + static_cast<float>(f.shannon_entropy) * 2.0F;
+    train_labels.push_back(label);
+  }
+
+  std::cout << "Generated " << train_features.size() << " training samples\n";
+
+  // Train unified model
+  auto start = std::chrono::high_resolution_clock::now();
+  bool train_success = predictor.Train(train_features, train_labels);
+  auto end = std::chrono::high_resolution_clock::now();
+  double train_time = std::chrono::duration<double, std::milli>(end - start).count();
+
+  REQUIRE(train_success);
+  REQUIRE(predictor.IsReady());
+  std::cout << "Unified training completed in " << train_time << " ms\n";
+
+  // Test predictions
+  CompressionFeatures test_features;
+  test_features.chunk_size_bytes = 65536;
+  test_features.target_cpu_util = 50.0;
+  test_features.shannon_entropy = 3.0;
+  test_features.mad = 1.0;
+  test_features.second_derivative_mean = 2.0;
+  test_features.library_bzip2 = 1;
+  test_features.data_type_float = 1;
+
+  auto result = predictor.Predict(test_features);
+
+  std::cout << "\nPrediction results:\n";
+  std::cout << "  Compression Ratio: " << result.compression_ratio << "\n";
+  std::cout << "  PSNR: " << result.psnr_db << " dB\n";
+  std::cout << "  Compression Time: " << result.compression_time_ms << " ms\n";
+  std::cout << "  Inference Time: " << result.inference_time_ms << " ms\n";
+
+  REQUIRE(result.compression_ratio > 0.0);
+  REQUIRE(result.compression_time_ms >= 0.0);
+
+  std::cout << "=== XGBoost Unified Training Test Complete ===\n";
+}
+
 TEST_CASE("XGBoostPredictor - Reinforcement Learning", "[compression][xgboost][rl]") {
   std::cout << "\n=== Testing XGBoost Reinforcement Learning ===\n";
 
@@ -232,7 +300,7 @@ TEST_CASE("XGBoostPredictor - Reinforcement Learning", "[compression][xgboost][r
     f.library_bzip2 = 1;
     f.data_type_float = 1;
     train_features.push_back(f);
-    train_labels.push_back(4.0f - f.shannon_entropy * 0.3f);
+    train_labels.push_back(4.0F - static_cast<float>(f.shannon_entropy) * 0.3F);
   }
 
   XGBoostConfig config;
@@ -251,9 +319,11 @@ TEST_CASE("XGBoostPredictor - Reinforcement Learning", "[compression][xgboost][r
     exp.features.library_bzip2 = 1;
     exp.features.data_type_float = 1;
     exp.predicted_ratio = 3.5;
-    exp.actual_ratio = 3.5 + (i % 10) * 0.1;  // Some variation
+    exp.actual_ratio = 3.5 + (i % 10) * 0.1;
     exp.predicted_psnr = 0;
     exp.actual_psnr = 0;
+    exp.predicted_compress_time = 10.0;
+    exp.actual_compress_time = 10.0 + (i % 5) * 0.5;
     predictor.RecordExperience(exp);
   }
 
@@ -287,6 +357,75 @@ TEST_CASE("XGBoostPredictor - Reinforcement Learning", "[compression][xgboost][r
   std::cout << "Experiences cleared\n";
 
   std::cout << "=== XGBoost RL Test Complete ===\n";
+}
+
+TEST_CASE("XGBoostPredictor - Inference Performance Benchmark", "[compression][xgboost][benchmark]") {
+  std::cout << "\n=== XGBoost Inference Performance Benchmark ===\n";
+
+  XGBoostPredictor predictor;
+
+  // Train a model first
+  std::vector<CompressionFeatures> train_features;
+  std::vector<TrainingLabels> train_labels;
+
+  for (int i = 0; i < 100; ++i) {
+    CompressionFeatures f;
+    f.chunk_size_bytes = 65536;
+    f.target_cpu_util = 50.0;
+    f.shannon_entropy = 1.0 + (i % 10) * 0.5;
+    f.mad = 1.0;
+    f.second_derivative_mean = 2.0;
+    f.library_bzip2 = 1;
+    f.data_type_float = 1;
+    train_features.push_back(f);
+
+    TrainingLabels label;
+    label.compression_ratio = 5.0F;
+    label.psnr_db = 0.0F;
+    label.compression_time_ms = 10.0F;
+    train_labels.push_back(label);
+  }
+
+  REQUIRE(predictor.Train(train_features, train_labels));
+
+  // Benchmark different batch sizes
+  std::vector<size_t> batch_sizes = {1, 16, 64, 256, 1024};
+
+  for (size_t batch_size : batch_sizes) {
+    std::vector<CompressionFeatures> batch;
+    for (size_t i = 0; i < batch_size; ++i) {
+      CompressionFeatures f;
+      f.chunk_size_bytes = 65536;
+      f.target_cpu_util = 50.0;
+      f.shannon_entropy = 3.0;
+      f.mad = 1.0;
+      f.second_derivative_mean = 2.0;
+      f.library_bzip2 = 1;
+      f.data_type_float = 1;
+      batch.push_back(f);
+    }
+
+    // Warmup
+    predictor.PredictBatch(batch);
+
+    // Benchmark
+    const int num_iterations = 100;
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int iter = 0; iter < num_iterations; ++iter) {
+      auto results = predictor.PredictBatch(batch);
+      (void)results;
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    double total_time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+    double avg_time_ms = total_time_ms / num_iterations;
+    double throughput = (batch_size / avg_time_ms) * 1000.0;
+
+    std::cout << "Batch size " << batch_size << ":\n";
+    std::cout << "  Avg batch time: " << avg_time_ms << " ms\n";
+    std::cout << "  Throughput: " << throughput << " predictions/sec\n";
+  }
+
+  std::cout << "=== Benchmark Complete ===\n";
 }
 
 SIMPLE_TEST_MAIN()

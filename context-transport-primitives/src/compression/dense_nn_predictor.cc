@@ -131,8 +131,10 @@ bool StandardScaler::Load(const std::string& path) {
 DenseNNPredictor::DenseNNPredictor()
     : ratio_model_ready_(false),
       psnr_model_ready_(false),
+      time_model_ready_(false),
       ratio_dropout_rate_(0.0),
       psnr_dropout_rate_(0.0),
+      time_dropout_rate_(0.0),
       epsilon_(0.1),
       exploration_enabled_(false),
       rng_(std::random_device{}()),
@@ -144,14 +146,19 @@ DenseNNPredictor::~DenseNNPredictor() = default;
 DenseNNPredictor::DenseNNPredictor(DenseNNPredictor&& other) noexcept
     : ratio_network_(std::move(other.ratio_network_)),
       psnr_network_(std::move(other.psnr_network_)),
+      time_network_(std::move(other.time_network_)),
       ratio_scaler_(std::move(other.ratio_scaler_)),
       psnr_scaler_(std::move(other.psnr_scaler_)),
+      time_scaler_(std::move(other.time_scaler_)),
       ratio_model_ready_(other.ratio_model_ready_),
       psnr_model_ready_(other.psnr_model_ready_),
+      time_model_ready_(other.time_model_ready_),
       ratio_hidden_layers_(std::move(other.ratio_hidden_layers_)),
       ratio_dropout_rate_(other.ratio_dropout_rate_),
       psnr_hidden_layers_(std::move(other.psnr_hidden_layers_)),
       psnr_dropout_rate_(other.psnr_dropout_rate_),
+      time_hidden_layers_(std::move(other.time_hidden_layers_)),
+      time_dropout_rate_(other.time_dropout_rate_),
       experience_buffer_(std::move(other.experience_buffer_)),
       epsilon_(other.epsilon_),
       exploration_enabled_(other.exploration_enabled_),
@@ -159,6 +166,7 @@ DenseNNPredictor::DenseNNPredictor(DenseNNPredictor&& other) noexcept
       experience_count_(other.experience_count_) {
   other.ratio_model_ready_ = false;
   other.psnr_model_ready_ = false;
+  other.time_model_ready_ = false;
   other.experience_count_ = 0;
 }
 
@@ -167,14 +175,19 @@ DenseNNPredictor& DenseNNPredictor::operator=(DenseNNPredictor&& other) noexcept
     std::lock_guard<std::mutex> lock(mutex_);
     ratio_network_ = std::move(other.ratio_network_);
     psnr_network_ = std::move(other.psnr_network_);
+    time_network_ = std::move(other.time_network_);
     ratio_scaler_ = std::move(other.ratio_scaler_);
     psnr_scaler_ = std::move(other.psnr_scaler_);
+    time_scaler_ = std::move(other.time_scaler_);
     ratio_model_ready_ = other.ratio_model_ready_;
     psnr_model_ready_ = other.psnr_model_ready_;
+    time_model_ready_ = other.time_model_ready_;
     ratio_hidden_layers_ = std::move(other.ratio_hidden_layers_);
     ratio_dropout_rate_ = other.ratio_dropout_rate_;
     psnr_hidden_layers_ = std::move(other.psnr_hidden_layers_);
     psnr_dropout_rate_ = other.psnr_dropout_rate_;
+    time_hidden_layers_ = std::move(other.time_hidden_layers_);
+    time_dropout_rate_ = other.time_dropout_rate_;
     experience_buffer_ = std::move(other.experience_buffer_);
     epsilon_ = other.epsilon_;
     exploration_enabled_ = other.exploration_enabled_;
@@ -182,6 +195,7 @@ DenseNNPredictor& DenseNNPredictor::operator=(DenseNNPredictor&& other) noexcept
     experience_count_ = other.experience_count_;
     other.ratio_model_ready_ = false;
     other.psnr_model_ready_ = false;
+    other.time_model_ready_ = false;
     other.experience_count_ = 0;
   }
   return *this;
@@ -192,6 +206,7 @@ bool DenseNNPredictor::Load(const std::string& model_dir) {
 
   ratio_model_ready_ = false;
   psnr_model_ready_ = false;
+  time_model_ready_ = false;
 
   fs::path dir(model_dir);
 
@@ -303,6 +318,58 @@ bool DenseNNPredictor::Load(const std::string& model_dir) {
     }
   }
 
+  // Load compression time model (optional)
+  fs::path time_model_path = dir / "compression_time_model.bin";
+  fs::path time_scaler_path = dir / "time_scaler.json";
+  fs::path time_arch_path = dir / "compression_time_arch.json";
+
+  if (fs::exists(time_model_path) && fs::exists(time_scaler_path) &&
+      fs::exists(time_arch_path)) {
+    try {
+      time_network_ = std::make_unique<MiniDNN::Network>();
+
+      if (!time_scaler_.Load(time_scaler_path.string())) {
+        return ratio_model_ready_;  // Time model is optional
+      }
+
+      // Load architecture
+      std::ifstream arch_file(time_arch_path.string());
+      if (arch_file.is_open()) {
+        json arch_json;
+        arch_file >> arch_json;
+
+        std::vector<int> hidden_layers = arch_json["hidden_layers"].get<std::vector<int>>();
+        double dropout_rate = arch_json["dropout_rate"].get<double>();
+        BuildNetwork(*time_network_, hidden_layers, dropout_rate);
+
+        // Initialize network (required before set_parameters)
+        time_network_->init(0, 0.01, 123);
+
+        // Load parameters
+        std::ifstream model_file(time_model_path.string(), std::ios::binary);
+        if (model_file.is_open()) {
+          std::vector<std::vector<double>> params;
+          int num_layers;
+          model_file.read(reinterpret_cast<char*>(&num_layers), sizeof(num_layers));
+
+          for (int i = 0; i < num_layers; ++i) {
+            int param_size;
+            model_file.read(reinterpret_cast<char*>(&param_size), sizeof(param_size));
+            std::vector<double> layer_params(param_size);
+            model_file.read(reinterpret_cast<char*>(layer_params.data()),
+                            param_size * sizeof(double));
+            params.push_back(std::move(layer_params));
+          }
+
+          time_network_->set_parameters(params);
+          time_model_ready_ = true;
+        }
+      }
+    } catch (...) {
+      // Time model is optional, continue without it
+    }
+  }
+
   return ratio_model_ready_;
 }
 
@@ -386,6 +453,37 @@ bool DenseNNPredictor::Save(const std::string& model_dir) {
       psnr_scaler_.Save(psnr_scaler_path.string());
     }
 
+    // Save time model if ready
+    if (time_model_ready_ && time_network_) {
+      fs::path time_model_path = dir / "compression_time_model.bin";
+      std::ofstream model_file(time_model_path.string(), std::ios::binary);
+      if (model_file.is_open()) {
+        auto params = time_network_->get_parameters();
+        int num_layers = static_cast<int>(params.size());
+        model_file.write(reinterpret_cast<const char*>(&num_layers), sizeof(num_layers));
+
+        for (const auto& layer_params : params) {
+          int param_size = static_cast<int>(layer_params.size());
+          model_file.write(reinterpret_cast<const char*>(&param_size), sizeof(param_size));
+          model_file.write(reinterpret_cast<const char*>(layer_params.data()),
+                           static_cast<std::streamsize>(param_size * sizeof(double)));
+        }
+      }
+
+      // Save architecture
+      fs::path time_arch_path = dir / "compression_time_arch.json";
+      std::ofstream arch_file(time_arch_path.string());
+      if (arch_file.is_open()) {
+        json arch_json;
+        arch_json["hidden_layers"] = time_hidden_layers_;
+        arch_json["dropout_rate"] = time_dropout_rate_;
+        arch_file << arch_json.dump(2);
+      }
+
+      fs::path time_scaler_path = dir / "time_scaler.json";
+      time_scaler_.Save(time_scaler_path.string());
+    }
+
     return true;
   } catch (...) {
     return false;
@@ -432,6 +530,13 @@ std::vector<CompressionPrediction> DenseNNPredictor::PredictBatch(
       psnr_output = psnr_network_->predict(psnr_input);
     }
 
+    // Predict compression time if model is ready
+    Eigen::MatrixXd time_output;
+    if (time_model_ready_ && time_network_) {
+      Eigen::MatrixXd time_input = FeaturesToMatrix(batch, time_scaler_);
+      time_output = time_network_->predict(time_input);
+    }
+
     auto end_time = std::chrono::high_resolution_clock::now();
     double total_time_ms = std::chrono::duration<double, std::milli>(
         end_time - start_time).count();
@@ -441,10 +546,14 @@ std::vector<CompressionPrediction> DenseNNPredictor::PredictBatch(
     for (size_t i = 0; i < batch.size(); ++i) {
       double ratio = ratio_output(0, static_cast<Eigen::Index>(i));
       double psnr = 0.0;
+      double compress_time = 0.0;
       if (psnr_model_ready_ && psnr_output.cols() > 0 && IsLossyCompression(batch[i])) {
         psnr = psnr_output(0, static_cast<Eigen::Index>(i));
       }
-      results.emplace_back(ratio, psnr, per_sample_time_ms);
+      if (time_model_ready_ && time_output.cols() > 0) {
+        compress_time = time_output(0, static_cast<Eigen::Index>(i));
+      }
+      results.emplace_back(ratio, psnr, compress_time, per_sample_time_ms);
     }
   } catch (...) {
     // Return empty results on error
@@ -487,6 +596,67 @@ bool DenseNNPredictor::TrainPSNRModel(
     psnr_model_ready_ = true;
   }
   return success;
+}
+
+bool DenseNNPredictor::TrainTimeModel(
+    const std::vector<CompressionFeatures>& features,
+    const std::vector<float>& labels,
+    const TrainingConfig& config) {
+  std::lock_guard<std::mutex> lock(mutex_);
+
+  // Store architecture for save/load
+  time_hidden_layers_ = config.hidden_layers;
+  time_dropout_rate_ = config.dropout_rate;
+
+  time_network_ = std::make_unique<MiniDNN::Network>();
+  bool success = TrainNetwork(features, labels, config, *time_network_, time_scaler_);
+  if (success) {
+    time_model_ready_ = true;
+  }
+  return success;
+}
+
+bool DenseNNPredictor::Train(
+    const std::vector<CompressionFeatures>& features,
+    const std::vector<TrainingLabels>& labels) {
+  return TrainWithConfig(features, labels, TrainingConfig());
+}
+
+bool DenseNNPredictor::TrainWithConfig(
+    const std::vector<CompressionFeatures>& features,
+    const std::vector<TrainingLabels>& labels,
+    const TrainingConfig& config) {
+  if (features.size() != labels.size() || features.empty()) {
+    return false;
+  }
+
+  // Extract individual label vectors
+  std::vector<float> ratio_labels;
+  std::vector<float> psnr_labels;
+  std::vector<float> time_labels;
+  ratio_labels.reserve(labels.size());
+  psnr_labels.reserve(labels.size());
+  time_labels.reserve(labels.size());
+
+  for (const auto& label : labels) {
+    ratio_labels.push_back(label.compression_ratio);
+    psnr_labels.push_back(label.psnr_db);
+    time_labels.push_back(label.compression_time_ms);
+  }
+
+  // Train all three models
+  bool ratio_ok = TrainRatioModel(features, ratio_labels, config);
+  if (!ratio_ok) {
+    return false;
+  }
+
+  bool psnr_ok = TrainPSNRModel(features, psnr_labels, config);
+  bool time_ok = TrainTimeModel(features, time_labels, config);
+
+  // Return true if at least ratio model trained
+  (void)psnr_ok;
+  (void)time_ok;
+  return ratio_ok;
 }
 
 Eigen::MatrixXd DenseNNPredictor::FeaturesToMatrix(
@@ -641,9 +811,11 @@ bool DenseNNPredictor::UpdateFromExperiences(const RLConfig& config) {
     std::vector<CompressionFeatures> batch_features;
     std::vector<float> batch_ratio_labels;
     std::vector<float> batch_psnr_labels;
+    std::vector<float> batch_time_labels;
     batch_features.reserve(config.batch_size);
     batch_ratio_labels.reserve(config.batch_size);
     batch_psnr_labels.reserve(config.batch_size);
+    batch_time_labels.reserve(config.batch_size);
 
     std::uniform_int_distribution<size_t> dist(0, experience_buffer_.size() - 1);
     for (size_t i = 0; i < config.batch_size; ++i) {
@@ -652,6 +824,7 @@ bool DenseNNPredictor::UpdateFromExperiences(const RLConfig& config) {
       batch_features.push_back(exp.features);
       batch_ratio_labels.push_back(static_cast<float>(exp.actual_ratio));
       batch_psnr_labels.push_back(static_cast<float>(exp.actual_psnr));
+      batch_time_labels.push_back(static_cast<float>(exp.actual_compress_time));
     }
 
     // Convert features to matrix
@@ -709,6 +882,27 @@ bool DenseNNPredictor::UpdateFromExperiences(const RLConfig& config) {
       }
 
       psnr_network_->fit(optimizer, X_psnr, y_psnr,
+                         static_cast<int>(config.batch_size), 1, -1);
+    }
+
+    // Update time model if ready
+    if (time_model_ready_ && time_network_) {
+      auto time_normalized = time_scaler_.Transform(data);
+      Eigen::MatrixXd X_time(num_features, num_samples);
+      for (size_t i = 0; i < num_samples; ++i) {
+        for (size_t j = 0; j < num_features; ++j) {
+          X_time(static_cast<Eigen::Index>(j), static_cast<Eigen::Index>(i)) =
+              static_cast<double>(time_normalized[i][j]);
+        }
+      }
+
+      Eigen::MatrixXd y_time(1, num_samples);
+      for (size_t i = 0; i < num_samples; ++i) {
+        y_time(0, static_cast<Eigen::Index>(i)) =
+            static_cast<double>(batch_time_labels[i]);
+      }
+
+      time_network_->fit(optimizer, X_time, y_time,
                          static_cast<int>(config.batch_size), 1, -1);
     }
 

@@ -101,26 +101,36 @@ struct CompressionFeatures {
  * @brief Output of compression prediction models
  *
  * Contains predicted compression metrics and timing information.
+ * The unified model predicts all outputs in a single forward pass.
  */
 struct CompressionPrediction {
-  double compression_ratio;   /**< Predicted compression ratio (>1 means smaller) */
-  double psnr_db;             /**< Predicted PSNR in dB (0 for lossless) */
-  double inference_time_ms;   /**< Time taken for inference in milliseconds */
+  double compression_ratio;     /**< Predicted compression ratio (>1 means smaller) */
+  double psnr_db;               /**< Predicted PSNR in dB (0 for lossless) */
+  double compression_time_ms;   /**< Predicted compression time in milliseconds */
+  double inference_time_ms;     /**< Time taken for inference in milliseconds */
 
   /**
    * @brief Default constructor
    */
   CompressionPrediction()
-      : compression_ratio(0), psnr_db(0), inference_time_ms(0) {}
+      : compression_ratio(0), psnr_db(0), compression_time_ms(0), inference_time_ms(0) {}
 
   /**
    * @brief Constructor with values
    * @param ratio Compression ratio
    * @param psnr PSNR value in dB
-   * @param time_ms Inference time in milliseconds
+   * @param compress_time Predicted compression time in ms
+   * @param infer_time Inference time in milliseconds
    */
-  CompressionPrediction(double ratio, double psnr, double time_ms)
-      : compression_ratio(ratio), psnr_db(psnr), inference_time_ms(time_ms) {}
+  CompressionPrediction(double ratio, double psnr, double compress_time, double infer_time)
+      : compression_ratio(ratio), psnr_db(psnr),
+        compression_time_ms(compress_time), inference_time_ms(infer_time) {}
+
+  /**
+   * @brief Get number of output features
+   * @return Number of outputs (3: ratio, psnr, compression_time)
+   */
+  static constexpr size_t NumOutputs() { return 3; }
 };
 
 /**
@@ -190,6 +200,16 @@ struct RLExperience {
   double actual_ratio;              /**< Actual compression ratio (reward signal) */
   double predicted_psnr;            /**< Predicted PSNR */
   double actual_psnr;               /**< Actual PSNR (for lossy) */
+  double predicted_compress_time;   /**< Predicted compression time in ms */
+  double actual_compress_time;      /**< Actual compression time in ms */
+
+  /**
+   * @brief Default constructor
+   */
+  RLExperience()
+      : predicted_ratio(0), actual_ratio(0),
+        predicted_psnr(0), actual_psnr(0),
+        predicted_compress_time(0), actual_compress_time(0) {}
 
   /**
    * @brief Compute reward based on prediction error
@@ -199,8 +219,11 @@ struct RLExperience {
     // Reward based on prediction accuracy (negative squared error)
     double ratio_error = predicted_ratio - actual_ratio;
     double psnr_error = predicted_psnr - actual_psnr;
-    // Weighted combination: ratio is more important
-    return -(ratio_error * ratio_error + 0.1 * psnr_error * psnr_error);
+    double time_error = predicted_compress_time - actual_compress_time;
+    // Weighted combination: ratio is most important, then time, then psnr
+    return -(ratio_error * ratio_error +
+             0.5 * time_error * time_error +
+             0.1 * psnr_error * psnr_error);
   }
 };
 
@@ -234,9 +257,32 @@ struct RLConfig {
 };
 
 /**
+ * @brief Training labels for multi-output model
+ *
+ * Contains all target labels for training the unified model.
+ */
+struct TrainingLabels {
+  float compression_ratio;    /**< Target compression ratio */
+  float psnr_db;              /**< Target PSNR in dB */
+  float compression_time_ms;  /**< Target compression time in ms */
+
+  /**
+   * @brief Default constructor
+   */
+  TrainingLabels() : compression_ratio(0), psnr_db(0), compression_time_ms(0) {}
+
+  /**
+   * @brief Constructor with values
+   */
+  TrainingLabels(float ratio, float psnr, float time)
+      : compression_ratio(ratio), psnr_db(psnr), compression_time_ms(time) {}
+};
+
+/**
  * @brief Abstract base class for compression predictors
  *
  * Defines the common interface for all compression prediction models.
+ * Uses a unified multi-output model that predicts all metrics in one pass.
  * Supports training, inference, and reinforcement learning.
  */
 class CompressionPredictor {
@@ -266,7 +312,7 @@ class CompressionPredictor {
   /**
    * @brief Predict compression metrics for a single input
    * @param features Input features
-   * @return Prediction result with compression ratio and PSNR
+   * @return Prediction result with all metrics (ratio, psnr, compress_time)
    */
   virtual CompressionPrediction Predict(const CompressionFeatures& features) = 0;
 
@@ -277,6 +323,23 @@ class CompressionPredictor {
    */
   virtual std::vector<CompressionPrediction> PredictBatch(
       const std::vector<CompressionFeatures>& batch) = 0;
+
+  /**
+   * @brief Train the unified multi-output model
+   *
+   * Trains a single model that predicts all outputs (compression ratio,
+   * PSNR, and compression time) in one forward pass.
+   *
+   * @param features Vector of training features
+   * @param labels Vector of training labels (all outputs)
+   * @return true if training succeeded
+   */
+  virtual bool Train(const std::vector<CompressionFeatures>& features,
+                     const std::vector<TrainingLabels>& labels) {
+    (void)features;
+    (void)labels;
+    return false;  // Default: not supported
+  }
 
   // ============================================================================
   // Reinforcement Learning Interface
