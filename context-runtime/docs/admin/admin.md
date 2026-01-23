@@ -53,31 +53,7 @@ explicit Client(const chi::PoolId& pool_id)
 
 #### Container Management
 
-##### `Create()` - Synchronous
-Creates and initializes the admin container.
-
-```cpp
-void Create(const chi::PoolQuery& pool_query,
-           const std::string& pool_name,
-           const chi::PoolId& custom_pool_id)
-```
-
-**Parameters:**
-- `pool_query`: Pool domain query (typically `chi::PoolQuery::Local()`)
-- `pool_name`: Pool name (MUST be "admin" for admin containers)
-- `custom_pool_id`: Explicit pool ID for the container
-
-**Usage:**
-```cpp
-chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
-const chi::PoolId pool_id = chi::kAdminPoolId;  // Use predefined admin pool ID
-chimaera::admin::Client admin_client(pool_id);
-
-auto pool_query = chi::PoolQuery::Local();
-admin_client.Create(pool_query, "admin", pool_id);  // Pool name MUST be "admin"
-```
-
-##### `AsyncCreate()` - Asynchronous
+##### `AsyncCreate()`
 Creates and initializes the admin container asynchronously.
 
 ```cpp
@@ -86,27 +62,32 @@ chi::Future<CreateTask> AsyncCreate(const chi::PoolQuery& pool_query,
                                     const chi::PoolId& custom_pool_id)
 ```
 
+**Parameters:**
+- `pool_query`: Pool domain query (typically `chi::PoolQuery::Local()`)
+- `pool_name`: Pool name (MUST be "admin" for admin containers)
+- `custom_pool_id`: Explicit pool ID for the container
+
 **Returns:** Future for asynchronous completion checking
+
+**Usage:**
+```cpp
+chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
+const chi::PoolId pool_id = chi::kAdminPoolId;  // Use predefined admin pool ID
+chimaera::admin::Client admin_client(pool_id);
+
+auto pool_query = chi::PoolQuery::Local();
+auto task = admin_client.AsyncCreate(pool_query, "admin", pool_id);
+task.Wait();
+
+if (task->GetReturnCode() != 0) {
+  std::cerr << "Admin creation failed" << std::endl;
+  return;
+}
+```
 
 #### Pool Management Operations
 
-##### `DestroyPool()` - Synchronous
-Destroys an existing ChiPool.
-
-```cpp
-void DestroyPool(const chi::PoolQuery& pool_query,
-                chi::PoolId target_pool_id,
-                chi::u32 destruction_flags = 0)
-```
-
-**Parameters:**
-- `pool_query`: Pool domain query
-- `target_pool_id`: ID of the pool to destroy
-- `destruction_flags`: Optional flags controlling destruction behavior (default: 0)
-
-**Throws:** `std::runtime_error` if destruction fails
-
-##### `AsyncDestroyPool()` - Asynchronous
+##### `AsyncDestroyPool()`
 Destroys an existing ChiPool asynchronously.
 
 ```cpp
@@ -114,6 +95,11 @@ chi::Future<DestroyPoolTask> AsyncDestroyPool(
     const chi::PoolQuery& pool_query,
     chi::PoolId target_pool_id, chi::u32 destruction_flags = 0)
 ```
+
+**Parameters:**
+- `pool_query`: Pool domain query
+- `target_pool_id`: ID of the pool to destroy
+- `destruction_flags`: Optional flags controlling destruction behavior (default: 0)
 
 #### Network Communication Operations
 
@@ -147,19 +133,17 @@ chi::Future<RecvTask> AsyncRecv(const chi::PoolQuery& pool_query,
 
 #### Administrative Operations
 
-##### `Flush()` - Synchronous
-Flushes all administrative operations.
+##### `AsyncFlush()`
+Flushes all administrative operations asynchronously.
 
-```cpp
-void Flush(const chi::PoolQuery& pool_query)
-```
-
-**Throws:** `std::runtime_error` if flush operation fails
-
-##### `AsyncFlush()` - Asynchronous
 ```cpp
 chi::Future<FlushTask> AsyncFlush(const chi::PoolQuery& pool_query)
 ```
+
+**Parameters:**
+- `pool_query`: Pool domain query
+
+**Returns:** Future for asynchronous completion checking
 
 #### Runtime Control
 
@@ -284,12 +268,19 @@ int main() {
   const chi::PoolId pool_id = chi::kAdminPoolId;
   chimaera::admin::Client admin_client(pool_id);
 
-  // Create admin container (pool name MUST be "admin")
+  // Create admin container asynchronously (pool name MUST be "admin")
   auto pool_query = chi::PoolQuery::Local();
-  admin_client.Create(pool_query, "admin", pool_id);
+  auto create_task = admin_client.AsyncCreate(pool_query, "admin", pool_id);
+  create_task.Wait();
+
+  if (create_task->GetReturnCode() != 0) {
+    std::cerr << "Admin creation failed" << std::endl;
+    return 1;
+  }
 
   // Perform admin operations...
-  admin_client.AsyncFlush(pool_query).Wait();
+  auto flush_task = admin_client.AsyncFlush(pool_query);
+  flush_task.Wait();
 
   return 0;
 }
@@ -346,9 +337,7 @@ std::cout << "Runtime shutdown initiated" << std::endl;
 
 ## Error Handling
 
-Most synchronous methods throw `std::runtime_error` on failure. The error message contains details about the failure cause.
-
-For asynchronous operations, check the `return_code_` field of the returned task:
+All operations are asynchronous and return `chi::Future<TaskType>`. Check the `return_code_` field of the returned task after calling `Wait()`:
 - `0`: Success
 - Non-zero: Error occurred (check `error_message_` field)
 
