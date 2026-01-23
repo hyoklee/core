@@ -217,26 +217,6 @@ bool VerifyDatasetData(const std::string& file_path,
     return false;
   }
 
-  // Get tag size from CTE
-  auto size_task = cte_client->AsyncGetTagSize(tag_id);
-  size_task.Wait();
-  size_t cte_tag_size = size_task->tag_size_;
-  std::cout << "    CTE tag size: " << cte_tag_size << " bytes" << std::endl;
-
-  // Check if sizes match
-  if (cte_tag_size != total_size) {
-    std::cerr << "    ERROR: Size mismatch - HDF5: " << total_size
-              << " bytes, CTE: " << cte_tag_size << " bytes" << std::endl;
-    H5Tclose(datatype_id);
-    H5Sclose(dataspace_id);
-    H5Dclose(dataset_id);
-    H5Fclose(file_id);
-    return false;
-  }
-
-  // Allocate buffer for CTE data
-  std::vector<char> cte_data(total_size);
-
   // Read data from CTE by getting all blobs (chunks)
   // For datasets <= 1MB, data is in "chunk_0"
   // For larger datasets, data is split across "chunk_0", "chunk_1", etc.
@@ -262,6 +242,29 @@ bool VerifyDatasetData(const std::string& file_path,
   });
 
   std::cout << "    Found " << chunk_blobs.size() << " data chunks" << std::endl;
+
+  // Calculate total chunk data size (excludes metadata blobs like "description")
+  size_t total_chunk_size = 0;
+  for (const auto& blob_name : chunk_blobs) {
+    auto blob_size_task = cte_client->AsyncGetBlobSize(tag_id, blob_name);
+    blob_size_task.Wait();
+    total_chunk_size += blob_size_task->size_;
+  }
+  std::cout << "    Total chunk data size: " << total_chunk_size << " bytes" << std::endl;
+
+  // Check if chunk data sizes match (ignoring metadata blobs)
+  if (total_chunk_size != total_size) {
+    std::cerr << "    ERROR: Size mismatch - HDF5: " << total_size
+              << " bytes, CTE chunks: " << total_chunk_size << " bytes" << std::endl;
+    H5Tclose(datatype_id);
+    H5Sclose(dataspace_id);
+    H5Dclose(dataset_id);
+    H5Fclose(file_id);
+    return false;
+  }
+
+  // Allocate buffer for CTE data
+  std::vector<char> cte_data(total_size);
 
   // Read all chunks and reconstruct data
   size_t bytes_read = 0;
