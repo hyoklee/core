@@ -105,12 +105,6 @@ class WrpRuntime(Service):
                 'default': 50
             },
             {
-                'name': 'sleep_increment',
-                'msg': 'Sleep increment per idle iteration (microseconds)',
-                'type': int,
-                'default': 1000
-            },
-            {
                 'name': 'max_sleep',
                 'msg': 'Maximum sleep duration cap (microseconds)',
                 'type': int,
@@ -172,7 +166,6 @@ class WrpRuntime(Service):
                 'heartbeat_interval': self.config['heartbeat_interval'],
                 # Worker sleep configuration
                 'first_busy_wait': self.config['first_busy_wait'],
-                'sleep_increment': self.config['sleep_increment'],
                 'max_sleep': self.config['max_sleep']
             }
         }

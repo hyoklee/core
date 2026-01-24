@@ -77,26 +77,20 @@ struct RingBufferEntry {
    * @return True if entry is ready
    */
   HSHM_INLINE_CROSS_FUN
-  bool IsReady() const {
-    return flags_.Any(1);
-  }
+  bool IsReady() const { return flags_.Any(1); }
 
   /**
    * Mark entry as ready (release semantics)
    * Call this AFTER writing data to ensure visibility
    */
   HSHM_INLINE_CROSS_FUN
-  void SetReady() {
-    flags_.SetBits(1);
-  }
+  void SetReady() { flags_.SetBits(1); }
 
   /**
    * Clear ready flag
    */
   HSHM_INLINE_CROSS_FUN
-  void ClearReady() {
-    flags_.UnsetBits(1);
-  }
+  void ClearReady() { flags_.UnsetBits(1); }
 
   /**
    * Get reference to data

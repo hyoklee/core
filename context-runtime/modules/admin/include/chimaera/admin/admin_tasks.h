@@ -662,6 +662,80 @@ struct HeartbeatTask : public chi::Task {
   }
 };
 
+/**
+ * MonitorTask - Monitor runtime and worker statistics
+ *
+ * This task collects statistics from all workers in the runtime including:
+ * - Number of queued, blocked, and periodic tasks
+ * - Worker idle status and suspend periods
+ * - Overall system load and utilization
+ */
+struct MonitorTask : public chi::Task {
+  /** Output: Vector of worker statistics */
+  OUT std::vector<chi::WorkerStats> info_;
+
+  /**
+   * SHM default constructor
+   */
+  MonitorTask()
+      : chi::Task(),
+        info_() {}
+
+  /**
+   * Emplace constructor - create new MonitorTask
+   * @param task_node Unique task identifier
+   * @param pool_id Pool this task belongs to
+   * @param pool_query Query for routing this task
+   */
+  explicit MonitorTask(const chi::TaskId &task_node,
+                       const chi::PoolId &pool_id,
+                       const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kMonitor),
+        info_() {
+    // Initialize task
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kMonitor;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  /**
+   * Serialize IN and INOUT parameters for network transfer
+   * No additional parameters for MonitorTask
+   */
+  template <typename Archive> void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    // No additional parameters to serialize
+  }
+
+  /**
+   * Serialize OUT and INOUT parameters for network transfer
+   * This includes: info_ (vector of WorkerStats)
+   */
+  template <typename Archive> void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(info_);
+  }
+
+  /**
+   * Copy from another MonitorTask (assumes this task is already constructed)
+   * @param other Pointer to the source task to copy from
+   */
+  void Copy(const hipc::FullPtr<MonitorTask> &other) {
+    // Copy base Task fields
+    Task::Copy(other.template Cast<Task>());
+    // Copy MonitorTask-specific fields
+    info_ = other->info_;
+  }
+
+  /** Aggregate replica results into this task */
+  void Aggregate(const hipc::FullPtr<MonitorTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
 } // namespace chimaera::admin
 
 #endif // ADMIN_TASKS_H_

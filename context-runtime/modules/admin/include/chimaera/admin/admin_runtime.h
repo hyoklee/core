@@ -159,6 +159,13 @@ public:
   chi::TaskResume Heartbeat(hipc::FullPtr<HeartbeatTask> task, chi::RunContext &rctx);
 
   /**
+   * Handle Monitor - Collect and return worker statistics
+   * Iterates through all workers and collects their current statistics
+   * Returns serialized statistics in JSON format
+   */
+  chi::TaskResume Monitor(hipc::FullPtr<MonitorTask> task, chi::RunContext &rctx);
+
+  /**
    * Helper: Receive task inputs from remote node
    */
   void RecvIn(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Server* lbm_server);

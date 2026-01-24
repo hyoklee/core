@@ -232,6 +232,7 @@ class IpcManager {
       // Convert Future<TaskT> to Future<Task> for the queue
       Future<Task> task_future = queue_future.template Cast<Task>();
       lane_ref.Push(task_future);
+      HLOG(kInfo, "Send: Pushed task (method={}) to lane {}", task_ptr->method_, lane_id);
 
       // 7. Awaken worker for this lane
       AwakenWorker(&lane_ref);

@@ -97,6 +97,42 @@ void Worker::SetTaskDidWork(bool did_work) { task_did_work_ = did_work; }
 
 bool Worker::GetTaskDidWork() const { return task_did_work_; }
 
+WorkerStats Worker::GetWorkerStats() const {
+  WorkerStats stats;
+
+  // Basic worker info
+  stats.worker_id_ = worker_id_;
+  stats.is_running_ = is_running_;
+  stats.idle_iterations_ = idle_iterations_;
+
+  // Calculate number of queued tasks (tasks waiting in the assigned lane)
+  stats.num_queued_tasks_ = 0;
+  if (assigned_lane_) {
+    stats.num_queued_tasks_ = assigned_lane_->Size();
+  }
+
+  // Count blocked tasks across all blocked queues
+  stats.num_blocked_tasks_ = 0;
+  for (u32 i = 0; i < NUM_BLOCKED_QUEUES; ++i) {
+    stats.num_blocked_tasks_ += blocked_queues_[i].size();
+  }
+
+  // Count periodic tasks across all periodic queues
+  stats.num_periodic_tasks_ = 0;
+  for (u32 i = 0; i < NUM_PERIODIC_QUEUES; ++i) {
+    stats.num_periodic_tasks_ += periodic_queues_[i].size();
+  }
+
+  // Get suspend period (time until next periodic task or 0 if none)
+  stats.suspend_period_us_ = static_cast<u32>(GetSuspendPeriod());
+
+  // Note: num_tasks_processed_ would require adding a counter to the worker
+  // For now, set to 0 - can be added later if needed
+  stats.num_tasks_processed_ = 0;
+
+  return stats;
+}
+
 int Worker::GetEpollFd() const { return epoll_fd_; }
 
 bool Worker::RegisterEpollFd(int fd, u32 events, void *user_data) {
@@ -270,6 +306,7 @@ void Worker::Run() {
       idle_iterations_ = 0;
       current_sleep_us_ = 0;
       sleep_count_ = 0;
+      did_work_ = false;
     }
   }
 
@@ -300,6 +337,7 @@ u32 Worker::ProcessNewTasks() {
     Future<Task> future;
     // Pop Future<Task> from assigned lane
     if (assigned_lane_->Pop(future)) {
+      HLOG(kInfo, "Worker {}: Popped task from queue", worker_id_);
       tasks_processed++;
       SetCurrentRunContext(nullptr);
 
@@ -318,9 +356,11 @@ u32 Worker::ProcessNewTasks() {
 
       if (!container) {
         // Container not found - mark as complete with error
+        HLOG(kError, "Worker {}: Container not found for pool_id={}, method={}", worker_id_, pool_id, method_id);
         future_shm->is_complete_.store(1);
         continue;
       }
+      HLOG(kInfo, "Worker {}: Found container for pool_id={}, method={}", worker_id_, pool_id, method_id);
 
       // Check if Future has null task pointer (indicates task needs to be
       // loaded)
@@ -329,10 +369,13 @@ u32 Worker::ProcessNewTasks() {
 
       if (task_full_ptr.IsNull()) {
         // CLIENT PATH: Load task from serialized data in FutureShm
+        HLOG(kInfo, "Worker {}: Loading task from serialized data (method={})", worker_id_, method_id);
         std::vector<char> serialized_data(future_shm->serialized_task_.begin(),
                                           future_shm->serialized_task_.end());
         LocalLoadTaskArchive archive(serialized_data);
+        HLOG(kInfo, "Worker {}: About to call LocalAllocLoadTask", worker_id_);
         task_full_ptr = container->LocalAllocLoadTask(method_id, archive);
+        HLOG(kInfo, "Worker {}: LocalAllocLoadTask completed, task IsNull={}", worker_id_, task_full_ptr.IsNull());
 
         // Update the Future's task pointer
         future.GetTaskPtr() = task_full_ptr;
@@ -366,46 +409,76 @@ u32 Worker::ProcessNewTasks() {
   return tasks_processed;
 }
 
+double Worker::GetSuspendPeriod() const {
+  // Scan all periodic queues to find the task with shortest remaining time
+  double min_remaining_time_us = 0;
+  bool found_task = false;
+
+  // Get current time for calculating remaining time
+  hshm::Timepoint current_time;
+  current_time.Now();
+
+  // Check all periodic queues (0-3)
+  for (u32 queue_idx = 0; queue_idx < NUM_PERIODIC_QUEUES; ++queue_idx) {
+    const std::queue<RunContext *> &queue = periodic_queues_[queue_idx];
+
+    // Check if queue has any tasks
+    if (queue.empty()) {
+      continue;
+    }
+
+    // Get the front task (oldest/next to execute)
+    RunContext *run_ctx = queue.front();
+    if (!run_ctx || run_ctx->task.IsNull()) {
+      continue;
+    }
+
+    // Calculate remaining time until this task should execute
+    // remaining_time = yield_time_us_ - (current_time - block_start)
+    double elapsed_since_block_us =
+        run_ctx->block_start.GetUsecFromStart(current_time);
+    double remaining_time_us = run_ctx->yield_time_us_ - elapsed_since_block_us;
+
+    // Only consider positive remaining times (task not yet ready)
+    if (remaining_time_us <= 0) {
+      continue;
+    }
+
+    // Update minimum remaining time
+    if (!found_task || remaining_time_us < min_remaining_time_us) {
+      min_remaining_time_us = remaining_time_us;
+      found_task = true;
+    }
+  }
+
+  return found_task ? min_remaining_time_us : 0;
+}
+
 void Worker::SuspendMe() {
   // No work was done in this iteration - increment idle counter
   idle_iterations_++;
 
-  // If idle iterations is less than 32, don't sleep
-  if (idle_iterations_ < 64) {
-    return;
-  }
-
-  // Set idle start time on 32 idle iteration
-  if (idle_iterations_ == 64) {
+  // Set idle start time on first idle iteration
+  if (idle_iterations_ == 1) {
     idle_start_.Now();
   }
 
   // Get configuration parameters
   auto *config = CHI_CONFIG_MANAGER;
   u32 first_busy_wait = config->GetFirstBusyWait();
-  u32 sleep_increment = config->GetSleepIncrement();
   u32 max_sleep = config->GetMaxSleep();
 
-  // Calculate actual elapsed idle time using timer
+  // Calculate actual elapsed idle time
   hshm::Timepoint current_time;
   current_time.Now();
   double elapsed_idle_us = idle_start_.GetUsecFromStart(current_time);
 
   if (elapsed_idle_us < first_busy_wait) {
-    // Still in busy wait period - just yield CPU
-    HSHM_THREAD_MODEL->Yield();
+    // Still in busy wait period - just return
+    return;
   } else {
-    // Past busy wait period - start sleeping with linear increment
-    // Calculate how many sleep increments have passed since busy wait ended
-    current_sleep_us_ += sleep_increment;
-
-    // Cap at maximum sleep
-    if (current_sleep_us_ > max_sleep) {
-      current_sleep_us_ = max_sleep;
-    }
-
+    // Past busy wait period - use epoll
     // Before sleeping, check blocked queues with force=true
-    // This will process both queues regardless of iteration count
     ContinueBlockedTasks(true);
 
     // If task_did_work_ is true, blocked tasks were found - don't sleep
@@ -413,17 +486,19 @@ void Worker::SuspendMe() {
       return;
     }
 
-    // if (sleep_count_ == 0) {
-    //   HLOG(kInfo, "Worker {}: Sleeping for {} us", worker_id_,
-    //         current_sleep_us_);
-    // }
-
     // Mark worker as inactive (blocked in epoll_wait)
     assigned_lane_->SetActive(false);
 
-    // Wait for signal using epoll_wait with calculated timeout
-    int timeout_ms = static_cast<int>(
-        current_sleep_us_ / 1000);  // Convert microseconds to milliseconds
+    // Calculate epoll timeout from periodic tasks, or use max_sleep as fallback
+    double suspend_period_us = GetSuspendPeriod();
+    int timeout_ms;
+    if (suspend_period_us > 0) {
+      timeout_ms = static_cast<int>(suspend_period_us / 1000);
+    } else {
+      timeout_ms = static_cast<int>(max_sleep / 1000);
+    }
+
+    // Wait for signal using epoll_wait
     int nfds =
         epoll_wait(epoll_fd_, epoll_events_, MAX_EPOLL_EVENTS, timeout_ms);
 
@@ -432,16 +507,16 @@ void Worker::SuspendMe() {
 
     if (nfds > 0) {
       // Events received - read and discard all signal info
+      HLOG(kDebug, "Worker {}: epoll_wait returned nfds={}", worker_id_, nfds);
       for (int i = 0; i < nfds; ++i) {
         struct signalfd_siginfo si;
         ssize_t bytes_read = read(epoll_events_[i].data.fd, &si, sizeof(si));
-        (void)bytes_read;  // Suppress unused variable warning
+        (void)bytes_read;
       }
     } else if (nfds == 0) {
-      // Timeout occurred - normal sleep expiration
+      // Timeout occurred
       sleep_count_++;
     }
-    // nfds < 0 means error, but we just continue anyway
   }
 }
 
@@ -1489,8 +1564,8 @@ void Worker::ReschedulePeriodicTask(RunContext *run_ctx,
   AddToBlockedQueue(run_ctx);
 }
 
-RunContext* GetCurrentRunContextFromWorker() {
-  Worker* worker = CHI_CUR_WORKER;
+RunContext *GetCurrentRunContextFromWorker() {
+  Worker *worker = CHI_CUR_WORKER;
   if (worker) {
     return worker->GetCurrentRunContext();
   }

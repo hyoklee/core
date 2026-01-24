@@ -160,7 +160,6 @@ void ConfigManager::LoadDefault() {
 
   // Set default worker sleep configuration (in microseconds)
   first_busy_wait_ = 50;               // 50us busy wait
-  sleep_increment_ = 1000;             // 1000us (1ms) sleep increment
   max_sleep_ = 50000;                  // 50000us (50ms) maximum sleep
 }
 
@@ -199,9 +198,6 @@ void ConfigManager::ParseYAML(YAML::Node &yaml_conf) {
     // Worker sleep configuration
     if (runtime["first_busy_wait"]) {
       first_busy_wait_ = runtime["first_busy_wait"].as<u32>();
-    }
-    if (runtime["sleep_increment"]) {
-      sleep_increment_ = runtime["sleep_increment"].as<u32>();
     }
     if (runtime["max_sleep"]) {
       max_sleep_ = runtime["max_sleep"].as<u32>();

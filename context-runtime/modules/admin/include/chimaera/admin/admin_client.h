@@ -20,12 +20,18 @@ class Client : public chi::ContainerClient {
   /**
    * Default constructor
    */
-  Client() = default;
+  Client() {
+    HLOG(kWarning, "AdminClient: Default constructor called - pool_id_ will be PoolId(0,0)");
+  }
 
   /**
    * Constructor with pool ID
    */
-  explicit Client(const chi::PoolId& pool_id) { Init(pool_id); }
+  explicit Client(const chi::PoolId& pool_id) {
+    HLOG(kInfo, "AdminClient: Constructor called with pool_id={}", pool_id);
+    Init(pool_id);
+    HLOG(kInfo, "AdminClient: After Init, pool_id_={}", pool_id_);
+  }
 
   /**
    * Create the Admin container (asynchronous)
@@ -187,6 +193,39 @@ class Client : public chi::ContainerClient {
       task->SetFlags(TASK_PERIODIC);
     }
 
+    // Submit to runtime and return Future
+    return ipc_manager->Send(task);
+  }
+
+  /**
+   * Monitor worker statistics (asynchronous)
+   * Collects current statistics from all workers including:
+   * - Number of queued, blocked, and periodic tasks
+   * - Worker idle status and suspend periods
+   *
+   * @param pool_query Query for routing this task
+   * @param period_us Period in microseconds for periodic monitoring (0 = one-shot)
+   * @return Future for MonitorTask that will contain worker statistics
+   */
+  chi::Future<MonitorTask> AsyncMonitor(const chi::PoolQuery& pool_query,
+      double period_us = 0) {
+    auto* ipc_manager = CHI_IPC;
+
+    HLOG(kInfo, "AsyncMonitor: Creating MonitorTask with pool_id_={}", pool_id_);
+    // Allocate MonitorTask
+    auto task = ipc_manager->NewTask<MonitorTask>(
+        chi::CreateTaskId(), pool_id_, pool_query);
+    HLOG(kInfo, "AsyncMonitor: Task pool_id={}, method={}", task->pool_id_, task->method_);
+
+    HLOG(kInfo, "AsyncMonitor: Task created, IsNull={}", task.IsNull());
+
+    // Set task as periodic if period is specified
+    if (period_us > 0) {
+      task->SetPeriod(period_us, chi::kMicro);
+      task->SetFlags(TASK_PERIODIC);
+    }
+
+    HLOG(kInfo, "AsyncMonitor: Sending task");
     // Submit to runtime and return Future
     return ipc_manager->Send(task);
   }

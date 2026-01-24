@@ -39,6 +39,45 @@ struct CachedContext {
   explicit CachedContext(RunContext *ctx) : run_ctx(ctx) {}
 };
 
+/**
+ * Structure to hold worker statistics for monitoring
+ */
+struct WorkerStats {
+  u64 num_tasks_processed_;  /**< Total number of tasks this worker has processed */
+  u32 num_queued_tasks_;     /**< Number of tasks waiting to be processed */
+  u32 num_blocked_tasks_;    /**< Number of tasks in blocked queue */
+  u32 num_periodic_tasks_;   /**< Number of periodic tasks on this worker */
+  u32 suspend_period_us_;    /**< Time in microseconds before the worker would suspend */
+  u32 idle_iterations_;      /**< Number of consecutive idle iterations */
+  bool is_running_;          /**< Whether the worker is currently running */
+  u32 worker_id_;            /**< Worker identifier */
+
+  /** Default constructor */
+  WorkerStats()
+      : num_tasks_processed_(0),
+        num_queued_tasks_(0),
+        num_blocked_tasks_(0),
+        num_periodic_tasks_(0),
+        suspend_period_us_(0),
+        idle_iterations_(0),
+        is_running_(false),
+        worker_id_(0) {}
+
+  template <typename Archive>
+  void save(Archive& ar) const {
+    ar(num_tasks_processed_, num_queued_tasks_, num_blocked_tasks_,
+       num_periodic_tasks_, suspend_period_us_, idle_iterations_,
+       is_running_, worker_id_);
+  }
+
+  template <typename Archive>
+  void load(Archive& ar) {
+    ar(num_tasks_processed_, num_queued_tasks_, num_blocked_tasks_,
+       num_periodic_tasks_, suspend_period_us_, idle_iterations_,
+       is_running_, worker_id_);
+  }
+};
+
 // Macro for accessing HSHM thread-local storage (worker thread context)
 // This macro allows access to the current worker from any thread
 // Example usage in ChiMod container code:
@@ -159,6 +198,12 @@ class Worker {
    * @return true if task did work, false if idle/no work
    */
   bool GetTaskDidWork() const;
+
+  /**
+   * Get worker statistics for monitoring
+   * @return WorkerStats struct containing current worker statistics
+   */
+  WorkerStats GetWorkerStats() const;
 
   /**
    * Get the epoll file descriptor for this worker
@@ -368,6 +413,13 @@ class Worker {
    * @return Number of tasks processed
    */
   u32 ProcessNewTasks();
+
+  /**
+   * Get the time remaining before the next periodic task should resume
+   * Scans all periodic queues to find the task with the shortest remaining time
+   * @return Time in microseconds until next periodic task, or 0 if no periodic tasks
+   */
+  double GetSuspendPeriod() const;
 
   /**
    * Suspend worker when there is no work available

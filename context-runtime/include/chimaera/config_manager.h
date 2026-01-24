@@ -182,12 +182,6 @@ class ConfigManager : public hshm::BaseConfig {
   u32 GetFirstBusyWait() const { return first_busy_wait_; }
 
   /**
-   * Get sleep increment in microseconds
-   * @return Amount to linearly increment sleep duration per iteration with no work (default: 5000us = 5ms)
-   */
-  u32 GetSleepIncrement() const { return sleep_increment_; }
-
-  /**
    * Get maximum sleep duration in microseconds
    * @return Maximum sleep duration cap (default: 50000us = 50ms)
    */
@@ -236,7 +230,6 @@ class ConfigManager : public hshm::BaseConfig {
 
   // Worker sleep configuration (in microseconds)
   u32 first_busy_wait_ = 10000;              // Default: 10000us (10ms) busy wait
-  u32 sleep_increment_ = 5000;               // Default: 5000us (5ms) sleep increment
   u32 max_sleep_ = 50000;                    // Default: 50000us (50ms) maximum sleep
 
   // Compose configuration
