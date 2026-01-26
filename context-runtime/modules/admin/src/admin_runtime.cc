@@ -33,7 +33,8 @@ namespace chimaera::admin {
 // Method implementations
 //===========================================================================
 
-chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext &rctx) {
+chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task,
+                                chi::RunContext &rctx) {
   // Admin container creation logic (IS_ADMIN=true)
   HLOG(kDebug, "Admin: Initializing admin container");
 
@@ -49,11 +50,11 @@ chi::TaskResume Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext 
 
   // Spawn periodic Recv task with 25 microsecond period (default)
   // Worker will automatically reschedule periodic tasks
-  client_.AsyncRecv(chi::PoolQuery::Local(), 0, 25);
+  client_.AsyncRecv(chi::PoolQuery::Local(), 0, 500);
 
   // Spawn periodic Send task with 25 microsecond period
   // This task polls net_queue_ for send operations
-  client_.AsyncSendPoll(chi::PoolQuery::Local(), 0, 25);
+  client_.AsyncSendPoll(chi::PoolQuery::Local(), 0, 500);
 
   // Spawn periodic Heartbeat task with 5ms period
   // This task polls for ZMQ heartbeat requests and responds
@@ -74,7 +75,8 @@ chi::TaskResume Runtime::GetOrCreatePool(
         task,
     chi::RunContext &rctx) {
   // Debug: Log do_compose_ value
-  HLOG(kDebug, "Admin::GetOrCreatePool ENTRY: task->do_compose_={}, task->is_admin_={}",
+  HLOG(kDebug,
+       "Admin::GetOrCreatePool ENTRY: task->do_compose_={}, task->is_admin_={}",
        task->do_compose_, task->is_admin_);
 
   // Get pool manager once - used by both dynamic scheduling and normal
@@ -85,7 +87,7 @@ chi::TaskResume Runtime::GetOrCreatePool(
   std::string pool_name = task->pool_name_.str();
 
   // Check if this is dynamic scheduling mode
-  if (rctx.exec_mode == chi::ExecMode::kDynamicSchedule) {
+  if (rctx.exec_mode_ == chi::ExecMode::kDynamicSchedule) {
     // Dynamic routing with cache optimization
     // Check if pool exists locally first to avoid unnecessary broadcast
     HLOG(kDebug,
@@ -147,14 +149,15 @@ chi::TaskResume Runtime::GetOrCreatePool(
   co_return;
 }
 
-chi::TaskResume Runtime::Destroy(hipc::FullPtr<DestroyTask> task, chi::RunContext &rctx) {
+chi::TaskResume Runtime::Destroy(hipc::FullPtr<DestroyTask> task,
+                                 chi::RunContext &rctx) {
   // DestroyTask is aliased to DestroyPoolTask, so delegate to DestroyPool
   co_await DestroyPool(task, rctx);
   co_return;
 }
 
 chi::TaskResume Runtime::DestroyPool(hipc::FullPtr<DestroyPoolTask> task,
-                          chi::RunContext &rctx) {
+                                     chi::RunContext &rctx) {
   HLOG(kDebug, "Admin: Executing DestroyPool task - Pool ID: {}",
        task->target_pool_id_);
 
@@ -198,7 +201,7 @@ chi::TaskResume Runtime::DestroyPool(hipc::FullPtr<DestroyPoolTask> task,
 }
 
 chi::TaskResume Runtime::StopRuntime(hipc::FullPtr<StopRuntimeTask> task,
-                          chi::RunContext &rctx) {
+                                     chi::RunContext &rctx) {
   HLOG(kDebug, "Admin: Executing StopRuntime task - Grace period: {}ms",
        task->grace_period_ms_);
 
@@ -251,7 +254,8 @@ void Runtime::InitiateShutdown(chi::u32 grace_period_ms) {
   std::abort();
 }
 
-chi::TaskResume Runtime::Flush(hipc::FullPtr<FlushTask> task, chi::RunContext &rctx) {
+chi::TaskResume Runtime::Flush(hipc::FullPtr<FlushTask> task,
+                               chi::RunContext &rctx) {
   HLOG(kDebug, "Admin: Executing Flush task");
 
   // Initialize output values
@@ -328,22 +332,22 @@ void Runtime::SendIn(hipc::FullPtr<chi::Task> origin_task,
   send_map_[send_map_key] = origin_task;
 
   // Get pool_queries from task's RunContext
-  chi::RunContext *origin_task_rctx = origin_task->run_ctx_;
-  if (origin_task_rctx == nullptr) {
+  if (!origin_task->run_ctx_) {
     HLOG(kError, "SendIn: origin_task has no RunContext");
     return;
   }
+  chi::RunContext *origin_task_rctx = origin_task->run_ctx_.get();
 
   const std::vector<chi::PoolQuery> &pool_queries =
-      origin_task_rctx->pool_queries;
+      origin_task_rctx->pool_queries_;
   size_t num_replicas = pool_queries.size();
 
   // Reserve space for all replicas in subtasks vector BEFORE the loop
   // This ensures subtasks_.size() reflects the correct total replica count
   origin_task_rctx->subtasks_.resize(num_replicas);
 
-  HLOG(kDebug, "[SendIn] Task {} to {} replicas",
-       origin_task->task_id_, num_replicas);
+  HLOG(kDebug, "[SendIn] Task {} to {} replicas", origin_task->task_id_,
+       num_replicas);
 
   // Send to each target in pool_queries
   for (size_t i = 0; i < num_replicas; ++i) {
@@ -524,9 +528,11 @@ void Runtime::SendOut(hipc::FullPtr<chi::Task> origin_task) {
  * Main Send function - periodic task that polls net_queue_ for send operations
  * Polls both SendIn (priority 0) and SendOut (priority 1) queues
  */
-chi::TaskResume Runtime::Send(hipc::FullPtr<SendTask> task, chi::RunContext &rctx) {
+chi::TaskResume Runtime::Send(hipc::FullPtr<SendTask> task,
+                              chi::RunContext &rctx) {
   auto *ipc_manager = CHI_IPC;
   chi::Future<chi::Task> queued_future;
+  bool did_send = false;
 
   // Poll priority 0 (SendIn) queue - tasks waiting to be sent to remote nodes
   while (ipc_manager->TryPopNetTask(chi::NetQueuePriority::kSendIn,
@@ -535,6 +541,7 @@ chi::TaskResume Runtime::Send(hipc::FullPtr<SendTask> task, chi::RunContext &rct
     auto origin_task = queued_future.GetTaskPtr();
     if (!origin_task.IsNull()) {
       SendIn(origin_task, rctx);
+      did_send = true;
     }
   }
 
@@ -545,7 +552,15 @@ chi::TaskResume Runtime::Send(hipc::FullPtr<SendTask> task, chi::RunContext &rct
     auto origin_task = queued_future.GetTaskPtr();
     if (!origin_task.IsNull()) {
       SendOut(origin_task);
+      did_send = true;
     }
+  }
+
+  // Track whether this execution did actual work
+  if (did_send) {
+    rctx.did_work_ = true;
+  } else {
+    rctx.did_work_ = false;
   }
 
   task->SetReturnCode(0);
@@ -676,7 +691,12 @@ void Runtime::RecvOut(hipc::FullPtr<RecvTask> task,
       return;
     }
     hipc::FullPtr<chi::Task> origin_task = *send_it;
-    chi::RunContext *origin_rctx = origin_task->run_ctx_;
+    if (!origin_task->run_ctx_) {
+      HLOG(kError, "Admin: origin_task has no RunContext");
+      task->SetReturnCode(6);
+      return;
+    }
+    chi::RunContext *origin_rctx = origin_task->run_ctx_.get();
 
     // Locate replica in origin's run_ctx using replica_id
     chi::u32 replica_id = task_info.task_id_.replica_id_;
@@ -726,7 +746,11 @@ void Runtime::RecvOut(hipc::FullPtr<RecvTask> task,
       continue;
     }
     hipc::FullPtr<chi::Task> origin_task = *send_it;
-    chi::RunContext *origin_rctx = origin_task->run_ctx_;
+    if (!origin_task->run_ctx_) {
+      HLOG(kError, "Admin: origin_task has no RunContext");
+      continue;
+    }
+    chi::RunContext *origin_rctx = origin_task->run_ctx_.get();
 
     // Locate replica in origin's run_ctx using replica_id
     chi::u32 replica_id = task_info.task_id_.replica_id_;
@@ -795,16 +819,13 @@ void Runtime::RecvOut(hipc::FullPtr<RecvTask> task,
  * Main Recv function - receives metadata and dispatches based on mode
  * Note: This is a periodic task - only logs when actual work is done
  */
-chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rctx) {
+chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task,
+                              chi::RunContext &rctx) {
   // Get the main server from CHI_IPC (already bound during initialization)
   auto *ipc_manager = CHI_IPC;
 
   hshm::lbm::Server *lbm_server = ipc_manager->GetMainServer();
   if (lbm_server == nullptr) {
-    chi::Worker *worker = CHI_CUR_WORKER;
-    if (worker != nullptr) {
-      worker->SetTaskDidWork(false);
-    }
     co_return;
   }
 
@@ -815,11 +836,8 @@ chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rct
   int rc = lbm_server->RecvMetadata(archive);
   if (rc == EAGAIN) {
     // No message available - this is normal for polling, mark as no work done
-    chi::Worker *worker = CHI_CUR_WORKER;
-    if (worker != nullptr) {
-      worker->SetTaskDidWork(false);
-    }
     task->SetReturnCode(0);
+    rctx.did_work_ = false;
     co_return;
   }
 
@@ -829,8 +847,12 @@ chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rct
            rc);
     }
     task->SetReturnCode(2);
+    rctx.did_work_ = false;
     co_return;
   }
+
+  // Mark that we received data (did work)
+  rctx.did_work_ = true;
 
   // Dispatch based on message type
   chi::MsgType msg_type = archive.GetMsgType();
@@ -850,7 +872,6 @@ chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rct
       break;
   }
 
-  (void)rctx;
   co_return;
 }
 
@@ -861,7 +882,8 @@ chi::TaskResume Runtime::Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rct
  * @param task The heartbeat task
  * @param rctx Run context
  */
-chi::TaskResume Runtime::Heartbeat(hipc::FullPtr<HeartbeatTask> task, chi::RunContext &rctx) {
+chi::TaskResume Runtime::Heartbeat(hipc::FullPtr<HeartbeatTask> task,
+                                   chi::RunContext &rctx) {
   auto *ipc_manager = CHI_IPC;
 
   // Poll heartbeat socket - RECEIVE request and SEND response
@@ -875,14 +897,138 @@ chi::TaskResume Runtime::Heartbeat(hipc::FullPtr<HeartbeatTask> task, chi::RunCo
       // Received a heartbeat request - SEND response (0 = success)
       int32_t response = 0;
       zmq_send(hb_socket, &response, sizeof(response), 0);
-      HLOG(kDebug, "Heartbeat: received request {}, sent response {}",
-           request, response);
+      HLOG(kDebug, "Heartbeat: received request {}, sent response {}", request,
+           response);
+      // Mark that we did work (received and responded to heartbeat)
+      rctx.did_work_ = true;
+    } else {
+      // No heartbeat request available (EAGAIN)
+      rctx.did_work_ = false;
     }
+  } else {
+    // No heartbeat socket available
+    rctx.did_work_ = false;
   }
 
   // Set task response to indicate runtime is healthy
   task->response_ = 0;
   task->SetReturnCode(0);
+  co_return;
+}
+
+chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
+                                  chi::RunContext &rctx) {
+  HLOG(kInfo, "Admin: Executing Monitor task - START");
+
+  // Get work orchestrator to access all workers
+  auto *work_orchestrator = CHI_WORK_ORCHESTRATOR;
+  if (!work_orchestrator) {
+    task->SetReturnCode(1);
+    HLOG(kError, "Monitor: WorkOrchestrator not available");
+    (void)rctx;
+    co_return;
+  }
+
+  // Get worker count from the work orchestrator
+  size_t num_workers = work_orchestrator->GetWorkerCount();
+
+  // Reserve space in the vector
+  task->info_.reserve(num_workers);
+
+  // Collect stats from all workers
+  for (size_t i = 0; i < num_workers; ++i) {
+    chi::Worker *worker = work_orchestrator->GetWorker(static_cast<chi::u32>(i));
+    if (!worker) {
+      continue;
+    }
+
+    // Get stats from this worker and add to vector
+    chi::WorkerStats stats = worker->GetWorkerStats();
+    task->info_.push_back(stats);
+  }
+
+  task->SetReturnCode(0);
+  HLOG(kInfo, "Monitor: Collected stats from {} workers - COMPLETE", task->info_.size());
+
+  (void)rctx;
+  co_return;
+}
+
+chi::TaskResume Runtime::SubmitBatch(hipc::FullPtr<SubmitBatchTask> task,
+                                     chi::RunContext &rctx) {
+  HLOG(kInfo, "Admin: Executing SubmitBatch task with {} tasks",
+       task->task_infos_.size());
+
+  auto *ipc_manager = CHI_IPC;
+  auto *pool_manager = CHI_POOL_MANAGER;
+
+  // Initialize output values
+  task->tasks_completed_ = 0;
+  task->error_message_ = "";
+
+  // If no tasks to submit
+  if (task->task_infos_.empty()) {
+    task->SetReturnCode(0);
+    HLOG(kInfo, "SubmitBatch: No tasks to submit");
+    co_return;
+  }
+
+  // Create LocalLoadTaskArchive from the serialized data
+  chi::LocalLoadTaskArchive archive(task->serialized_data_);
+
+  // Process tasks in batches of 32
+  constexpr size_t kMaxParallelTasks = 32;
+  std::vector<chi::Future<chi::Task>> pending_futures;
+  pending_futures.reserve(kMaxParallelTasks);
+
+  size_t task_idx = 0;
+  size_t total_tasks = task->task_infos_.size();
+
+  while (task_idx < total_tasks) {
+    // Submit up to kMaxParallelTasks tasks
+    pending_futures.clear();
+
+    for (size_t i = 0; i < kMaxParallelTasks && task_idx < total_tasks;
+         ++i, ++task_idx) {
+      const chi::LocalTaskInfo &task_info = task->task_infos_[task_idx];
+
+      // Get the container for this task's pool
+      chi::Container *container =
+          pool_manager->GetContainer(task_info.pool_id_);
+      if (!container) {
+        HLOG(kError, "SubmitBatch: Container not found for pool_id {}",
+             task_info.pool_id_);
+        continue;
+      }
+
+      // Deserialize and allocate the task
+      hipc::FullPtr<chi::Task> sub_task_ptr =
+          container->LocalAllocLoadTask(task_info.method_id_, archive);
+
+      if (sub_task_ptr.IsNull()) {
+        HLOG(kError, "SubmitBatch: Failed to load task at index {}", task_idx);
+        continue;
+      }
+
+      // Submit task and collect future
+      chi::Future<chi::Task> future = ipc_manager->Send(sub_task_ptr);
+      pending_futures.push_back(std::move(future));
+    }
+
+    // co_await all pending futures in this batch
+    for (auto &future : pending_futures) {
+      co_await future;
+      task->tasks_completed_++;
+    }
+
+    HLOG(kDebug, "SubmitBatch: Completed batch, total completed: {}",
+         task->tasks_completed_);
+  }
+
+  task->SetReturnCode(0);
+  HLOG(kInfo, "SubmitBatch: Completed {} of {} tasks",
+       task->tasks_completed_, total_tasks);
+
   (void)rctx;
   co_return;
 }

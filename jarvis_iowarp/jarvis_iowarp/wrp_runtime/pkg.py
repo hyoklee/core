@@ -86,11 +86,10 @@ class WrpRuntime(Service):
                 'default': 10000
             },
             {
-                'name': 'lane_map_policy',
-                'msg': 'Lane mapping policy',
+                'name': 'local_sched',
+                'msg': 'Local task scheduler',
                 'type': str,
-                'choices': ['map_by_pid_tid', 'round_robin', 'random'],
-                'default': 'round_robin'
+                'default': 'default'
             },
             {
                 'name': 'heartbeat_interval',
@@ -103,12 +102,6 @@ class WrpRuntime(Service):
                 'msg': 'Busy wait duration before sleeping (microseconds)',
                 'type': int,
                 'default': 50
-            },
-            {
-                'name': 'sleep_increment',
-                'msg': 'Sleep increment per idle iteration (microseconds)',
-                'type': int,
-                'default': 1000
             },
             {
                 'name': 'max_sleep',
@@ -168,11 +161,10 @@ class WrpRuntime(Service):
                 # Task execution configuration
                 'stack_size': self.config['stack_size'],
                 'queue_depth': self.config['queue_depth'],
-                'lane_map_policy': self.config['lane_map_policy'],
+                'local_sched': self.config['local_sched'],
                 'heartbeat_interval': self.config['heartbeat_interval'],
                 # Worker sleep configuration
                 'first_busy_wait': self.config['first_busy_wait'],
-                'sleep_increment': self.config['sleep_increment'],
                 'max_sleep': self.config['max_sleep']
             }
         }

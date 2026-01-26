@@ -23,6 +23,7 @@
 #include "chimaera/admin/admin_client.h"
 #include "chimaera/container.h"
 #include "chimaera/pool_manager.h"
+#include "chimaera/ipc_manager.h"
 #include "chimaera/singletons.h"
 #include "chimaera/task.h"
 #include "chimaera/task_archives.h"
@@ -89,6 +90,10 @@ bool Worker::Init() {
     return false;
   }
 
+  // Get scheduler from IpcManager (IpcManager is the single owner)
+  scheduler_ = CHI_IPC->GetScheduler();
+  HLOG(kDebug, "Worker {}: Using scheduler from IpcManager", worker_id_);
+
   is_initialized_ = true;
   return true;
 }
@@ -96,6 +101,46 @@ bool Worker::Init() {
 void Worker::SetTaskDidWork(bool did_work) { task_did_work_ = did_work; }
 
 bool Worker::GetTaskDidWork() const { return task_did_work_; }
+
+WorkerStats Worker::GetWorkerStats() const {
+  WorkerStats stats;
+
+  // Basic worker info
+  stats.worker_id_ = worker_id_;
+  stats.is_running_ = is_running_;
+  stats.idle_iterations_ = idle_iterations_;
+
+  // Calculate number of queued tasks (tasks waiting in the assigned lane)
+  stats.num_queued_tasks_ = 0;
+  stats.is_active_ = false;
+  if (assigned_lane_) {
+    stats.num_queued_tasks_ = assigned_lane_->Size();
+    stats.is_active_ = assigned_lane_->IsActive();
+  }
+
+  // Count blocked tasks across all blocked queues
+  stats.num_blocked_tasks_ = 0;
+  for (u32 i = 0; i < NUM_BLOCKED_QUEUES; ++i) {
+    stats.num_blocked_tasks_ += blocked_queues_[i].size();
+  }
+
+  // Count periodic tasks across all periodic queues
+  stats.num_periodic_tasks_ = 0;
+  for (u32 i = 0; i < NUM_PERIODIC_QUEUES; ++i) {
+    stats.num_periodic_tasks_ += periodic_queues_[i].size();
+  }
+
+  // Get suspend period (time until next periodic task or 0 if none)
+  double suspend_period = GetSuspendPeriod();
+  stats.suspend_period_us_ =
+      (suspend_period < 0) ? 0 : static_cast<u32>(suspend_period);
+
+  // Note: num_tasks_processed_ would require adding a counter to the worker
+  // For now, set to 0 - can be added later if needed
+  stats.num_tasks_processed_ = 0;
+
+  return stats;
+}
 
 int Worker::GetEpollFd() const { return epoll_fd_; }
 
@@ -159,16 +204,7 @@ void Worker::Finalize() {
 
   Stop();
 
-  // Clean up cached RunContexts
-  while (!context_cache_.empty()) {
-    CachedContext cached_entry = context_cache_.front();
-    context_cache_.pop();
-
-    // Free the cached RunContext
-    if (cached_entry.run_ctx) {
-      delete cached_entry.run_ctx;
-    }
-  }
+  // Note: Context cache cleanup removed - RunContext is now embedded in Task
 
   // Clean up all blocked queues (2 queues)
   for (u32 i = 0; i < NUM_BLOCKED_QUEUES; ++i) {
@@ -223,10 +259,13 @@ void Worker::Run() {
   // Create signalfd
   int signal_fd = signalfd(-1, &mask, SFD_NONBLOCK | SFD_CLOEXEC);
   if (signal_fd == -1) {
-    HLOG(kError, "Worker {}: Failed to create signalfd", worker_id_);
+    HLOG(kError, "Worker {}: Failed to create signalfd - errno={}", worker_id_,
+         errno);
     is_running_ = false;
     return;
   }
+  HLOG(kInfo, "Worker {}: Created signalfd={}, tid={}", worker_id_, signal_fd,
+       tid);
 
   // Store signal_fd in TaskLane
   assigned_lane_->SetSignalFd(signal_fd);
@@ -236,16 +275,25 @@ void Worker::Run() {
   ev.events = EPOLLIN;
   ev.data.fd = signal_fd;
   if (epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, signal_fd, &ev) == -1) {
-    HLOG(kError, "Worker {}: Failed to add signal_fd to epoll", worker_id_);
+    HLOG(kError,
+         "Worker {}: Failed to add signal_fd={} to epoll_fd={} - errno={}",
+         worker_id_, signal_fd, epoll_fd_, errno);
     close(signal_fd);
     assigned_lane_->SetSignalFd(-1);
     is_running_ = false;
     return;
   }
+  HLOG(kInfo, "Worker {}: Added signalfd={} to epoll_fd={} successfully",
+       worker_id_, signal_fd, epoll_fd_);
+
+  // Note: ZMQ socket FD registration is not needed
+  // Workers with periodic tasks (Heartbeat, Recv, etc.) use timeout_ms=0
+  // when tasks are overdue, ensuring they wake up to service network I/O
 
   // Main worker loop - process tasks from assigned lane
   while (is_running_) {
     did_work_ = false;  // Reset work tracker at start of each loop iteration
+    task_did_work_ = false;  // Reset task-level work tracker
 
     // Process tasks from assigned lane
     ProcessNewTasks();
@@ -270,6 +318,7 @@ void Worker::Run() {
       idle_iterations_ = 0;
       current_sleep_us_ = 0;
       sleep_count_ = 0;
+      did_work_ = false;
     }
   }
 
@@ -318,6 +367,8 @@ u32 Worker::ProcessNewTasks() {
 
       if (!container) {
         // Container not found - mark as complete with error
+        HLOG(kError, "Worker {}: Container not found for pool_id={}, method={}",
+             worker_id_, pool_id, method_id);
         future_shm->is_complete_.store(1);
         continue;
       }
@@ -352,7 +403,7 @@ u32 Worker::ProcessNewTasks() {
       // Route task using consolidated routing function
       if (RouteTask(future, assigned_lane_, container)) {
         // Routing successful, execute the task
-        RunContext *run_ctx = task_full_ptr->run_ctx_;
+        RunContext *run_ctx = task_full_ptr->run_ctx_.get();
         ExecTask(task_full_ptr, run_ctx, false);
       }
       // Note: RouteTask returning false doesn't always indicate an error
@@ -366,46 +417,67 @@ u32 Worker::ProcessNewTasks() {
   return tasks_processed;
 }
 
+double Worker::GetSuspendPeriod() const {
+  // Scan all periodic queues to find the maximum yield_time (polling period)
+  // We use the maximum yield_time directly, not the remaining time, to avoid
+  // desynchronization issues when multiple tasks have the same period but
+  // slightly different block_start timestamps
+  double max_yield_time_us = 0;
+  bool found_task = false;
+
+  // Check all periodic queues (0-3)
+  for (u32 queue_idx = 0; queue_idx < NUM_PERIODIC_QUEUES; ++queue_idx) {
+    const std::queue<RunContext *> &queue = periodic_queues_[queue_idx];
+
+    if (queue.empty()) {
+      continue;
+    }
+
+    // Check just the front task of each queue (representative of the queue's period)
+    RunContext *run_ctx = queue.front();
+
+    if (!run_ctx || run_ctx->task_.IsNull()) {
+      continue;
+    }
+
+    // Use the yield_time directly - this is the adaptive polling period
+    // No elapsed time calculation to avoid desynchronization
+    if (!found_task || run_ctx->yield_time_us_ > max_yield_time_us) {
+      max_yield_time_us = run_ctx->yield_time_us_;
+      found_task = true;
+    }
+  }
+
+  // Return -1 if no periodic tasks (means wait indefinitely in epoll_wait)
+  // Otherwise return the maximum yield_time across all periodic queues
+  return found_task ? max_yield_time_us : -1;
+}
+
 void Worker::SuspendMe() {
   // No work was done in this iteration - increment idle counter
   idle_iterations_++;
 
-  // If idle iterations is less than 32, don't sleep
-  if (idle_iterations_ < 64) {
-    return;
-  }
-
-  // Set idle start time on 32 idle iteration
-  if (idle_iterations_ == 64) {
+  // Set idle start time on first idle iteration
+  if (idle_iterations_ == 1) {
     idle_start_.Now();
   }
 
   // Get configuration parameters
   auto *config = CHI_CONFIG_MANAGER;
   u32 first_busy_wait = config->GetFirstBusyWait();
-  u32 sleep_increment = config->GetSleepIncrement();
   u32 max_sleep = config->GetMaxSleep();
 
-  // Calculate actual elapsed idle time using timer
+  // Calculate actual elapsed idle time
   hshm::Timepoint current_time;
   current_time.Now();
   double elapsed_idle_us = idle_start_.GetUsecFromStart(current_time);
 
   if (elapsed_idle_us < first_busy_wait) {
-    // Still in busy wait period - just yield CPU
-    HSHM_THREAD_MODEL->Yield();
+    // Still in busy wait period - just return
+    return;
   } else {
-    // Past busy wait period - start sleeping with linear increment
-    // Calculate how many sleep increments have passed since busy wait ended
-    current_sleep_us_ += sleep_increment;
-
-    // Cap at maximum sleep
-    if (current_sleep_us_ > max_sleep) {
-      current_sleep_us_ = max_sleep;
-    }
-
+    // Past busy wait period - use epoll
     // Before sleeping, check blocked queues with force=true
-    // This will process both queues regardless of iteration count
     ContinueBlockedTasks(true);
 
     // If task_did_work_ is true, blocked tasks were found - don't sleep
@@ -413,17 +485,27 @@ void Worker::SuspendMe() {
       return;
     }
 
-    // if (sleep_count_ == 0) {
-    //   HLOG(kInfo, "Worker {}: Sleeping for {} us", worker_id_,
-    //         current_sleep_us_);
-    // }
-
     // Mark worker as inactive (blocked in epoll_wait)
     assigned_lane_->SetActive(false);
 
-    // Wait for signal using epoll_wait with calculated timeout
-    int timeout_ms = static_cast<int>(
-        current_sleep_us_ / 1000);  // Convert microseconds to milliseconds
+    // Calculate epoll timeout from periodic tasks
+    // -1 = no periodic tasks, wait indefinitely
+    // >0 = maximum yield_time (polling period) from periodic tasks
+    double suspend_period_us = GetSuspendPeriod();
+    int timeout_ms;
+    if (suspend_period_us < 0) {
+      // No periodic tasks - wait indefinitely (-1)
+      timeout_ms = -1;
+    } else {
+      // Have periodic tasks - use the maximum yield_time as timeout
+      // Round UP to avoid premature wakeups due to ms/us precision mismatch
+      timeout_ms = static_cast<int>((suspend_period_us + 999) / 1000);
+      if (timeout_ms < 1) {
+        timeout_ms = 1;  // Minimum 1ms to avoid busy-polling
+      }
+    }
+
+    // Wait for signal using epoll_wait
     int nfds =
         epoll_wait(epoll_fd_, epoll_events_, MAX_EPOLL_EVENTS, timeout_ms);
 
@@ -431,23 +513,27 @@ void Worker::SuspendMe() {
     assigned_lane_->SetActive(true);
 
     if (nfds > 0) {
-      // Events received - read and discard all signal info
-      for (int i = 0; i < nfds; ++i) {
-        struct signalfd_siginfo si;
-        ssize_t bytes_read = read(epoll_events_[i].data.fd, &si, sizeof(si));
-        (void)bytes_read;  // Suppress unused variable warning
-      }
+      // Events received - should be SIGUSR1 signal on signalfd
+      // Read and discard the signal info from signalfd
+      int signal_fd = assigned_lane_->GetSignalFd();
+      struct signalfd_siginfo si;
+      ssize_t bytes_read = read(signal_fd, &si, sizeof(si));
+      (void)bytes_read;  // Suppress unused variable warning
     } else if (nfds == 0) {
-      // Timeout occurred - normal sleep expiration
+      // Timeout occurred
       sleep_count_++;
+    } else {
+      // Error occurred
+      HLOG(kError, "Worker {}: epoll_wait error: errno={}", worker_id_, errno);
     }
-    // nfds < 0 means error, but we just continue anyway
   }
 }
 
 u32 Worker::GetId() const { return worker_id_; }
 
 ThreadType Worker::GetThreadType() const { return thread_type_; }
+
+void Worker::SetThreadType(ThreadType thread_type) { thread_type_ = thread_type; }
 
 bool Worker::IsRunning() const { return is_running_; }
 
@@ -465,7 +551,7 @@ FullPtr<Task> Worker::GetCurrentTask() const {
   if (!run_ctx) {
     return FullPtr<Task>::GetNull();
   }
-  return run_ctx->task;
+  return run_ctx->task_;
 }
 
 Container *Worker::GetCurrentContainer() const {
@@ -473,7 +559,7 @@ Container *Worker::GetCurrentContainer() const {
   if (!run_ctx) {
     return nullptr;
   }
-  return run_ctx->container;
+  return run_ctx->container_;
 }
 
 TaskLane *Worker::GetCurrentLane() const {
@@ -481,7 +567,7 @@ TaskLane *Worker::GetCurrentLane() const {
   if (!run_ctx) {
     return nullptr;
   }
-  return run_ctx->lane;
+  return run_ctx->lane_;
 }
 
 void Worker::SetAsCurrentWorker() {
@@ -511,9 +597,9 @@ bool Worker::RouteTask(Future<Task> &future, TaskLane *lane,
   }
 
   // Initialize exec_mode to kExec by default
-  RunContext *run_ctx = task_ptr->run_ctx_;
-  if (run_ctx != nullptr) {
-    run_ctx->exec_mode = ExecMode::kExec;
+  if (task_ptr->run_ctx_) {
+    RunContext *run_ctx = task_ptr->run_ctx_.get();
+    run_ctx->exec_mode_ = ExecMode::kExec;
   }
 
   // Resolve pool query and route task to container
@@ -602,20 +688,35 @@ bool Worker::RouteLocal(Future<Task> &future, TaskLane *lane,
   // Get task pointer from future
   FullPtr<Task> task_ptr = future.GetTaskPtr();
 
-  // Check task execution time estimate
-  // Tasks with EstCpuTime >= 50us are considered slow
-  size_t est_cpu_time = task_ptr->EstCpuTime();
+  // Use scheduler to determine target worker for this task
+  u32 target_worker_id = worker_id_;  // Default to current worker
+  if (scheduler_ != nullptr) {
+    target_worker_id = scheduler_->RuntimeMapTask(this, future);
+  }
 
-  // Route slow tasks to kSlow workers if we're not already a slow worker
-  //   if ((est_cpu_time >= 50 || task_ptr->stat_.io_size_ > 0) &&
-  //       thread_type_ != kSlow) {
-  //     // This is a slow task and we're a fast worker - route to slow workers
-  //     auto *work_orchestrator = CHI_WORK_ORCHESTRATOR;
-  //     work_orchestrator->AssignToWorkerType(kSlow, task_ptr);
-  //     return false; // Task routed to slow workers, don't execute here
-  //   }
+  // If scheduler routed task to a different worker, forward it
+  if (target_worker_id != worker_id_) {
+    auto *work_orchestrator = CHI_WORK_ORCHESTRATOR;
+    Worker *target_worker = work_orchestrator->GetWorker(target_worker_id);
 
-  // Fast tasks (< 50us) stay on any worker, slow tasks stay on kSlow workers
+    if (target_worker && target_worker->GetLane()) {
+      // Get the target worker's assigned lane and push the task
+      TaskLane *target_lane = target_worker->GetLane();
+      target_lane->Push(future);
+
+      HLOG(kDebug, "Worker {}: Routed task to worker {} via scheduler",
+           worker_id_, target_worker_id);
+      return false;  // Task routed to another worker, don't execute here
+    } else {
+      // Fallback: execute locally if target worker not available
+      HLOG(kWarning,
+           "Worker {}: Scheduler routed to worker {} but worker unavailable, "
+           "executing locally",
+           worker_id_, target_worker_id);
+    }
+  }
+
+  // Execute task locally
   // Get the container for execution
   auto *pool_manager = CHI_POOL_MANAGER;
   container = pool_manager->GetContainer(task_ptr->pool_id_);
@@ -645,9 +746,9 @@ bool Worker::RouteGlobal(Future<Task> &future,
   auto *ipc_manager = CHI_IPC;
 
   // Store pool_queries in task's RunContext for SendIn to access
-  RunContext *run_ctx = task_ptr->run_ctx_;
-  if (run_ctx != nullptr) {
-    run_ctx->pool_queries = pool_queries;
+  if (task_ptr->run_ctx_) {
+    RunContext *run_ctx = task_ptr->run_ctx_.get();
+    run_ctx->pool_queries_ = pool_queries;
   }
 
   // Enqueue the original task directly to net_queue_ priority 0 (SendIn)
@@ -713,15 +814,17 @@ std::vector<PoolQuery> Worker::ResolveLocalQuery(
 
 std::vector<PoolQuery> Worker::ResolveDynamicQuery(
     const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
-  // Use the current RunContext that was allocated by BeginTask
-  RunContext *run_ctx = task_ptr->run_ctx_;
-  if (run_ctx == nullptr) {
-    return {};  // Return empty vector if no RunContext
+  // Ensure RunContext is initialized
+  if (!task_ptr->run_ctx_) {
+    task_ptr->run_ctx_ = std::make_unique<RunContext>();
   }
+
+  // Use the current RunContext that is owned by the task
+  RunContext *run_ctx = task_ptr->run_ctx_.get();
 
   // Set execution mode to kDynamicSchedule
   // This tells ExecTask to call RerouteDynamicTask instead of EndTask
-  run_ctx->exec_mode = ExecMode::kDynamicSchedule;
+  run_ctx->exec_mode_ = ExecMode::kDynamicSchedule;
 
   // Return Local query for execution
   // After task completes, RerouteDynamicTask will re-route with updated
@@ -787,9 +890,9 @@ std::vector<PoolQuery> Worker::ResolveDirectHashQuery(
 std::vector<PoolQuery> Worker::ResolveRangeQuery(
     const PoolQuery &query, PoolId pool_id, const FullPtr<Task> &task_ptr) {
   // Set execution mode to normal execution
-  RunContext *run_ctx = task_ptr->run_ctx_;
-  if (run_ctx != nullptr) {
-    run_ctx->exec_mode = ExecMode::kExec;
+  if (task_ptr->run_ctx_) {
+    RunContext *run_ctx = task_ptr->run_ctx_.get();
+    run_ctx->exec_mode_ = ExecMode::kExec;
   }
 
   auto *pool_manager = CHI_POOL_MANAGER;
@@ -876,40 +979,9 @@ std::vector<PoolQuery> Worker::ResolvePhysicalQuery(
   return {query};
 }
 
-RunContext *Worker::AllocateContext() {
-  // Try to get from cache first
-  if (!context_cache_.empty()) {
-    CachedContext cached_entry = context_cache_.front();
-    context_cache_.pop();
-
-    if (cached_entry.run_ctx) {
-      RunContext *run_ctx = cached_entry.run_ctx;
-      run_ctx->Clear();
-      return run_ctx;
-    }
-  }
-
-  // Cache miss - allocate new RunContext
-  // With C++20 stackless coroutines, no stack allocation is needed
-  RunContext *new_run_ctx = new RunContext();
-  return new_run_ctx;
-}
-
-void Worker::DeallocateContext(RunContext *run_ctx) {
-  if (!run_ctx) {
-    return;
-  }
-
-  // Destroy coroutine handle if it exists
-  if (run_ctx->coro_handle_) {
-    run_ctx->coro_handle_.destroy();
-    run_ctx->coro_handle_ = nullptr;
-  }
-
-  // Add to cache for reuse instead of freeing
-  CachedContext cache_entry(run_ctx);
-  context_cache_.push(cache_entry);
-}
+// Note: AllocateContext and DeallocateContext functions have been removed
+// RunContext is now embedded directly in the Task object, eliminating the need
+// for separate allocation/deallocation and context caching
 
 void Worker::BeginTask(Future<Task> &future, Container *container,
                        TaskLane *lane, bool destroy_in_end_task) {
@@ -918,32 +990,30 @@ void Worker::BeginTask(Future<Task> &future, Container *container,
     return;
   }
 
-  // Allocate RunContext for new task
-  // With C++20 stackless coroutines, no stack allocation is needed
-  RunContext *run_ctx = AllocateContext();
+  // Initialize or reset the task's owned RunContext
+  task_ptr->run_ctx_ = std::make_unique<RunContext>();
+  RunContext *run_ctx = task_ptr->run_ctx_.get();
 
-  if (!run_ctx) {
-    // FATAL: Context allocation failure - this is a critical error
-    HLOG(kFatal,
-         "Worker {}: Failed to allocate context for task execution. Task "
-         "method: {}, pool: {}",
-         worker_id_, task_ptr->method_, task_ptr->pool_id_);
-    std::abort();  // Fatal failure
-  }
-
-  // Initialize RunContext for new task
-  run_ctx->thread_type = thread_type_;
-  run_ctx->worker_id = worker_id_;
-  run_ctx->task = task_ptr;        // Store task in RunContext
+  // Clear and initialize RunContext for new task execution
+  run_ctx->thread_type_ = thread_type_;
+  run_ctx->worker_id_ = worker_id_;
+  run_ctx->task_ = task_ptr;        // Store task in RunContext
   run_ctx->is_yielded_ = false;    // Initially not blocked
-  run_ctx->container = container;  // Store container for CHI_CUR_CONTAINER
-  run_ctx->lane = lane;            // Store lane for CHI_CUR_LANE
+  run_ctx->container_ = container;  // Store container for CHI_CUR_CONTAINER
+  run_ctx->lane_ = lane;            // Store lane for CHI_CUR_LANE
   run_ctx->event_queue_ = event_queue_;  // Set pointer to worker's event queue
   run_ctx->destroy_in_end_task_ = destroy_in_end_task;  // Set destroy flag
   run_ctx->future_ = future;        // Store future in RunContext
   run_ctx->coro_handle_ = nullptr;  // Coroutine not started yet
-  // Set RunContext pointer in task
-  task_ptr->run_ctx_ = run_ctx;
+
+  // Initialize adaptive polling fields for periodic tasks
+  if (task_ptr->IsPeriodic()) {
+    run_ctx->true_period_ns_ = task_ptr->period_ns_;
+    run_ctx->did_work_ = false;  // Initially no work done
+  } else {
+    run_ctx->true_period_ns_ = 0.0;
+    run_ctx->did_work_ = false;
+  }
 
   // Set current run context
   SetCurrentRunContext(run_ctx);
@@ -955,13 +1025,13 @@ void Worker::StartCoroutine(const FullPtr<Task> &task_ptr,
   SetCurrentRunContext(run_ctx);
 
   // New task execution - increment work count for non-periodic tasks
-  if (run_ctx->container && !task_ptr->IsPeriodic()) {
+  if (run_ctx->container_ && !task_ptr->IsPeriodic()) {
     // Increment work remaining in the container for non-periodic tasks
-    run_ctx->container->UpdateWork(task_ptr, *run_ctx, 1);
+    run_ctx->container_->UpdateWork(task_ptr, *run_ctx, 1);
   }
 
   // Get the container from RunContext
-  Container *container = run_ctx->container;
+  Container *container = run_ctx->container_;
   if (!container) {
     HLOG(kWarning, "Container not found in RunContext for pool_id: {}",
          task_ptr->pool_id_);
@@ -1067,7 +1137,11 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   // Set task_did_work_ to true by default (tasks can override via
   // CHI_CUR_WORKER)
   // This comes before the null check since the task was scheduled
-  SetTaskDidWork(true);
+  // Periodic tasks only count as work when first started, not on subsequent
+  // reschedules - this prevents busy polling
+  if (!task_ptr->IsPeriodic() || task_ptr->task_flags_.Any(TASK_STARTED)) {
+    SetTaskDidWork(true);
+  }
 
   // Check if task is null or run context is null
   if (task_ptr.IsNull() || !run_ctx) {
@@ -1083,7 +1157,7 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   }
 
   // Only set did_work_ if the task actually did work
-  if (GetTaskDidWork() && run_ctx->exec_mode != ExecMode::kDynamicSchedule) {
+  if (GetTaskDidWork() && run_ctx->exec_mode_ != ExecMode::kDynamicSchedule) {
     did_work_ = true;
   }
 
@@ -1097,7 +1171,7 @@ void Worker::ExecTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   }
 
   // Check if this is a dynamic scheduling task
-  if (run_ctx->exec_mode == ExecMode::kDynamicSchedule) {
+  if (run_ctx->exec_mode_ == ExecMode::kDynamicSchedule) {
     // Dynamic scheduling - re-route task with updated pool_query
     RerouteDynamicTask(task_ptr, run_ctx);
     return;
@@ -1120,8 +1194,8 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   }
 
   // Decrement work remaining for non-periodic tasks
-  if (!is_periodic && run_ctx->container != nullptr) {
-    run_ctx->container->UpdateWork(task_ptr, *run_ctx, -1);
+  if (!is_periodic && run_ctx->container_ != nullptr) {
+    run_ctx->container_->UpdateWork(task_ptr, *run_ctx, -1);
   }
 
   // If task is remote, enqueue to net_queue_ for SendOut and return immediately
@@ -1131,13 +1205,10 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
     return;
   }
 
-  // Local task completion using Future
-  // 1. Serialize outputs using container->LocalSaveTask (only if task will be
-  // destroyed)
   if (run_ctx->destroy_in_end_task_) {
     LocalSaveTaskArchive archive(LocalMsgType::kSerializeOut);
-    if (run_ctx->container != nullptr) {
-      run_ctx->container->LocalSaveTask(task_ptr->method_, archive, task_ptr);
+    if (run_ctx->container_ != nullptr) {
+      run_ctx->container_->LocalSaveTask(task_ptr->method_, archive, task_ptr);
     }
 
     // Copy serialized outputs to FutureShm
@@ -1149,6 +1220,7 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   }
 
   // 2. Mark task as complete
+  auto &future_shm = run_ctx->future_.GetFutureShm();
   run_ctx->future_.SetComplete();
 
   // 2.5. Wake up parent task if waiting for this subtask
@@ -1168,8 +1240,8 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
           parent_task->event_queue_);
       parent_event_queue->Emplace(parent_task);
       // Awaken parent worker in case it's sleeping
-      if (parent_task->lane != nullptr) {
-        CHI_IPC->AwakenWorker(parent_task->lane);
+      if (parent_task->lane_ != nullptr) {
+        CHI_IPC->AwakenWorker(parent_task->lane_);
       }
     }
   }
@@ -1177,11 +1249,11 @@ void Worker::EndTask(const FullPtr<Task> &task_ptr, RunContext *run_ctx,
   // 3. Delete task using container->DelTask (only if destroy_in_end_task is
   // true)
   if (run_ctx->destroy_in_end_task_) {
-    run_ctx->container->DelTask(task_ptr->method_, task_ptr);
+    run_ctx->container_->DelTask(task_ptr->method_, task_ptr);
   }
 
-  // Deallocate context
-  DeallocateContext(run_ctx);
+  // Note: RunContext is now embedded in Task, no need to deallocate separately
+  // The RunContext will be cleaned up when the Task is destroyed
 }
 
 void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
@@ -1190,8 +1262,8 @@ void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
   // The task's pool_query_ should have been updated during execution
   // (e.g., from Dynamic to Local or Broadcast)
 
-  Container *container = run_ctx->container;
-  TaskLane *lane = run_ctx->lane;
+  Container *container = run_ctx->container_;
+  TaskLane *lane = run_ctx->lane_;
 
   // Reset the TASK_STARTED flag so the task can be executed again
   task_ptr->ClearFlags(TASK_STARTED | TASK_ROUTED);
@@ -1199,7 +1271,7 @@ void Worker::RerouteDynamicTask(const FullPtr<Task> &task_ptr,
   // Re-route the task using the updated pool_query
   if (RouteTask(run_ctx->future_, lane, container)) {
     // Avoids recursive call to RerouteDynamicTask
-    if (run_ctx->exec_mode == ExecMode::kDynamicSchedule) {
+    if (run_ctx->exec_mode_ == ExecMode::kDynamicSchedule) {
       EndTask(task_ptr, run_ctx, false);
       return;
     }
@@ -1226,14 +1298,14 @@ void Worker::ProcessBlockedQueue(std::queue<RunContext *> &queue,
     RunContext *run_ctx = queue.front();
     queue.pop();
 
-    if (!run_ctx || run_ctx->task.IsNull()) {
+    if (!run_ctx || run_ctx->task_.IsNull()) {
       // Invalid entry, don't re-add
       continue;
     }
 
     // Determine if this is a resume (task was started before) or first
     // execution
-    bool is_started = run_ctx->task->task_flags_.Any(TASK_STARTED);
+    bool is_started = run_ctx->task_->task_flags_.Any(TASK_STARTED);
 
     // Skip if task was started but coroutine already completed
     // This can happen with orphan events from parallel subtasks
@@ -1249,7 +1321,7 @@ void Worker::ProcessBlockedQueue(std::queue<RunContext *> &queue,
     run_ctx->is_yielded_ = false;
 
     // Execute task with existing RunContext
-    ExecTask(run_ctx->task, run_ctx, is_started);
+    ExecTask(run_ctx->task_, run_ctx, is_started);
 
     // Don't re-add to queue
     continue;
@@ -1269,6 +1341,11 @@ void Worker::ProcessPeriodicQueue(std::queue<RunContext *> &queue,
   size_t queue_size = queue.size();
   size_t actual_limit = std::min(queue_size, check_limit);
 
+  // Capture SINGLE timestamp for ALL tasks processed in this batch
+  // This prevents timestamp desynchronization between tasks with same yield_time
+  hshm::Timepoint batch_timestamp;
+  batch_timestamp.Now();
+
   // Get current time for all checks
   for (size_t i = 0; i < actual_limit; i++) {
     if (queue.empty()) {
@@ -1278,28 +1355,34 @@ void Worker::ProcessPeriodicQueue(std::queue<RunContext *> &queue,
     RunContext *run_ctx = queue.front();
     queue.pop();
 
-    if (!run_ctx || run_ctx->task.IsNull()) {
+    if (!run_ctx || run_ctx->task_.IsNull()) {
       // Invalid entry, don't re-add
       continue;
     }
 
-    // Check if the time threshold has been surpassed
-    if (run_ctx->block_start.GetUsecFromStart() >= run_ctx->yield_time_us_) {
-      // Time threshold reached - execute the task
-      bool is_started = run_ctx->task->task_flags_.Any(TASK_STARTED);
+    // Check if the time threshold has been surpassed using batch timestamp
+    // Add 2ms tolerance to account for timing variance and ms/us precision mismatch
+    double elapsed_us = run_ctx->block_start_.GetUsecFromStart(batch_timestamp);
+    if (elapsed_us + 2000.0 >= run_ctx->yield_time_us_) {
+      // Time threshold reached (within tolerance) - execute the task
+      bool is_started = run_ctx->task_->task_flags_.Any(TASK_STARTED);
 
       // CRITICAL: Clear the is_yielded_ flag before resuming the task
       // This allows the task to call Wait() again if needed
       run_ctx->is_yielded_ = false;
 
       // For periodic tasks, unmark TASK_ROUTED and route again
-      run_ctx->task->ClearFlags(TASK_ROUTED);
-      Container *container = run_ctx->container;
+      run_ctx->task_->ClearFlags(TASK_ROUTED);
+      Container *container = run_ctx->container_;
+
+      // Use batch timestamp for rescheduling to prevent desynchronization
+      // This ensures all tasks in this batch get the same block_start time
+      run_ctx->block_start_ = batch_timestamp;
 
       // Route task again - this will handle both local and distributed routing
-      if (RouteTask(run_ctx->future_, run_ctx->lane, container)) {
+      if (RouteTask(run_ctx->future_, run_ctx->lane_, container)) {
         // Routing successful, execute the task
-        ExecTask(run_ctx->task, run_ctx, is_started);
+        ExecTask(run_ctx->task_, run_ctx, is_started);
       }
     } else {
       // Time threshold not reached yet - re-add to same queue
@@ -1313,7 +1396,7 @@ void Worker::ProcessEventQueue() {
   RunContext *run_ctx;
   while (event_queue_->Pop(run_ctx)) {
     HLOG(kDebug, "ProcessEventQueue: Popped run_ctx={}", (void *)run_ctx);
-    if (!run_ctx || run_ctx->task.IsNull()) {
+    if (!run_ctx || run_ctx->task_.IsNull()) {
       HLOG(kDebug, "ProcessEventQueue: Skipping null run_ctx or task");
       continue;
     }
@@ -1334,7 +1417,7 @@ void Worker::ProcessEventQueue() {
     }
 
     HLOG(kDebug, "ProcessEventQueue: Resuming task method={}, coro_handle_={}",
-         run_ctx->task->method_, (void *)run_ctx->coro_handle_.address());
+         run_ctx->task_->method_, (void *)run_ctx->coro_handle_.address());
 
     // Reset the is_yielded_ flag before executing the task
     run_ctx->is_yielded_ = false;
@@ -1344,7 +1427,7 @@ void Worker::ProcessEventQueue() {
     run_ctx->is_notified_.store(false);
 
     // Execute the task
-    ExecTask(run_ctx->task, run_ctx, true);
+    ExecTask(run_ctx->task_, run_ctx, true);
   }
 }
 
@@ -1407,7 +1490,7 @@ void Worker::ContinueBlockedTasks(bool force) {
 }
 
 void Worker::AddToBlockedQueue(RunContext *run_ctx, bool wait_for_task) {
-  if (!run_ctx || run_ctx->task.IsNull()) {
+  if (!run_ctx || run_ctx->task_.IsNull()) {
     return;
   }
 
@@ -1444,8 +1527,14 @@ void Worker::AddToBlockedQueue(RunContext *run_ctx, bool wait_for_task) {
     blocked_queues_[queue_idx].push(run_ctx);
   } else {
     // Time-based periodic task - add to periodic queue
-    // Record the time when task was blocked
-    run_ctx->block_start.Now();
+    // Record the time when task was blocked (if not already set recently)
+    // Check if timestamp was set within last 10ms (indicates batch processing)
+    double elapsed_since_block_us = run_ctx->block_start_.GetUsecFromStart();
+    if (elapsed_since_block_us > 10000.0 || elapsed_since_block_us < 0) {
+      // Timestamp is stale or uninitialized - set it now
+      run_ctx->block_start_.Now();
+    }
+    // else: timestamp is fresh (< 10ms old), keep it to maintain synchronization
 
     // Determine which periodic queue based on yield_time_us_:
     // Queue[0]: yield_time_us_ <= 50us
@@ -1475,7 +1564,7 @@ void Worker::ReschedulePeriodicTask(RunContext *run_ctx,
   }
 
   // Get the lane from the run context
-  TaskLane *lane = run_ctx->lane;
+  TaskLane *lane = run_ctx->lane_;
   if (!lane) {
     // No lane information, cannot reschedule
     return;
@@ -1484,13 +1573,23 @@ void Worker::ReschedulePeriodicTask(RunContext *run_ctx,
   // Unset TASK_STARTED flag when rescheduling periodic task
   task_ptr->ClearFlags(TASK_STARTED);
 
+  // Adjust polling rate based on whether task did work
+  if (scheduler_) {
+    scheduler_->AdjustPolling(run_ctx);
+  } else {
+    // Fallback: use the true period if no scheduler available
+    run_ctx->yield_time_us_ = task_ptr->period_ns_ / 1000.0;
+  }
+
+  // Reset did_work_ for the next execution
+  run_ctx->did_work_ = false;
+
   // Add to blocked queue - block count will be incremented automatically
-  run_ctx->yield_time_us_ = task_ptr->period_ns_ / 1000.0;
   AddToBlockedQueue(run_ctx);
 }
 
-RunContext* GetCurrentRunContextFromWorker() {
-  Worker* worker = CHI_CUR_WORKER;
+RunContext *GetCurrentRunContextFromWorker() {
+  Worker *worker = CHI_CUR_WORKER;
   if (worker) {
     return worker->GetCurrentRunContext();
   }

@@ -22,6 +22,8 @@ GLOBAL_CONST chi::u32 kFlush = 13;
 GLOBAL_CONST chi::u32 kSend = 14;
 GLOBAL_CONST chi::u32 kRecv = 15;
 GLOBAL_CONST chi::u32 kHeartbeat = 16;
+GLOBAL_CONST chi::u32 kMonitor = 17;
+GLOBAL_CONST chi::u32 kSubmitBatch = 18;
 }  // namespace Method
 
 }  // namespace chimaera::admin

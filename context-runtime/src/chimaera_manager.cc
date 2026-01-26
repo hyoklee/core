@@ -118,8 +118,14 @@ bool Chimaera::ClientInit() {
   // The admin container is already created by the runtime, so we just
   // construct the admin client directly with the admin pool ID
   HLOG(kDebug, "Initializing CHI_ADMIN singleton");
-  if (CHI_ADMIN == nullptr) {
+  // IMPORTANT: Check g_admin directly, NOT CHI_ADMIN macro
+  // CHI_ADMIN uses GetGlobalPtrVar which auto-creates with default constructor!
+  if (g_admin == nullptr) {
+    HLOG(kInfo, "ClientInit: Creating admin client with kAdminPoolId={}", chi::kAdminPoolId);
     g_admin = new chimaera::admin::Client(chi::kAdminPoolId);
+    HLOG(kInfo, "ClientInit: Admin client created, pool_id_={}", g_admin->pool_id_);
+  } else {
+    HLOG(kInfo, "ClientInit: g_admin already exists, pool_id_={}", g_admin->pool_id_);
   }
 
   is_client_initialized_ = true;

@@ -159,6 +159,22 @@ public:
   chi::TaskResume Heartbeat(hipc::FullPtr<HeartbeatTask> task, chi::RunContext &rctx);
 
   /**
+   * Handle Monitor - Collect and return worker statistics
+   * Iterates through all workers and collects their current statistics
+   * Returns serialized statistics in JSON format
+   */
+  chi::TaskResume Monitor(hipc::FullPtr<MonitorTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle SubmitBatch - Submit a batch of tasks in a single RPC
+   * Deserializes tasks from the batch and executes them in parallel
+   * up to 32 tasks at a time, then co_awaits their completion
+   * @param task The SubmitBatchTask containing serialized tasks
+   * @param rctx Runtime context for the current worker
+   */
+  chi::TaskResume SubmitBatch(hipc::FullPtr<SubmitBatchTask> task, chi::RunContext &rctx);
+
+  /**
    * Helper: Receive task inputs from remote node
    */
   void RecvIn(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Server* lbm_server);

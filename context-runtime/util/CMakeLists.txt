@@ -42,7 +42,18 @@ target_link_libraries(chimaera_compose
 )
 # Include directories are now inherited from chimaera_cxx target
 
+# Build chimaera_monitor
+add_executable(chimaera_monitor
+  ${CMAKE_CURRENT_SOURCE_DIR}/chimaera_monitor.cc
+)
+# chimaera_monitor is client-only code, so do not define CHIMAERA_RUNTIME
+target_link_libraries(chimaera_monitor
+  PUBLIC chimaera_cxx
+  PUBLIC chimaera_admin_client
+)
+# Include directories are now inherited from chimaera_cxx target
+
 # Install utilities
-install(TARGETS chimaera_start_runtime chimaera_stop_runtime chi_refresh_repo chimaera_compose
+install(TARGETS chimaera_start_runtime chimaera_stop_runtime chi_refresh_repo chimaera_compose chimaera_monitor
   RUNTIME DESTINATION bin
 )
