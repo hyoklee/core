@@ -212,6 +212,11 @@ private:
 #ifdef WRP_CORE_ENABLE_COMPRESS
   // Neural network predictor for compression (initialized on demand)
   std::unique_ptr<hshm::compress::DenseNNPredictor> nn_predictor_;
+
+  // Compression telemetry ring buffer (similar to telemetry_log_)
+  using CompressionTelemetryLog = hipc::ring_buffer<CompressionTelemetry, CHI_MAIN_ALLOC_T>;
+  hipc::ShmPtr<CompressionTelemetryLog> compression_telemetry_log_;
+  std::atomic<std::uint64_t> compression_logical_time_;
 #endif
 
   /**

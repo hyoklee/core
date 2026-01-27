@@ -606,6 +606,57 @@ struct CteTelemetry {
   }
 };
 
+#ifdef WRP_CORE_ENABLE_COMPRESS
+/**
+ * Compression telemetry data structure for performance monitoring
+ * Tracks compression decisions and actual performance
+ */
+struct CompressionTelemetry {
+  CteOp op_;                     // Operation type (kPutBlob or kGetBlob)
+  int compress_lib_;             // Compression library used (0 = none)
+  chi::u64 original_size_;       // Original data size in bytes
+  chi::u64 compressed_size_;     // Compressed data size in bytes
+  double compress_time_ms_;      // Actual compression time in milliseconds
+  double decompress_time_ms_;    // Actual decompression time in milliseconds
+  double psnr_db_;               // Actual PSNR for lossy compression
+  Timestamp timestamp_;          // When operation occurred
+  std::uint64_t logical_time_;   // Logical time for ordering
+
+  CompressionTelemetry()
+      : op_(CteOp::kPutBlob), compress_lib_(0), original_size_(0),
+        compressed_size_(0), compress_time_ms_(0.0), decompress_time_ms_(0.0),
+        psnr_db_(0.0), timestamp_(std::chrono::steady_clock::now()),
+        logical_time_(0) {}
+
+  CompressionTelemetry(CteOp op, int lib, chi::u64 orig_size, chi::u64 comp_size,
+                       double comp_time, double decomp_time, double psnr,
+                       const Timestamp &ts, std::uint64_t logical_time = 0)
+      : op_(op), compress_lib_(lib), original_size_(orig_size),
+        compressed_size_(comp_size), compress_time_ms_(comp_time),
+        decompress_time_ms_(decomp_time), psnr_db_(psnr),
+        timestamp_(ts), logical_time_(logical_time) {}
+
+  // Calculate compression ratio
+  double GetCompressionRatio() const {
+    if (compressed_size_ == 0) return 1.0;
+    return static_cast<double>(original_size_) / static_cast<double>(compressed_size_);
+  }
+
+  // Serialization support for cereal
+  template <class Archive> void serialize(Archive &ar) {
+    // Convert timestamps to duration counts for serialization
+    auto ts_count = timestamp_.time_since_epoch().count();
+    ar(op_, compress_lib_, original_size_, compressed_size_,
+       compress_time_ms_, decompress_time_ms_, psnr_db_,
+       ts_count, logical_time_);
+    // Note: On deserialization, timestamps will be reconstructed from counts
+    if (Archive::is_loading::value) {
+      timestamp_ = Timestamp(Timestamp::duration(ts_count));
+    }
+  }
+};
+#endif  // WRP_CORE_ENABLE_COMPRESS
+
 /**
  * GetOrCreateTag task - Get or create a tag for blob grouping
  * Template parameter allows different CreateParams types
