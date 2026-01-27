@@ -12,7 +12,9 @@
 #include <wrp_cte/core/core_tasks.h>
 
 #ifdef WRP_CORE_ENABLE_COMPRESS
+#ifdef HSHM_ENABLE_DENSE_NN
 #include <context-transport-primitives/compression/dense_nn_predictor.h>
+#endif
 #include <context-transport-primitives/compression/compression_features.h>
 #include <hermes_shm/util/compress/compress_factory.h>
 #endif
@@ -210,8 +212,10 @@ private:
       telemetry_counter_; // Atomic counter for logical time
 
 #ifdef WRP_CORE_ENABLE_COMPRESS
+#ifdef HSHM_ENABLE_DENSE_NN
   // Neural network predictor for compression (initialized on demand)
   std::unique_ptr<hshm::compress::DenseNNPredictor> nn_predictor_;
+#endif
 
   // Compression telemetry ring buffer (similar to telemetry_log_)
   using CompressionTelemetryLog = hipc::ring_buffer<CompressionTelemetry, CHI_MAIN_ALLOC_T>;

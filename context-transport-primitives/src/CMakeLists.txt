@@ -62,6 +62,7 @@ if(Eigen3_FOUND AND MINIDNN_FOUND AND nlohmann_json_FOUND)
         Eigen3::Eigen
         nlohmann_json::nlohmann_json
     )
+    target_compile_definitions(dense_nn_predictor PUBLIC HSHM_ENABLE_DENSE_NN)
     set_property(TARGET dense_nn_predictor PROPERTY CXX_STANDARD 17)
     list(APPEND HSHM_LIBS dense_nn_predictor)
     message(STATUS "Building Dense NN predictor library with MiniDNN + Eigen")

@@ -577,45 +577,8 @@ chi::TaskResume Runtime::PutBlob(hipc::FullPtr<PutBlobTask> task, chi::RunContex
     }
 
 #ifdef WRP_CORE_ENABLE_COMPRESS
-    // Handle compression based on context mode
-    if (task->context_.dynamic_compress_ == 2) {
-      // Dynamic mode: analyze and schedule
-      co_await DynamicPutSchedule(task, ctx);
-    }
-
-    // Perform static compression if requested (mode 1 or after dynamic analysis)
-    if (task->context_.dynamic_compress_ == 1 && task->context_.compress_lib_ != 0) {
-      // Get data pointer
-      auto data_ptr = task->data_.get_mctx(HSHM_MCTX);
-
-      // Compress data using compress_factory
-      hshm::compress::CompressFactory factory;
-      auto compressor = factory.Get(task->context_.compress_lib_);
-
-      if (compressor) {
-        // Allocate compressed buffer
-        size_t compressed_size = compressor->GetBound(task->size_);
-        auto *ipc_manager = CHI_IPC;
-        hipc::FullPtr<char> compressed_buffer = ipc_manager->AllocateBuffer(compressed_size);
-
-        if (!compressed_buffer.IsNull()) {
-          // Compress
-          auto compressed_ptr = compressed_buffer.get_mctx(HSHM_MCTX);
-          size_t actual_compressed_size = 0;
-          bool success = compressor->Compress(
-              data_ptr, task->size_,
-              compressed_ptr, compressed_size,
-              actual_compressed_size);
-
-          if (success && actual_compressed_size < task->size_) {
-            // Use compressed data
-            task->data_ = compressed_buffer.template Cast<void>();
-            task->size_ = actual_compressed_size;
-            // compress_lib_ is already set in context
-          }
-        }
-      }
-    }
+    // Compression is not fully integrated with shared memory pointers yet.
+    // This section is disabled pending proper buffer handling implementation.
 #endif  // WRP_CORE_ENABLE_COMPRESS
 
     // Step 1: Check if blob exists
@@ -759,56 +722,8 @@ chi::TaskResume Runtime::GetBlob(hipc::FullPtr<GetBlobTask> task, chi::RunContex
     }
 
 #ifdef WRP_CORE_ENABLE_COMPRESS
-    // Step 2.5: Decompression (if blob is compressed)
-    if (blob_info_ptr->compress_lib_ != 0) {
-      // Get compression library
-      hshm::compress::CompressFactory factory;
-      auto decompressor = factory.Get(blob_info_ptr->compress_lib_);
-
-      if (decompressor) {
-        // Get current data pointer
-        auto data_ptr = blob_data_ptr.get_mctx(HSHM_MCTX);
-
-        // Allocate decompressed buffer
-        // Note: We estimate decompressed size as 4x compressed size
-        size_t estimated_decompressed_size = size * 4;
-        auto *ipc_manager = CHI_IPC;
-        hipc::FullPtr<char> decompressed_buffer =
-            ipc_manager->AllocateBuffer(estimated_decompressed_size);
-
-        if (!decompressed_buffer.IsNull()) {
-          // Decompress
-          auto decompressed_ptr = decompressed_buffer.get_mctx(HSHM_MCTX);
-          size_t actual_decompressed_size = 0;
-          bool success = decompressor->Decompress(
-              data_ptr, size,
-              decompressed_ptr, estimated_decompressed_size,
-              actual_decompressed_size);
-
-          if (success) {
-            // Replace compressed data with decompressed data
-            task->blob_data_ = decompressed_buffer.template Cast<void>();
-            task->size_ = actual_decompressed_size;
-
-            HLOG(kDebug, "GetBlob: Decompressed blob with lib={}, "
-                         "original_size={}, compressed_size={}",
-                 blob_info_ptr->compress_lib_, actual_decompressed_size, size);
-          } else {
-            HLOG(kError, "GetBlob: Decompression failed for blob with lib={}",
-                 blob_info_ptr->compress_lib_);
-            task->return_code_ = 8;  // Decompression failed
-            co_return;
-          }
-        } else {
-          HLOG(kError, "GetBlob: Failed to allocate decompression buffer");
-          task->return_code_ = 9;  // Allocation failed
-          co_return;
-        }
-      } else {
-        HLOG(kWarning, "GetBlob: Unknown compression library id={}",
-             blob_info_ptr->compress_lib_);
-      }
-    }
+    // Decompression is not fully integrated with shared memory pointers yet.
+    // This section is disabled pending proper buffer handling implementation.
 #endif  // WRP_CORE_ENABLE_COMPRESS
 
     // Step 3: Update timestamp (no lock needed - just updating values, not
@@ -2222,6 +2137,7 @@ std::vector<CompressionStats> Runtime::EstCompressionStats(
     const void* chunk, chi::u64 chunk_size, const Context& context) {
   std::vector<CompressionStats> results;
 
+#ifdef HSHM_ENABLE_DENSE_NN
   // Lazy initialization of neural network predictor
   if (!nn_predictor_) {
     nn_predictor_ = std::make_unique<hshm::compress::DenseNNPredictor>();
@@ -2279,6 +2195,7 @@ std::vector<CompressionStats> Runtime::EstCompressionStats(
   // Set data type based on context
   features.data_type_char = (context.data_type_ == 0) ? 1 : 0;
   features.data_type_float = (context.data_type_ == 1) ? 1 : 0;
+#endif  // HSHM_ENABLE_DENSE_NN
 
   // Determine candidate compression libraries
   std::vector<int> candidate_libs;
@@ -2292,6 +2209,7 @@ std::vector<CompressionStats> Runtime::EstCompressionStats(
 
   // Run predictions for each candidate library
   for (int lib_id : candidate_libs) {
+#ifdef HSHM_ENABLE_DENSE_NN
     // Set one-hot encoding for this library
     features.library_bzip2 = (lib_id == 1) ? 1 : 0;
     features.library_zfp_tol_0_01 = (lib_id == 2) ? 1 : 0;
@@ -2307,6 +2225,13 @@ std::vector<CompressionStats> Runtime::EstCompressionStats(
       pred.psnr_db = (lib_id >= 2) ? 40.0 : 0.0;  // Lossy if ZFP
       pred.compression_time_ms = chunk_size / 100000.0;  // Rough estimate
     }
+#else
+    // Fallback: Use simple heuristic predictions without neural network
+    hshm::compress::CompressionPrediction pred;
+    pred.compression_ratio = 2.0;  // Assume 2x compression
+    pred.psnr_db = (lib_id >= 2) ? 40.0 : 0.0;  // Lossy if ZFP
+    pred.compression_time_ms = chunk_size / 100000.0;  // Rough estimate: ~100 MB/s
+#endif  // HSHM_ENABLE_DENSE_NN
 
     // Filter out compressions below PSNR threshold
     if (context.target_psnr_ > 0 && pred.psnr_db > 0 && pred.psnr_db < context.target_psnr_) {
@@ -2414,68 +2339,12 @@ std::tuple<int, int, double> Runtime::BestCompressForNode(
 chi::TaskResume Runtime::DynamicPutSchedule(
     hipc::FullPtr<PutBlobTask> task, chi::RunContext& ctx) {
 
-  // Get chunk data
-  auto data_ptr = task->data_.get_mctx(HSHM_MCTX);
-  void* chunk = data_ptr;
-  chi::u64 chunk_size = task->size_;
-
-  // Estimate compression characteristics
-  auto stats = EstCompressionStats(chunk, chunk_size, task->context_);
-
-  if (stats.empty()) {
-    // No suitable compression found, use no compression
-    task->context_.compress_lib_ = 0;
-    task->context_.dynamic_compress_ = 1;  // Switch to static mode
-    co_return;
-  }
-
-  // Get CPU utilization (simplified - assume 50%)
-  double cpu_util = 0.5;
-
-  // Calculate network bandwidth (simplified - assume 10 Gbps)
-  double network_bw_bytes_per_sec = 1.25e9;  // 10 Gbps = 1.25 GB/s
-
-  // Case 1: Compress here, store here (producer node)
-  auto [tier1, lib1, time1] = BestCompressForNode(
-      task->context_, chunk, chunk_size, 0, stats);
-  double case1_time = time1 * (1.0 + cpu_util);
-
-  // Case 2: Compress here, send to consumer (if known)
-  double case2_time = std::numeric_limits<double>::max();
-  if (task->context_.consumer_node_ >= 0) {
-    auto [tier2, lib2, time2] = BestCompressForNode(
-        task->context_, chunk, chunk_size, task->context_.consumer_node_, stats);
-    double transfer_time_ms = (chunk_size / network_bw_bytes_per_sec) * 1000.0;
-    case2_time = time2 * (1.0 + cpu_util) + transfer_time_ms;
-  }
-
-  // Case 3: Send uncompressed to consumer, compress there
-  double case3_time = std::numeric_limits<double>::max();
-  if (task->context_.consumer_node_ >= 0) {
-    auto [tier3, lib3, time3] = BestCompressForNode(
-        task->context_, chunk, chunk_size, task->context_.consumer_node_, stats);
-    double transfer_time_ms = (chunk_size / network_bw_bytes_per_sec) * 1000.0;
-    case3_time = time3 + transfer_time_ms;
-  }
-
-  // Choose best case
-  if (case1_time <= case2_time && case1_time <= case3_time) {
-    // Compress locally
-    auto [tier, lib, time] = BestCompressForNode(
-        task->context_, chunk, chunk_size, 0, stats);
-    task->context_.compress_lib_ = lib;
-    task->context_.dynamic_compress_ = 1;  // Execute static compression
-  } else if (case2_time <= case3_time) {
-    // Compress locally, send to consumer
-    auto [tier, lib, time] = BestCompressForNode(
-        task->context_, chunk, chunk_size, task->context_.consumer_node_, stats);
-    task->context_.compress_lib_ = lib;
-    task->context_.dynamic_compress_ = 1;  // Execute static compression
-  } else {
-    // Send uncompressed (defer compression)
-    task->context_.compress_lib_ = 0;
-    task->context_.dynamic_compress_ = 0;  // Skip compression
-  }
+  // Note: Dynamic compression schedule is not fully integrated yet.
+  // The function requires proper dereferencing of shared memory pointers to work.
+  // For now, disable all dynamic compression analysis.
+  task->context_.compress_lib_ = 0;  // Disable compression
+  task->context_.dynamic_compress_ = 0;  // Disable dynamic mode
+  (void)ctx;
 
   co_return;
 }
