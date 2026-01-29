@@ -19,12 +19,12 @@ bool ConfigManager::ClientInit() {
 
   // Get configuration file path from environment
   config_file_path_ = GetServerConfigPath();
-  HILOG(kInfo, "Config at: {}", config_file_path_);
+  HLOG(kInfo, "Config at: {}", config_file_path_);
 
   // Load YAML configuration if path is provided
   if (!config_file_path_.empty()) {
     if (!LoadYaml(config_file_path_)) {
-      HELOG(kError,
+      HLOG(kError,
             "Warning: Failed to load configuration from {}, using defaults",
             config_file_path_);
     }
@@ -126,10 +126,6 @@ std::string ConfigManager::GetHostfilePath() const {
 
 bool ConfigManager::IsValid() const { return is_initialized_; }
 
-LaneMapPolicy ConfigManager::GetLaneMapPolicy() const {
-  return lane_map_policy_;
-}
-
 void ConfigManager::LoadDefault() {
   // Set default configuration values
   sched_workers_ = 4;
@@ -151,16 +147,12 @@ void ConfigManager::LoadDefault() {
   // Set default hostfile path (empty means no networking/distributed mode)
   hostfile_path_ = "";
 
-  // Set default lane mapping policy
-  lane_map_policy_ = LaneMapPolicy::kRoundRobin;
-
   // Set default network retry configuration
   wait_for_restart_timeout_ = 30;      // 30 seconds
   wait_for_restart_poll_period_ = 1;   // 1 second
 
   // Set default worker sleep configuration (in microseconds)
   first_busy_wait_ = 50;               // 50us busy wait
-  sleep_increment_ = 1000;             // 1000us (1ms) sleep increment
   max_sleep_ = 50000;                  // 50000us (50ms) maximum sleep
 }
 
@@ -181,27 +173,14 @@ void ConfigManager::ParseYAML(YAML::Node &yaml_conf) {
       process_reaper_workers_ = runtime["process_reaper_threads"].as<u32>();
     }
 
-    // Lane mapping policy
-    if (runtime["lane_map_policy"]) {
-      std::string policy_str = runtime["lane_map_policy"].as<std::string>();
-      if (policy_str == "map_by_pid_tid") {
-        lane_map_policy_ = LaneMapPolicy::kMapByPidTid;
-      } else if (policy_str == "round_robin") {
-        lane_map_policy_ = LaneMapPolicy::kRoundRobin;
-      } else if (policy_str == "random") {
-        lane_map_policy_ = LaneMapPolicy::kRandom;
-      } else {
-        HELOG(kWarning, "Unknown lane_map_policy '{}', using default (round_robin)", policy_str);
-        lane_map_policy_ = LaneMapPolicy::kRoundRobin;
-      }
+    // Local task scheduler
+    if (runtime["local_sched"]) {
+      local_sched_ = runtime["local_sched"].as<std::string>();
     }
 
     // Worker sleep configuration
     if (runtime["first_busy_wait"]) {
       first_busy_wait_ = runtime["first_busy_wait"].as<u32>();
-    }
-    if (runtime["sleep_increment"]) {
-      sleep_increment_ = runtime["sleep_increment"].as<u32>();
     }
     if (runtime["max_sleep"]) {
       max_sleep_ = runtime["max_sleep"].as<u32>();

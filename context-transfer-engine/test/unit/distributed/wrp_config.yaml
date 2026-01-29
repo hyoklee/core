@@ -18,7 +18,8 @@ memory:
 networking:
   port: 8080
   neighborhood_size: 32
-  hostfile: /etc/iowarp/hostfile
+  # Hostfile path inside Docker container (mounted at /test_config)
+  hostfile: /test_config/hostfile
 
 # Logging configuration
 logging:
@@ -29,7 +30,7 @@ logging:
 runtime:
   stack_size: 65536
   queue_depth: 10000
-  lane_map_policy: round_robin
+  local_sched: "default"  # Local task scheduler (default: "default")
   heartbeat_interval: 1000
 
 # Compose section - declarative pool creation

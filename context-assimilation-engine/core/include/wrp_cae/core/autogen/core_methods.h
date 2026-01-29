@@ -16,8 +16,9 @@ GLOBAL_CONST chi::u32 kDestroy = 1;
 
 // core-specific methods
 GLOBAL_CONST chi::u32 kParseOmni = 10;
+GLOBAL_CONST chi::u32 kProcessHdf5Dataset = 11;
 }  // namespace Method
 
 }  // namespace wrp_cae::core
 
-#endif  // WRP_CAE_CORE_AUTOGEN_METHODS_H_
+#endif  // CORE_AUTOGEN_METHODS_H_

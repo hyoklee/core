@@ -8,6 +8,7 @@
 #include "chimaera/task_queue.h"
 #include "chimaera/types.h"
 #include "chimaera/worker.h"
+#include "chimaera/scheduler/scheduler.h"
 
 namespace chi {
 
@@ -20,7 +21,7 @@ class Worker;
  *
  * Spawns configurable worker threads of different types using HSHM thread
  * model, maps queue lanes to workers using round-robin scheduling, and
- * coordinates task distribution. Uses hipc::multi_mpsc_queue for both container
+ * coordinates task distribution. Uses hipc::multi_mpsc_ring_buffer for both container
  * queues and process queues.
  */
 class WorkOrchestrator {
@@ -101,12 +102,6 @@ class WorkOrchestrator {
   bool AreWorkersRunning() const;
 
   /**
-   * Get stack growth direction (detected during initialization)
-   * @return true if stack grows downward, false if upward
-   */
-  bool IsStackDownward() const;
-
-  /**
    * Map a lane to a specific worker by setting the worker ID in the lane's header
    * @param lane Raw pointer to the TaskLane
    * @param worker_id Worker ID to assign to this lane
@@ -121,11 +116,11 @@ class WorkOrchestrator {
   bool HasWorkRemaining(u64& total_work_remaining) const;
 
   /**
-   * Assign a task to a specific worker type using round-robin scheduling
-   * @param thread_type Worker type to assign the task to (kSchedWorker or kSlow)
-   * @param task_ptr Full pointer to task to assign to the worker type
+   * Get the total worker count (all types)
+   * Used by scheduler to determine how to partition workers
+   * @return Total number of workers
    */
-  void AssignToWorkerType(ThreadType thread_type, const FullPtr<Task>& task_ptr);
+  u32 GetTotalWorkerCount() const { return static_cast<u32>(all_workers_.size()); }
 
  private:
   /**
@@ -157,18 +152,12 @@ class WorkOrchestrator {
 
   bool is_initialized_ = false;
   bool workers_running_ = false;
-  bool stack_is_downward_ = true; // Stack growth direction (detected at initialization)
 
   // Worker containers organized by type
   std::vector<std::unique_ptr<Worker>> sched_workers_;
-  std::vector<std::unique_ptr<Worker>> process_reaper_workers_;
 
   // All workers for easy access
   std::vector<Worker*> all_workers_;
-
-  // Worker groups for task routing based on execution characteristics
-  std::vector<Worker*> scheduler_workers_; ///< Fast task workers (EstCpuTime < 50us)
-  std::vector<Worker*> slow_workers_;      ///< Slow task workers (EstCpuTime >= 50us)
 
   // Active lanes pointer to IPC Manager worker queues
   void* active_lanes_;
@@ -179,6 +168,9 @@ class WorkOrchestrator {
   // HSHM threads (will be filled during initialization)
   std::vector<hshm::thread::Thread> worker_threads_;
   hshm::thread::ThreadGroup thread_group_;
+
+  // Scheduler pointer (owned by IpcManager, not WorkOrchestrator)
+  Scheduler *scheduler_;
 
 };
 

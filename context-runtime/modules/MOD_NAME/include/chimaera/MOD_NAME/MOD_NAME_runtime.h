@@ -58,12 +58,12 @@ public:
   /**
    * Execute a method on a task
    */
-  void Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr, chi::RunContext& rctx) override;
+  chi::TaskResume Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr, chi::RunContext& rctx) override;
 
   /**
    * Delete/cleanup a task
    */
-  void Del(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
+  void DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) override;
 
   //===========================================================================
   // Method implementations
@@ -71,33 +71,39 @@ public:
 
   /**
    * Handle Create task
+   * Returns TaskResume for consistency with Run method
    */
-  void Create(hipc::FullPtr<CreateTask> task, chi::RunContext& rctx);
+  chi::TaskResume Create(hipc::FullPtr<CreateTask> task, chi::RunContext& rctx);
 
   /**
    * Handle Custom task
+   * Returns TaskResume for consistency with Run method
    */
-  void Custom(hipc::FullPtr<CustomTask> task, chi::RunContext& rctx);
+  chi::TaskResume Custom(hipc::FullPtr<CustomTask> task, chi::RunContext& rctx);
 
   /**
    * Handle CoMutexTest task
+   * Returns TaskResume for consistency with Run method
    */
-  void CoMutexTest(hipc::FullPtr<CoMutexTestTask> task, chi::RunContext& rctx);
+  chi::TaskResume CoMutexTest(hipc::FullPtr<CoMutexTestTask> task, chi::RunContext& rctx);
 
   /**
    * Handle CoRwLockTest task
+   * Returns TaskResume for consistency with Run method
    */
-  void CoRwLockTest(hipc::FullPtr<CoRwLockTestTask> task, chi::RunContext& rctx);
+  chi::TaskResume CoRwLockTest(hipc::FullPtr<CoRwLockTestTask> task, chi::RunContext& rctx);
 
   /**
    * Handle WaitTest task
+   * Returns TaskResume for coroutine-based async operations
    */
-  void WaitTest(hipc::FullPtr<WaitTestTask> task, chi::RunContext& rctx);
+  chi::TaskResume WaitTest(hipc::FullPtr<WaitTestTask> task, chi::RunContext& rctx);
 
   /**
    * Handle Destroy task - Alias for DestroyPool (DestroyTask = DestroyPoolTask)
+   * Returns TaskResume for consistency with Run method
    */
-  void Destroy(hipc::FullPtr<DestroyTask> task, chi::RunContext& rctx);
+  chi::TaskResume Destroy(hipc::FullPtr<DestroyTask> task, chi::RunContext& rctx);
 
   /**
    * Get remaining work count for this container
@@ -115,23 +121,50 @@ public:
   void SaveTask(chi::u32 method, chi::SaveTaskArchive& archive, hipc::FullPtr<chi::Task> task_ptr) override;
 
   /**
-   * Deserialize task parameters from network transfer (unified method)
+   * Deserialize task parameters into an existing task from network transfer
    */
-  void LoadTask(chi::u32 method, chi::LoadTaskArchive& archive, hipc::FullPtr<chi::Task>& task_ptr) override;
+  void LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
+                hipc::FullPtr<chi::Task> task_ptr) override;
+
+  /**
+   * Allocate and deserialize task parameters from network transfer
+   */
+  hipc::FullPtr<chi::Task> AllocLoadTask(chi::u32 method, chi::LoadTaskArchive& archive) override;
+
+  /**
+   * Deserialize task input parameters into an existing task using LocalSerialize
+   */
+  void LocalLoadTask(chi::u32 method, chi::LocalLoadTaskArchive& archive,
+                     hipc::FullPtr<chi::Task> task_ptr) override;
+
+  /**
+   * Allocate and deserialize task input parameters using LocalSerialize
+   */
+  hipc::FullPtr<chi::Task> LocalAllocLoadTask(chi::u32 method, chi::LocalLoadTaskArchive& archive) override;
+
+  /**
+   * Serialize task output parameters using LocalSerialize (for local transfers)
+   */
+  void LocalSaveTask(chi::u32 method, chi::LocalSaveTaskArchive& archive,
+                     hipc::FullPtr<chi::Task> task_ptr) override;
 
   /**
    * Create a new copy of a task (deep copy for distributed execution)
    */
-  void NewCopy(chi::u32 method,
-               const hipc::FullPtr<chi::Task> &orig_task,
-               hipc::FullPtr<chi::Task> &dup_task, bool deep) override;
+  hipc::FullPtr<chi::Task> NewCopyTask(chi::u32 method,
+                                        hipc::FullPtr<chi::Task> orig_task_ptr, bool deep) override;
+
+  /**
+   * Create a new task of the specified method type
+   */
+  hipc::FullPtr<chi::Task> NewTask(chi::u32 method) override;
 
   /**
    * Aggregate a replica task into the origin task (for merging replica results)
    */
   void Aggregate(chi::u32 method,
-                 hipc::FullPtr<chi::Task> origin_task,
-                 hipc::FullPtr<chi::Task> replica_task) override;
+                 hipc::FullPtr<chi::Task> origin_task_ptr,
+                 hipc::FullPtr<chi::Task> replica_task_ptr) override;
 };
 
 } // namespace chimaera::MOD_NAME

@@ -1,13 +1,24 @@
 #!/bin/bash
-# install.sh - Install IOWarp Core using conda
-# This script builds and installs IOWarp Core from source using conda-build
+# install.sh - Install IOWarp Core using rattler-build + conda
+# This script builds and installs IOWarp Core from source
 # It will automatically install Miniconda if conda is not detected
+#
+# Usage:
+#   ./install.sh              # Build with default (release) variant
+#   ./install.sh release      # Build with release preset
+#   ./install.sh debug        # Build with debug preset
+#   ./install.sh conda        # Build with conda-optimized preset
+#   ./install.sh cuda         # Build with CUDA preset
+#   ./install.sh rocm         # Build with ROCm preset
 
 set -e  # Exit on error
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
+
+# Parse variant argument (default to release)
+VARIANT="${1:-release}"
 
 # Color codes for output
 RED='\033[0;31m'
@@ -17,8 +28,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}======================================================================"
-echo -e "IOWarp Core - Conda Installation"
+echo -e "IOWarp Core - Installation"
 echo -e "======================================================================${NC}"
+echo ""
+echo -e "${BLUE}Variant: ${YELLOW}$VARIANT${NC}"
 echo ""
 
 # Function to install Miniconda
@@ -123,14 +136,14 @@ echo ""
 
 # Create and activate environment if not already in one
 if [ -z "$CONDA_PREFIX" ]; then
-    ENV_NAME="iowarp-build"
+    ENV_NAME="iowarp"
     echo -e "${BLUE}Creating conda environment: $ENV_NAME${NC}"
 
     # Check if environment already exists
     if conda env list | grep -q "^$ENV_NAME "; then
         echo -e "${YELLOW}Environment '$ENV_NAME' already exists. Using existing environment.${NC}"
     else
-        conda create -n "$ENV_NAME" -y python=3.11
+        conda create -n "$ENV_NAME" -y python
         echo -e "${GREEN}✓ Environment created${NC}"
     fi
 
@@ -143,10 +156,13 @@ fi
 echo -e "${GREEN}✓ Active conda environment: $CONDA_PREFIX${NC}"
 echo ""
 
-# Check if conda-build is installed
-if ! command -v conda-build &> /dev/null; then
-    echo -e "${YELLOW}Installing conda-build...${NC}"
-    conda install -y conda-build
+# Check if rattler-build is installed
+if ! command -v rattler-build &> /dev/null; then
+    echo -e "${YELLOW}Installing rattler-build...${NC}"
+    conda install -y rattler-build -c conda-forge
+    echo ""
+else
+    echo -e "${GREEN}✓ rattler-build detected: $(rattler-build --version)${NC}"
     echo ""
 fi
 
@@ -155,147 +171,110 @@ if [ -d ".git" ]; then
     echo -e "${BLUE}>>> Initializing git submodules...${NC}"
     git submodule update --init --recursive
     echo ""
-else
-    # Not a git repository - check for bundled submodule content (source distribution)
-    echo -e "${BLUE}>>> Checking for bundled submodule content (source distribution)...${NC}"
-
-    # Check each required submodule directory
-    MISSING_SUBMODULES=()
-
-    # Function to check if directory exists and is not empty
-    check_submodule() {
-        local submodule_path="$1"
-        local submodule_name=$(basename "$submodule_path")
-
-        if [ ! -d "$submodule_path" ]; then
-            MISSING_SUBMODULES+=("$submodule_name (directory does not exist)")
-            return 1
-        fi
-
-        local file_count=$(find "$submodule_path" -type f 2>/dev/null | wc -l)
-        if [ "$file_count" -eq 0 ]; then
-            MISSING_SUBMODULES+=("$submodule_name (directory is empty)")
-            return 1
-        fi
-
-        echo -e "    ${GREEN}✓${NC} $submodule_name: $file_count files"
-        return 0
-    }
-
-    # Check all required submodules
-    check_submodule "external/yaml-cpp"
-    check_submodule "external/cereal"
-    check_submodule "external/Catch2"
-    check_submodule "external/nanobind"
-
-    # If any submodules are missing, report error
-    if [ ${#MISSING_SUBMODULES[@]} -gt 0 ]; then
-        echo ""
-        echo -e "${RED}======================================================================"
-        echo -e "ERROR: Missing external dependencies (git submodules)"
-        echo -e "======================================================================${NC}"
-        echo ""
-        echo -e "${YELLOW}Missing or incomplete submodules:${NC}"
-        for missing in "${MISSING_SUBMODULES[@]}"; do
-            echo "  - $missing"
-        done
-        echo ""
-        echo -e "${YELLOW}Possible causes:${NC}"
-        echo "1. Source distribution was not properly created with submodules"
-        echo "2. Tarball extraction failed to preserve directory structure"
-        echo "3. MANIFEST.in is not including all submodule files"
-        echo ""
-        echo -e "${YELLOW}If you downloaded a source distribution (sdist), it may be incomplete.${NC}"
-        echo "Please try one of the following:"
-        echo ""
-        echo "1. Clone from git and initialize submodules:"
-        echo "   git clone --recursive https://github.com/iowarp/core.git"
-        echo "   cd core"
-        echo "   ./install.sh"
-        echo ""
-        echo "2. Or if already cloned, initialize submodules manually:"
-        echo "   git submodule update --init --recursive"
-        echo "   ./install.sh"
-        echo ""
-        exit 1
-    fi
-
-    echo -e "${GREEN}>>> All required submodules found in source distribution${NC}"
+elif [ -d "context-transport-primitives" ] && [ "$(ls -A context-transport-primitives 2>/dev/null)" ]; then
+    echo -e "${GREEN}>>> Submodules already present${NC}"
     echo ""
+else
+    echo -e "${RED}ERROR: Not a git repository and no submodule content found${NC}"
+    echo "       Cannot proceed with build - missing dependencies"
+    echo ""
+    exit 1
 fi
 
-# Build the conda package
-echo -e "${BLUE}>>> Building conda package...${NC}"
+# Verify variant file exists
+RECIPE_DIR="$SCRIPT_DIR/installers/conda"
+VARIANT_FILE="$RECIPE_DIR/variants/${VARIANT}.yaml"
+
+if [ ! -f "$VARIANT_FILE" ]; then
+    echo -e "${RED}Error: Variant '$VARIANT' not found${NC}"
+    echo ""
+    echo -e "${YELLOW}Available variants:${NC}"
+    for f in "$RECIPE_DIR/variants"/*.yaml; do
+        basename "$f" .yaml
+    done
+    echo ""
+    exit 1
+fi
+
+echo -e "${BLUE}Using variant file: $VARIANT_FILE${NC}"
+echo ""
+
+# Detect Python version from current environment
+PYTHON_VERSION=$(python --version 2>&1 | grep -oP '\d+\.\d+' | head -1)
+if [ -z "$PYTHON_VERSION" ]; then
+    PYTHON_VERSION="3.12"  # Default fallback
+fi
+echo -e "${BLUE}Detected Python version: ${YELLOW}$PYTHON_VERSION${NC}"
+
+# Build the conda package with rattler-build
+echo -e "${BLUE}>>> Building conda package with rattler-build...${NC}"
 echo -e "${YELLOW}This may take 10-30 minutes depending on your system${NC}"
 echo ""
 
-RECIPE_DIR="$SCRIPT_DIR/installers/conda"
+OUTPUT_DIR="$SCRIPT_DIR/build/conda-output"
+mkdir -p "$OUTPUT_DIR"
 
-# Verify conda-build is available
-if ! command -v conda-build &> /dev/null; then
-    echo -e "${RED}ERROR: conda-build command not found after installation attempt${NC}"
-    echo "Available conda commands:"
-    conda --help | grep "^  " || true
-    exit 1
+if rattler-build build \
+    --recipe "$RECIPE_DIR" \
+    --variant-config "$VARIANT_FILE" \
+    --output-dir "$OUTPUT_DIR" \
+    --variant "python=${PYTHON_VERSION}.*" \
+    -c conda-forge; then
+    BUILD_SUCCESS=true
+else
+    BUILD_SUCCESS=false
 fi
 
-echo -e "${BLUE}Using conda-build: $(which conda-build)${NC}"
-echo -e "${BLUE}Conda build output directory: $(conda info --base)/conda-bld${NC}"
 echo ""
 
-# Verify conda-build is available
-if ! command -v conda-build &> /dev/null; then
-    echo -e "${RED}ERROR: conda-build command not found after installation attempt${NC}"
-    echo "Available conda commands:"
-    conda --help | grep "^  " || true
-    exit 1
-fi
+if [ "$BUILD_SUCCESS" = true ]; then
+    # Find the built package
+    PACKAGE_PATH=$(find "$OUTPUT_DIR" -name "iowarp-core-*.conda" -o -name "iowarp-core-*.tar.bz2" | head -1)
 
-# Set PYTHONPATH to ensure conda module is importable BEFORE any conda commands
-# This is critical for conda-build to work properly
-if [ -n "$CONDA_PREFIX" ]; then
-    PY_VERSION=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.10")
-    export PYTHONPATH="$CONDA_PREFIX/lib/python${PY_VERSION}/site-packages:$PYTHONPATH"
-
-    # Also set CONDA_PYTHON_EXE to ensure conda uses the right Python
-    export CONDA_PYTHON_EXE="$(which python)"
-    export CONDA_EXE="$(which conda)"
-
-    echo -e "${BLUE}Set PYTHONPATH for conda-build: $PYTHONPATH${NC}"
-    echo -e "${BLUE}Set CONDA_PYTHON_EXE: $CONDA_PYTHON_EXE${NC}"
-    echo -e "${BLUE}Set CONDA_EXE: $CONDA_EXE${NC}"
-    echo ""
-
-    # Verify conda module is importable
-    if python -c "import conda" 2>/dev/null; then
-        echo -e "${GREEN}✓ conda module is importable from Python${NC}"
-    else
-        echo -e "${RED}ERROR: conda module is NOT importable${NC}"
-        echo -e "${YELLOW}Python sys.path:${NC}"
-        python -c "import sys; print('\n'.join(sys.path))"
-        echo ""
-        echo -e "${YELLOW}Attempting to fix by installing conda via pip...${NC}"
-        pip install --force-reinstall --no-deps conda-package-handling conda-package-streaming
-        pip install --upgrade --force-reinstall conda
-        echo ""
-
-        # Verify the fix worked
-        if python -c "import conda" 2>/dev/null; then
-            echo -e "${GREEN}✓ conda module is now importable after pip install${NC}"
-        else
-            echo -e "${RED}FATAL: conda module still not importable after pip install${NC}"
-            exit 1
-        fi
+    if [ -z "$PACKAGE_PATH" ]; then
+        echo -e "${RED}Error: Could not find built package in $OUTPUT_DIR${NC}"
+        exit 1
     fi
-    echo ""
-fi
 
-echo -e "${BLUE}Using conda-build: $(which conda-build)${NC}"
-echo -e "${BLUE}Conda build output directory: $(conda info --base)/conda-bld${NC}"
-echo ""
-
-if ! PYTHONPATH="$PYTHONPATH" conda build "$RECIPE_DIR" -c conda-forge; then
+    echo -e "${GREEN}======================================================================"
+    echo -e "Package built successfully!"
+    echo -e "======================================================================${NC}"
     echo ""
+    echo -e "${BLUE}Package location:${NC}"
+    echo "  $PACKAGE_PATH"
+    echo ""
+
+    # Install directly into current environment
+    # Index the local channel so conda can read package metadata
+    echo -e "${BLUE}>>> Indexing local channel...${NC}"
+    conda index "$OUTPUT_DIR" 2>/dev/null || python -m conda_index "$OUTPUT_DIR" 2>/dev/null || true
+
+    # Use local channel so conda properly resolves dependencies from conda-forge
+    echo -e "${BLUE}>>> Installing iowarp-core into current environment...${NC}"
+    if conda install -c "$OUTPUT_DIR" -c conda-forge iowarp-core -y; then
+        echo ""
+        echo -e "${GREEN}======================================================================"
+        echo -e "✓ IOWarp Core installed successfully!"
+        echo -e "======================================================================${NC}"
+        echo ""
+        echo -e "${BLUE}Installation prefix: $CONDA_PREFIX${NC}"
+        echo ""
+        echo -e "${BLUE}Verify installation:${NC}"
+        echo "  conda list iowarp-core"
+        echo ""
+        echo -e "${YELLOW}NOTE: To use iowarp-core in a new terminal session, activate the environment:${NC}"
+        echo "  conda activate $(basename $CONDA_PREFIX)"
+        echo ""
+    else
+        echo ""
+        echo -e "${RED}Installation failed.${NC}"
+        echo ""
+        echo -e "${YELLOW}You can try installing manually:${NC}"
+        echo "  conda install \"$PACKAGE_PATH\""
+        echo ""
+        exit 1
+    fi
+else
     echo -e "${RED}======================================================================"
     echo -e "Build failed!"
     echo -e "======================================================================${NC}"
@@ -309,110 +288,10 @@ if ! PYTHONPATH="$PYTHONPATH" conda build "$RECIPE_DIR" -c conda-forge; then
     echo "   conda config --show channels"
     echo ""
     echo "3. Try building with verbose output:"
-    echo "   conda build installers/conda/ -c conda-forge --debug"
+    echo "   rattler-build build --recipe $RECIPE_DIR --variant-config $VARIANT_FILE --verbose"
     echo ""
-    echo "4. Check build logs in:"
-    echo "   $CONDA_PREFIX/conda-bld/"
-    echo ""
-    exit 1
-fi
-
-echo ""
-echo -e "${GREEN}======================================================================"
-echo -e "Package built successfully!"
-echo -e "======================================================================${NC}"
-echo ""
-
-# Show what was created in conda-bld directory
-echo -e "${BLUE}Checking conda-bld directory contents...${NC}"
-CONDA_BLD_PATH="$CONDA_PREFIX/conda-bld"
-if [ -d "$CONDA_BLD_PATH" ]; then
-    echo "Directory structure:"
-    ls -lah "$CONDA_BLD_PATH" 2>/dev/null || true
-    echo ""
-    echo "Searching for built packages:"
-    find "$CONDA_BLD_PATH" -type f \( -name "*.tar.bz2" -o -name "*.conda" \) -ls 2>/dev/null || echo "No package files found"
-    echo ""
-else
-    echo -e "${YELLOW}Warning: $CONDA_BLD_PATH does not exist${NC}"
-    echo ""
-fi
-
-# Find the built package in the conda-bld directory
-echo -e "${BLUE}Locating built package...${NC}"
-CONDA_BLD_PATH="$CONDA_PREFIX/conda-bld"
-
-# Conda places packages in platform-specific subdirectories (linux-64, osx-64, noarch, etc.)
-# Search in all subdirectories for the package (both .tar.bz2 and .conda formats)
-PACKAGE_PATH=$(find "$CONDA_BLD_PATH" -type f \( -name "iowarp-core-*.tar.bz2" -o -name "iowarp-core-*.conda" \) 2>/dev/null | sort -V | tail -n 1)
-
-if [ -z "$PACKAGE_PATH" ]; then
-    echo -e "${RED}Error: Could not find built package in $CONDA_BLD_PATH${NC}"
-    echo ""
-    echo -e "${YELLOW}Conda build directory contents:${NC}"
-    if [ -d "$CONDA_BLD_PATH" ]; then
-        ls -la "$CONDA_BLD_PATH" 2>/dev/null || true
-        echo ""
-        echo -e "${YELLOW}Searching for package files in subdirectories:${NC}"
-        find "$CONDA_BLD_PATH" -type f \( -name "*.tar.bz2" -o -name "*.conda" \) 2>/dev/null || echo "No package files found"
-    else
-        echo "Directory $CONDA_BLD_PATH does not exist!"
-        echo ""
-        echo -e "${YELLOW}This usually means conda-build didn't complete successfully.${NC}"
-        echo "Check the build output above for errors."
-    fi
-    echo ""
-    exit 1
-fi
-
-echo -e "${BLUE}Package location:${NC}"
-echo "  $PACKAGE_PATH"
-echo ""
-
-# Install the package non-interactively
-echo -e "${BLUE}>>> Installing iowarp-core...${NC}"
-echo ""
-
-# Ensure conda is configured for non-interactive operation and has conda-forge channel
-conda config --set always_yes true 2>/dev/null || true
-conda config --add channels conda-forge 2>/dev/null || true
-conda config --set channel_priority flexible 2>/dev/null || true
-
-# Install directly from the package file
-# Note: conda-forge channel is already configured above, so no -c flag needed
-if conda install "$PACKAGE_PATH" -y 2>&1; then
-    echo ""
-    echo -e "${GREEN}======================================================================"
-    echo -e "✓ IOWarp Core installed successfully!"
-    echo -e "======================================================================${NC}"
-    echo ""
-    echo -e "${BLUE}Installation prefix: $CONDA_PREFIX${NC}"
-    echo ""
-    echo -e "${BLUE}Verify installation:${NC}"
-    echo "  conda list iowarp-core"
-    echo ""
-    echo -e "${BLUE}Test the installation:${NC}"
-    echo "  chimaera_start_runtime --help"
-    echo "  wrp_cte --help"
-    echo ""
-    echo -e "${BLUE}Python bindings:${NC}"
-    echo "  python -c 'import wrp_cte; print(wrp_cte.__version__)'"
-    echo ""
-    echo -e "${YELLOW}NOTE: To use iowarp-core in a new terminal session, activate the environment:${NC}"
-    echo "  conda activate $(basename $CONDA_PREFIX)"
-    echo ""
-else
-    echo ""
-    echo -e "${RED}======================================================================"
-    echo -e "Installation failed!"
-    echo -e "======================================================================${NC}"
-    echo ""
-    echo -e "${YELLOW}You can try installing manually:${NC}"
-    echo "  conda config --add channels conda-forge"
-    echo "  conda install $PACKAGE_PATH"
-    echo ""
-    echo -e "${YELLOW}Or check that conda-forge channel is available:${NC}"
-    echo "  conda config --show channels"
+    echo "4. Check available variants:"
+    echo "   ls $RECIPE_DIR/variants/"
     echo ""
     exit 1
 fi

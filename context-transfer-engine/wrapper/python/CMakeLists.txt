@@ -68,19 +68,46 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY $<TARGET_FILE_DIR:wrp_cte_core_ext>
     )
 
-    # Set environment variable to skip runtime initialization by default
-    # This allows tests to pass even without full Chimaera runtime setup
+    # Set environment variable to enable runtime initialization
+    # This allows tests to run with full Chimaera runtime setup
     set_tests_properties(
         python_bindings_test
         PROPERTIES
         LABELS "python;bindings"
         TIMEOUT 120
-        ENVIRONMENT "CHIMAERA_WITH_RUNTIME=0"
+        ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1"
     )
 
     # Ensure test depends on the built module
     set_tests_properties(
         python_bindings_test
+        PROPERTIES
+        DEPENDS wrp_cte_core_ext
+    )
+
+    # PollTelemetryLog focused test (requires runtime initialization)
+    # This test specifically validates telemetry logging functionality
+    # Requires: CHIMAERA_WITH_RUNTIME=1 and WRP_RUNTIME_CONF set
+    add_test(
+        NAME python_telemetry_test
+        COMMAND ${Python_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/test_cte_telemetry.py
+        WORKING_DIRECTORY $<TARGET_FILE_DIR:wrp_cte_core_ext>
+    )
+
+    # Configure telemetry test with runtime initialization
+    # Uses the same config as ADIOS2 adapter tests
+    # CRITICAL: Put conda libs FIRST in LD_LIBRARY_PATH to avoid OpenSSL version conflicts
+    set_tests_properties(
+        python_telemetry_test
+        PROPERTIES
+        LABELS "python;bindings;telemetry"
+        TIMEOUT 180
+        ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1;WRP_RUNTIME_CONF=${CMAKE_SOURCE_DIR}/context-transfer-engine/test/unit/adapters/adios2/cte_config.yaml;LD_LIBRARY_PATH=/home/iowarp/miniconda3/lib"
+    )
+
+    # Ensure test depends on the built module
+    set_tests_properties(
+        python_telemetry_test
         PROPERTIES
         DEPENDS wrp_cte_core_ext
     )
