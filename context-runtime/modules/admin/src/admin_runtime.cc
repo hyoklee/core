@@ -1042,6 +1042,7 @@ chi::TaskResume Runtime::WreapDeadIpcs(hipc::FullPtr<WreapDeadIpcsTask> task,
 
   // Call IpcManager::WreapDeadIpcs to reap shared memory from dead processes
   task->reaped_count_ = ipc_manager->WreapDeadIpcs();
+  // task->reaped_count_ = 0;
 
   // Mark whether we did work (for periodic task efficiency tracking)
   if (task->reaped_count_ > 0) {
