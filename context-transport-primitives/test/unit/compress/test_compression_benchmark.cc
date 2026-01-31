@@ -51,6 +51,7 @@
 #include "basic_test.h"
 #include "hermes_shm/util/compress/compress_factory.h"
 #include "hermes_shm/util/compress/data_stats.h"
+#include "hermes_shm/util/compress/distribution_classifier.h"
 #include "hermes_shm/util/config_parse.h"
 #include <iostream>
 #include <iomanip>
@@ -127,6 +128,13 @@ struct BenchmarkResult {
   bool has_error;  // true if decompressed != input (expected for lossy, unexpected for lossless)
   double max_abs_error;  // Maximum absolute error (for diagnostics)
   size_t num_mismatches;  // Number of elements that differ
+
+  // Block sampling features (for distribution classification)
+  double block_entropy_mean;
+
+  // Distribution classification results (mathematical approach)
+  double classified_skewness;
+  double classified_kurtosis;
 };
 
 // Data distribution generators with parameterization support
@@ -529,6 +537,93 @@ class DataGenerator {
     return pct;
   }
 
+  // Helper: Create bimodal-distributed bin percentages (two peaks at extremes)
+  // This represents data like Gray-Scott U/V concentrations with two dominant states
+  static std::vector<double> CreateBimodalPercentages(size_t n_bins, double peak_ratio = 0.4) {
+    std::vector<double> pct(n_bins, 0.0);
+    if (n_bins < 4) {
+      // Fallback to uniform for very small bin counts
+      return CreateUniformPercentages(n_bins);
+    }
+
+    // Two peaks: one at low end (bins 0-1), one at high end (bins n-2 to n-1)
+    // peak_ratio controls how much is in peaks vs transition region
+    double peak_weight = peak_ratio;  // Total weight for each peak
+    double transition_weight = 1.0 - 2 * peak_weight;  // Weight for middle region
+
+    // Low peak (first 2 bins)
+    pct[0] = peak_weight * 0.6;
+    pct[1] = peak_weight * 0.4;
+
+    // High peak (last 2 bins)
+    pct[n_bins - 2] = peak_weight * 0.4;
+    pct[n_bins - 1] = peak_weight * 0.6;
+
+    // Transition region (middle bins) - small but non-zero for gradients
+    size_t middle_bins = n_bins - 4;
+    if (middle_bins > 0 && transition_weight > 0) {
+      double per_middle = transition_weight / middle_bins;
+      for (size_t i = 2; i < n_bins - 2; ++i) {
+        pct[i] = per_middle;
+      }
+    }
+
+    return pct;
+  }
+
+  // Helper: Create grayscott-like distribution (bimodal with smooth transitions)
+  // Models reaction-diffusion patterns with background/spot regions
+  static std::vector<double> CreateGrayscottPercentages(size_t n_bins, double background_ratio = 0.7) {
+    std::vector<double> pct(n_bins, 0.0);
+    if (n_bins < 4) {
+      return CreateUniformPercentages(n_bins);
+    }
+
+    // Gray-Scott has:
+    // - Large background region (low concentration, ~70%)
+    // - Smaller spot/pattern regions (high concentration, ~20%)
+    // - Transition edges (~10%)
+
+    double background = background_ratio;  // Most data is background
+    double spots = 0.2;  // Spot regions
+    double edges = 1.0 - background - spots;  // Transition edges
+
+    // Background: concentrated in first few bins (low values)
+    size_t bg_bins = std::max<size_t>(2, n_bins / 4);
+    for (size_t i = 0; i < bg_bins; ++i) {
+      // Gaussian-like falloff from first bin
+      double x = static_cast<double>(i) / bg_bins;
+      pct[i] = background * std::exp(-2.0 * x * x);
+    }
+
+    // Spots: concentrated in last few bins (high values)
+    size_t spot_bins = std::max<size_t>(2, n_bins / 4);
+    for (size_t i = 0; i < spot_bins; ++i) {
+      size_t idx = n_bins - 1 - i;
+      double x = static_cast<double>(i) / spot_bins;
+      pct[idx] = spots * std::exp(-2.0 * x * x);
+    }
+
+    // Edges: spread across middle bins
+    size_t edge_start = bg_bins;
+    size_t edge_end = n_bins - spot_bins;
+    if (edge_end > edge_start) {
+      double per_edge = edges / (edge_end - edge_start);
+      for (size_t i = edge_start; i < edge_end; ++i) {
+        pct[i] += per_edge;
+      }
+    }
+
+    // Normalize to sum to 1.0
+    double sum = 0.0;
+    for (size_t i = 0; i < n_bins; ++i) sum += pct[i];
+    if (sum > 0) {
+      for (size_t i = 0; i < n_bins; ++i) pct[i] /= sum;
+    }
+
+    return pct;
+  }
+
   // Helper: Create bin ranges given n_bins, bin_width, and value range
   static std::vector<BinConfig> CreateBinConfigs(size_t n_bins, double bin_width,
                                                   const std::vector<double>& percentages,
@@ -584,6 +679,13 @@ BenchmarkResult BenchmarkCompressor(
   result.max_abs_error = 0.0;
   result.num_mismatches = 0;
 
+  // Block sampling features
+  result.block_entropy_mean = 0.0;
+
+  // Distribution classification
+  result.classified_skewness = 0.0;
+  result.classified_kurtosis = 0.0;
+
   size_t type_size = hshm::DataStatisticsFactory::GetTypeSize(dtype);
   size_t num_elements = data_size / type_size;
 
@@ -628,6 +730,31 @@ BenchmarkResult BenchmarkCompressor(
       hshm::DataStatisticsFactory::CalculateFirstDerivative(input_data.data(), num_elements, dtype);
   result.second_order_derivative =
       hshm::DataStatisticsFactory::CalculateSecondDerivative(input_data.data(), num_elements, dtype);
+
+  // Block sampling for distribution classification
+  // Use 16 blocks of 64 elements each for fast sampling
+  size_t block_sample_size = 64;
+  size_t num_sample_blocks = 16;
+  // Adjust for small data: ensure we don't oversample
+  if (num_elements < block_sample_size * num_sample_blocks) {
+    block_sample_size = std::max<size_t>(8, num_elements / num_sample_blocks);
+  }
+  if (num_elements < block_sample_size) {
+    block_sample_size = num_elements;
+    num_sample_blocks = 1;
+  }
+
+  auto block_stats = hshm::BlockSamplerFactory::Sample(
+      input_data.data(), num_elements, dtype,
+      num_sample_blocks, block_sample_size, 42);  // Fixed seed for reproducibility
+
+  result.block_entropy_mean = block_stats.entropy_mean;
+
+  // Classify distribution using mathematical approach
+  auto dist_result = hshm::DistributionClassifierFactory::Classify(
+      input_data.data(), num_elements, dtype);
+  result.classified_skewness = dist_result.skewness;
+  result.classified_kurtosis = dist_result.kurtosis;
 
   // Warmup compression
   size_t warmup_cmpr_size = compressed_data.size();
@@ -797,7 +924,9 @@ BenchmarkResult BenchmarkCompressor(
 // Print CSV table header
 void PrintCSVHeader(std::ostream& os) {
   os << "library_name,configuration,data_type,data_size,distribution_name,"
+     << "classified_skewness,classified_kurtosis,"
      << "shannon_entropy,mean_absolute_deviation,first_order_derivative,second_order_derivative,"
+     << "block_entropy_mean,"
      << "compression_ratio,compress_time_ms,decompress_time_ms,"
      << "psnr_db,has_error,max_abs_error,num_mismatches\n";
 }
@@ -807,10 +936,17 @@ void PrintResultCSV(const BenchmarkResult& result, std::ostream& os) {
   os << result.library << "," << result.configuration << ","
      << result.data_type << "," << result.data_size
      << "," << result.distribution << ","
-     << std::fixed << std::setprecision(4) << result.shannon_entropy << ","
+     // Distribution classification
+     << std::fixed << std::setprecision(4) << result.classified_skewness << ","
+     << std::setprecision(4) << result.classified_kurtosis << ","
+     // Full-data statistics
+     << std::setprecision(4) << result.shannon_entropy << ","
      << std::setprecision(2) << result.mean_absolute_deviation << ","
      << std::setprecision(4) << result.first_order_derivative << ","
      << std::setprecision(4) << result.second_order_derivative << ","
+     // Block sampling features
+     << std::setprecision(4) << result.block_entropy_mean << ","
+     // Compression results
      << std::setprecision(4) << result.compression_ratio << ","
      << std::setprecision(3) << result.compress_time_ms << ","
      << result.decompress_time_ms << "," << std::setprecision(2)
@@ -822,10 +958,10 @@ void PrintResultCSV(const BenchmarkResult& result, std::ostream& os) {
 
 TEST_CASE("Unified Compression Benchmark") {
   // Parse command-line arguments from environment variables
-  // MAX_SIZE: Maximum data size (default: 16MB) - supports semantic sizes like "128K", "16MB"
-  // NUM_BINS: Number of logarithmic size bins (default: 64)
-  size_t max_size = hshm::Unit<size_t>::Megabytes(16);  // Default 16MB
-  size_t num_bins = 64;  // Default 64 bins
+  // MAX_SIZE: Maximum data size (default: 128KB) - supports semantic sizes like "128K", "16MB"
+  // NUM_BINS: Number of logarithmic size bins (default: 12)
+  size_t max_size = hshm::Unit<size_t>::Kilobytes(128);  // Default 128KB
+  size_t num_bins = 12;  // Default 12 bins
 
   const char* max_size_env = std::getenv("MAX_SIZE");
   if (max_size_env) {
@@ -882,7 +1018,7 @@ TEST_CASE("Unified Compression Benchmark") {
   size_t n_dist_bins = 48;
   std::vector<double> bin_widths = {0.0, 1.0, 4.0, 8.0, 16.0};  // 0 = constant per bin
   std::vector<double> perturbations = {0.0, 0.05, 0.1, 0.25, 0.325, 0.5};
-  std::vector<std::string> dist_type_names = {"uniform", "normal", "gamma", "exponential"};  // All four by default
+  std::vector<std::string> dist_type_names = {"uniform", "normal", "gamma", "exponential", "bimodal", "grayscott"};  // All six by default
 
   // Parse DIST_BINS
   const char* dist_bins_env = std::getenv("DIST_BINS");
@@ -933,11 +1069,12 @@ TEST_CASE("Unified Compression Benchmark") {
     std::stringstream ss(dist_types_env);
     std::string item;
     while (std::getline(ss, item, ',')) {
-      if (item == "uniform" || item == "normal" || item == "gamma" || item == "exponential") {
+      if (item == "uniform" || item == "normal" || item == "gamma" || item == "exponential" ||
+          item == "bimodal" || item == "grayscott") {
         dist_type_names.push_back(item);
       }
     }
-    if (dist_type_names.empty()) dist_type_names = {"uniform", "normal", "gamma", "exponential"};
+    if (dist_type_names.empty()) dist_type_names = {"uniform", "normal", "gamma", "exponential", "bimodal", "grayscott"};
     std::cerr << "Using DIST_TYPES with " << dist_type_names.size() << " types" << std::endl;
   }
 
@@ -946,6 +1083,8 @@ TEST_CASE("Unified Compression Benchmark") {
   auto normal_pct = DataGenerator::CreateNormalPercentages(n_dist_bins);
   auto gamma_pct = DataGenerator::CreateGammaPercentages(n_dist_bins);
   auto exponential_pct = DataGenerator::CreateExponentialPercentages(n_dist_bins);
+  auto bimodal_pct = DataGenerator::CreateBimodalPercentages(n_dist_bins);
+  auto grayscott_pct = DataGenerator::CreateGrayscottPercentages(n_dist_bins);
 
   std::vector<DistributionConfig> distributions;
 
@@ -954,6 +1093,10 @@ TEST_CASE("Unified Compression Benchmark") {
   for (const auto& type_name : dist_type_names) {
     if (type_name == "uniform") {
       dist_types.push_back({"uniform", uniform_pct});
+    } else if (type_name == "bimodal") {
+      dist_types.push_back({"bimodal", bimodal_pct});
+    } else if (type_name == "grayscott") {
+      dist_types.push_back({"grayscott", grayscott_pct});
     } else if (type_name == "normal") {
       dist_types.push_back({"normal", normal_pct});
     } else if (type_name == "gamma") {

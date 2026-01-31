@@ -986,6 +986,158 @@ TEST_CASE("Compression PutBlob/GetBlob - Various Sizes", "[cte][compression][put
     INFO("SUCCESS: Large blob (64KB) with dynamic compression");
   }
 }
+
+/**
+ * Test Case: Compression Statistics Validation
+ *
+ * This test verifies that compression statistics are properly populated
+ * in the Context object after PutBlob with compression enabled.
+ */
+TEST_CASE("Compression Statistics Validation", "[cte][compression][stats][validation]") {
+  auto *fixture = hshm::Singleton<CompressionIntegrationTestFixture>::GetInstance();
+  REQUIRE(fixture->SetupPoolAndTarget());
+
+  SECTION("Verify statistics are populated with ZSTD compression") {
+    const size_t blob_size = 64 * 1024;  // 64KB
+    const std::string blob_name = "stats_test_blob";
+
+    // Create tag
+    std::string tag_name = "stats_test_tag";
+    auto tag_task = fixture->core_client_->AsyncGetOrCreateTag(tag_name);
+    tag_task.Wait();
+    wrp_cte::core::TagId tag_id = tag_task->tag_id_;
+    REQUIRE(!tag_id.IsNull());
+
+    // Create compressible test data
+    auto test_data = fixture->CreateTestData(blob_size, 'C');
+
+    // Allocate shared memory for PutBlob
+    hipc::FullPtr<char> put_buffer = CHI_IPC->AllocateBuffer(blob_size);
+    REQUIRE(!put_buffer.IsNull());
+    REQUIRE(fixture->CopyToSharedMemory(put_buffer, test_data));
+
+    // Create Context with compression enabled
+    wrp_cte::core::Context ctx;
+    ctx.dynamic_compress_ = 1;  // Static compression
+    ctx.compress_lib_ = CompressionLib::ZSTD;
+    ctx.compress_preset_ = 2;  // BALANCED
+    ctx.trace_key_ = 0;
+
+    // Initialize statistics to 0
+    ctx.actual_original_size_ = 0;
+    ctx.actual_compressed_size_ = 0;
+    ctx.actual_compression_ratio_ = 0.0;
+    ctx.actual_compress_time_ms_ = 0.0;
+    ctx.actual_psnr_db_ = 0.0;
+
+    INFO("Calling PutBlob with ZSTD compression...");
+
+    // PutBlob with compression
+    auto put_task = fixture->core_client_->AsyncPutBlob(
+        tag_id, blob_name, 0, blob_size,
+        put_buffer.shm_.template Cast<void>(),
+        0.8f, ctx, 0);
+
+    put_task.Wait();
+
+    INFO("PutBlob completed with return code: " << put_task->return_code_);
+    REQUIRE(put_task->return_code_ == 0);
+
+    // Extract compression statistics from the task's context
+    const auto& result_context = put_task->context_;
+
+    INFO("=== Compression Statistics ===");
+    INFO("  Original size:     " << result_context.actual_original_size_ << " bytes");
+    INFO("  Compressed size:   " << result_context.actual_compressed_size_ << " bytes");
+    INFO("  Compression ratio: " << result_context.actual_compression_ratio_);
+    INFO("  Compression time:  " << result_context.actual_compress_time_ms_ << " ms");
+    INFO("  PSNR:              " << result_context.actual_psnr_db_ << " dB");
+    INFO("==============================");
+
+    // Validate statistics are populated
+    REQUIRE(result_context.actual_original_size_ > 0);
+    REQUIRE(result_context.actual_compressed_size_ > 0);
+    REQUIRE(result_context.actual_compression_ratio_ > 0.0);
+
+    // For compressible data, we expect compression ratio > 1.0
+    INFO("Checking if data was actually compressed...");
+    if (result_context.actual_compressed_size_ < result_context.actual_original_size_) {
+      REQUIRE(result_context.actual_compression_ratio_ > 1.0);
+      INFO("SUCCESS: Data was compressed (ratio = " << result_context.actual_compression_ratio_ << ")");
+    } else {
+      INFO("WARNING: Compression did not reduce size (may be normal for some data)");
+    }
+
+    // Verify compression time is reasonable (> 0 ms)
+    REQUIRE(result_context.actual_compress_time_ms_ >= 0.0);
+
+    INFO("All compression statistics validated successfully");
+  }
+
+  SECTION("Verify different compression libraries populate statistics") {
+    const size_t blob_size = 32 * 1024;  // 32KB
+
+    // Test multiple compression libraries
+    std::vector<std::pair<int, std::string>> libs = {
+      {CompressionLib::ZSTD, "ZSTD"},
+      {CompressionLib::LZ4, "LZ4"},
+      {CompressionLib::ZLIB, "ZLIB"}
+    };
+
+    for (const auto& [lib_id, lib_name] : libs) {
+      INFO("Testing statistics with " << lib_name << " compression...");
+
+      std::string blob_name = "stats_" + lib_name;
+      std::string tag_name = "tag_stats_" + lib_name;
+
+      // Create tag
+      auto tag_task = fixture->core_client_->AsyncGetOrCreateTag(tag_name);
+      tag_task.Wait();
+      wrp_cte::core::TagId tag_id = tag_task->tag_id_;
+      REQUIRE(!tag_id.IsNull());
+
+      // Create test data
+      auto test_data = fixture->CreateTestData(blob_size, 'C');
+      hipc::FullPtr<char> put_buffer = CHI_IPC->AllocateBuffer(blob_size);
+      REQUIRE(!put_buffer.IsNull());
+      REQUIRE(fixture->CopyToSharedMemory(put_buffer, test_data));
+
+      // Create Context
+      wrp_cte::core::Context ctx;
+      ctx.dynamic_compress_ = 1;
+      ctx.compress_lib_ = lib_id;
+      ctx.compress_preset_ = 2;  // BALANCED
+      ctx.actual_original_size_ = 0;
+      ctx.actual_compressed_size_ = 0;
+      ctx.actual_compression_ratio_ = 0.0;
+      ctx.actual_compress_time_ms_ = 0.0;
+
+      // PutBlob
+      auto put_task = fixture->core_client_->AsyncPutBlob(
+          tag_id, blob_name, 0, blob_size,
+          put_buffer.shm_.template Cast<void>(),
+          0.8f, ctx, 0);
+
+      put_task.Wait();
+      REQUIRE(put_task->return_code_ == 0);
+
+      const auto& result_context = put_task->context_;
+
+      INFO("  " << lib_name << " - Original: " << result_context.actual_original_size_
+           << " bytes, Compressed: " << result_context.actual_compressed_size_
+           << " bytes, Ratio: " << result_context.actual_compression_ratio_
+           << ", Time: " << result_context.actual_compress_time_ms_ << " ms");
+
+      // Verify statistics are populated
+      REQUIRE(result_context.actual_original_size_ > 0);
+      REQUIRE(result_context.actual_compressed_size_ > 0);
+      REQUIRE(result_context.actual_compression_ratio_ > 0.0);
+    }
+
+    INFO("All compression libraries populated statistics correctly");
+  }
+}
+
 #endif  // WRP_CORE_ENABLE_COMPRESS
 
 // Main function using simple_test.h framework

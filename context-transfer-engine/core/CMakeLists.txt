@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Compression support option
-option(WRP_CORE_ENABLE_COMPRESS "Enable workflow-aware compression" OFF)
+option(WRP_CORE_ENABLE_COMPRESS "Enable workflow-aware compression" ON)
 
 if(WRP_CORE_ENABLE_COMPRESS)
     message(STATUS "CTE Core: Compression support ENABLED")

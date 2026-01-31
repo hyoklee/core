@@ -9,6 +9,8 @@ This repository contains the unified IOWarp Core framework, integrating multiple
 
 ## ⚠️ CRITICAL BUILD RULE ⚠️
 
+**NEVER HARDCODE ABSOLUTE PATHS INSIDE THE CMAKES**
+
 **NEVER BUILD OUTSIDE OF THE BUILD DIRECTORY. DO NOT PLACE BUILD FILES IN SOURCE DIRECTORIES. NEVER EVER EVER.**
 
 ### What This Means:

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <string>
 #include <type_traits>
+#include <random>
 
 namespace hshm {
 
@@ -546,6 +547,273 @@ class DataStatisticsFactory {
       case DataType::FLOAT32: return 4;
       case DataType::DOUBLE64: return 8;
       default: return 1;
+    }
+  }
+};
+
+/**
+ * BlockSamplingStats: Features computed from random block sampling
+ *
+ * Used for fast distribution classification without scanning entire data.
+ * Samples N random blocks and aggregates statistics.
+ */
+struct BlockSamplingStats {
+  // Entropy statistics across blocks
+  double entropy_mean = 0.0;
+  double entropy_std = 0.0;
+  double entropy_min = 0.0;
+  double entropy_max = 0.0;
+
+  // MAD statistics across blocks
+  double mad_mean = 0.0;
+  double mad_std = 0.0;
+
+  // Higher-order moments (computed from block means)
+  double skewness = 0.0;    // Asymmetry of distribution
+  double kurtosis = 0.0;    // Tail heaviness
+
+  // Block-level derivatives
+  double deriv1_mean = 0.0;  // Mean first derivative
+  double deriv1_std = 0.0;   // Std of first derivative
+
+  // Value range statistics
+  double value_range = 0.0;     // max - min across all blocks
+  double value_concentration = 0.0;  // Fraction of values in densest bin
+
+  // Sampling metadata
+  size_t num_blocks = 0;
+  size_t block_size = 0;
+  size_t total_samples = 0;
+};
+
+/**
+ * BlockSampler: Random block sampling for fast distribution classification
+ *
+ * Samples N random blocks from data and computes aggregate statistics.
+ * This enables fast runtime distribution detection with minimal overhead.
+ *
+ * Usage:
+ *   BlockSampler<float> sampler;
+ *   auto stats = sampler.Sample(data, num_elements, num_blocks, block_size);
+ */
+template<typename T>
+class BlockSampler {
+ public:
+  /**
+   * Sample random blocks and compute aggregate statistics
+   *
+   * @param data Pointer to data buffer
+   * @param num_elements Total number of elements
+   * @param num_blocks Number of blocks to sample (default: 16)
+   * @param block_size Elements per block (default: 64)
+   * @param seed Random seed (0 = use random device)
+   * @return BlockSamplingStats with computed features
+   */
+  static BlockSamplingStats Sample(const T* data, size_t num_elements,
+                                    size_t num_blocks = 16,
+                                    size_t block_size = 64,
+                                    uint32_t seed = 0) {
+    BlockSamplingStats stats;
+
+    if (num_elements == 0 || num_blocks == 0 || block_size == 0) {
+      return stats;
+    }
+
+    // Ensure we don't sample more than available
+    if (block_size > num_elements) {
+      block_size = num_elements;
+    }
+
+    // Maximum valid start position for a block
+    size_t max_start = (num_elements > block_size) ? (num_elements - block_size) : 0;
+
+    // Initialize RNG
+    std::mt19937 gen;
+    if (seed == 0) {
+      std::random_device rd;
+      gen.seed(rd());
+    } else {
+      gen.seed(seed);
+    }
+    std::uniform_int_distribution<size_t> dist(0, max_start);
+
+    // Storage for per-block statistics
+    std::vector<double> block_entropies;
+    std::vector<double> block_mads;
+    std::vector<double> block_means;
+    std::vector<double> block_derivs;
+    block_entropies.reserve(num_blocks);
+    block_mads.reserve(num_blocks);
+    block_means.reserve(num_blocks);
+    block_derivs.reserve(num_blocks);
+
+    // Track global min/max
+    T global_min = data[0];
+    T global_max = data[0];
+
+    // Build value histogram for concentration measure
+    std::vector<size_t> value_histogram(256, 0);
+    size_t total_byte_samples = 0;
+
+    // Sample blocks
+    for (size_t b = 0; b < num_blocks; ++b) {
+      size_t start = dist(gen);
+      const T* block = data + start;
+
+      // Compute block entropy
+      double entropy = DataStatistics<T>::CalculateShannonEntropy(block, block_size);
+      block_entropies.push_back(entropy);
+
+      // Compute block MAD
+      double mad = DataStatistics<T>::CalculateMAD(block, block_size);
+      block_mads.push_back(mad);
+
+      // Compute block mean
+      double mean = 0.0;
+      for (size_t i = 0; i < block_size; ++i) {
+        mean += static_cast<double>(block[i]);
+        // Track global min/max
+        if (block[i] < global_min) global_min = block[i];
+        if (block[i] > global_max) global_max = block[i];
+      }
+      mean /= static_cast<double>(block_size);
+      block_means.push_back(mean);
+
+      // Compute block first derivative mean
+      double deriv = DataStatistics<T>::CalculateFirstDerivative(block, block_size);
+      block_derivs.push_back(deriv);
+
+      // Add to byte histogram for concentration
+      const uint8_t* bytes = reinterpret_cast<const uint8_t*>(block);
+      size_t num_bytes = block_size * sizeof(T);
+      for (size_t i = 0; i < num_bytes; ++i) {
+        value_histogram[bytes[i]]++;
+      }
+      total_byte_samples += num_bytes;
+    }
+
+    stats.num_blocks = num_blocks;
+    stats.block_size = block_size;
+    stats.total_samples = num_blocks * block_size;
+
+    // Compute entropy statistics
+    stats.entropy_mean = ComputeMean(block_entropies);
+    stats.entropy_std = ComputeStd(block_entropies, stats.entropy_mean);
+    stats.entropy_min = *std::min_element(block_entropies.begin(), block_entropies.end());
+    stats.entropy_max = *std::max_element(block_entropies.begin(), block_entropies.end());
+
+    // Compute MAD statistics
+    stats.mad_mean = ComputeMean(block_mads);
+    stats.mad_std = ComputeStd(block_mads, stats.mad_mean);
+
+    // Compute derivative statistics
+    stats.deriv1_mean = ComputeMean(block_derivs);
+    stats.deriv1_std = ComputeStd(block_derivs, stats.deriv1_mean);
+
+    // Compute skewness and kurtosis from block means
+    stats.skewness = ComputeSkewness(block_means);
+    stats.kurtosis = ComputeKurtosis(block_means);
+
+    // Value range
+    stats.value_range = static_cast<double>(global_max) - static_cast<double>(global_min);
+
+    // Value concentration: fraction in most common byte value
+    if (total_byte_samples > 0) {
+      size_t max_count = *std::max_element(value_histogram.begin(), value_histogram.end());
+      stats.value_concentration = static_cast<double>(max_count) / static_cast<double>(total_byte_samples);
+    }
+
+    return stats;
+  }
+
+ private:
+  static double ComputeMean(const std::vector<double>& values) {
+    if (values.empty()) return 0.0;
+    double sum = 0.0;
+    for (double v : values) sum += v;
+    return sum / static_cast<double>(values.size());
+  }
+
+  static double ComputeStd(const std::vector<double>& values, double mean) {
+    if (values.size() < 2) return 0.0;
+    double sum_sq = 0.0;
+    for (double v : values) {
+      double diff = v - mean;
+      sum_sq += diff * diff;
+    }
+    return std::sqrt(sum_sq / static_cast<double>(values.size() - 1));
+  }
+
+  static double ComputeSkewness(const std::vector<double>& values) {
+    if (values.size() < 3) return 0.0;
+
+    double mean = ComputeMean(values);
+    double n = static_cast<double>(values.size());
+
+    double m2 = 0.0, m3 = 0.0;
+    for (double v : values) {
+      double diff = v - mean;
+      m2 += diff * diff;
+      m3 += diff * diff * diff;
+    }
+    m2 /= n;
+    m3 /= n;
+
+    if (m2 < 1e-10) return 0.0;
+    return m3 / std::pow(m2, 1.5);
+  }
+
+  static double ComputeKurtosis(const std::vector<double>& values) {
+    if (values.size() < 4) return 0.0;
+
+    double mean = ComputeMean(values);
+    double n = static_cast<double>(values.size());
+
+    double m2 = 0.0, m4 = 0.0;
+    for (double v : values) {
+      double diff = v - mean;
+      double diff2 = diff * diff;
+      m2 += diff2;
+      m4 += diff2 * diff2;
+    }
+    m2 /= n;
+    m4 /= n;
+
+    if (m2 < 1e-10) return 0.0;
+    // Excess kurtosis (normal distribution = 0)
+    return (m4 / (m2 * m2)) - 3.0;
+  }
+};
+
+/**
+ * BlockSamplerFactory: Type-erased interface for BlockSampler
+ */
+class BlockSamplerFactory {
+ public:
+  static BlockSamplingStats Sample(const void* data, size_t num_elements,
+                                    DataType type,
+                                    size_t num_blocks = 16,
+                                    size_t block_size = 64,
+                                    uint32_t seed = 0) {
+    switch (type) {
+      case DataType::UINT8:
+        return BlockSampler<uint8_t>::Sample(
+            static_cast<const uint8_t*>(data), num_elements,
+            num_blocks, block_size, seed);
+      case DataType::INT32:
+        return BlockSampler<int32_t>::Sample(
+            static_cast<const int32_t*>(data), num_elements,
+            num_blocks, block_size, seed);
+      case DataType::FLOAT32:
+        return BlockSampler<float>::Sample(
+            static_cast<const float*>(data), num_elements,
+            num_blocks, block_size, seed);
+      case DataType::DOUBLE64:
+        return BlockSampler<double>::Sample(
+            static_cast<const double*>(data), num_elements,
+            num_blocks, block_size, seed);
+      default:
+        return BlockSamplingStats();
     }
   }
 };

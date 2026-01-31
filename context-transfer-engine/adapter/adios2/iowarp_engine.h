@@ -134,6 +134,12 @@ class IowarpEngine : public adios2::plugin::PluginEngineInterface {
   /** Enable compression tracing */
   bool compress_trace_;
 
+  /** Total I/O time in milliseconds */
+  double total_io_time_ms_;
+
+  /** Wall clock start time */
+  std::chrono::high_resolution_clock::time_point wall_clock_start_;
+
   /** Increment the current step */
   void IncrementCurrentStep() { current_step_++; }
 

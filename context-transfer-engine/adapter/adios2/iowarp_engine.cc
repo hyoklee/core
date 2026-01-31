@@ -13,6 +13,7 @@
 #include "iowarp_engine.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -37,12 +38,20 @@ IowarpEngine::IowarpEngine(adios2::core::IO &io, const std::string &name,
       open_(false),
       compress_mode_(0),
       compress_lib_(0),
-      compress_trace_(false) {
+      compress_trace_(false),
+      total_io_time_ms_(0.0) {
   // Initialize CTE client - assumes Chimaera runtime is already running
   wrp_cte::core::WRP_CTE_CLIENT_INIT("", chi::PoolQuery::Local());
 
   // Read compression environment variables
   ReadCompressionEnvVars();
+
+  // Start wall clock timer
+  wall_clock_start_ = std::chrono::high_resolution_clock::now();
+
+  if (rank_ == 0) {
+    std::cerr << "[IowarpEngine] Starting timing measurement" << std::endl;
+  }
 }
 
 /**
@@ -51,6 +60,24 @@ IowarpEngine::IowarpEngine(adios2::core::IO &io, const std::string &name,
 IowarpEngine::~IowarpEngine() {
   if (open_) {
     DoClose();
+  }
+
+  // Calculate total wall clock time
+  auto wall_clock_end = std::chrono::high_resolution_clock::now();
+  double total_wall_time_ms =
+      std::chrono::duration<double, std::milli>(wall_clock_end - wall_clock_start_).count();
+  double compute_time_ms = total_wall_time_ms - total_io_time_ms_;
+
+  if (rank_ == 0) {
+    std::cerr << "\n========================================" << std::endl;
+    std::cerr << "[IowarpEngine] Timing Summary" << std::endl;
+    std::cerr << "========================================" << std::endl;
+    std::cerr << "Total wall time:  " << total_wall_time_ms << " ms" << std::endl;
+    std::cerr << "Total I/O time:   " << total_io_time_ms_ << " ms" << std::endl;
+    std::cerr << "Compute time:     " << compute_time_ms << " ms" << std::endl;
+    std::cerr << "I/O percentage:   " << (total_io_time_ms_ / total_wall_time_ms * 100.0) << "%" << std::endl;
+    std::cerr << "Compute percentage: " << (compute_time_ms / total_wall_time_ms * 100.0) << "%" << std::endl;
+    std::cerr << "========================================\n" << std::endl;
   }
 }
 
@@ -104,7 +131,15 @@ void IowarpEngine::EndStep() {
     throw std::runtime_error("IowarpEngine::EndStep: Engine not initialized");
   }
 
+  // Timing measurement for I/O operations
+  auto io_start = std::chrono::high_resolution_clock::now();
+
   // Process all deferred put tasks from this step
+  size_t total_original_size = 0;
+  size_t total_compressed_size = 0;
+  double total_compress_time_ms = 0.0;
+  size_t num_tasks = 0;
+
   for (auto &deferred : deferred_tasks_) {
     // Set TASK_DATA_OWNER flag so task destructor will free the buffer
     auto *task_ptr = deferred.task.get();
@@ -114,10 +149,58 @@ void IowarpEngine::EndStep() {
 
     // Wait for task to complete
     deferred.task.Wait();
+
+    // Extract compression statistics from context
+    if (task_ptr != nullptr) {
+      const auto &ctx = task_ptr->context_;
+      if (ctx.actual_original_size_ > 0) {
+        total_original_size += ctx.actual_original_size_;
+        total_compressed_size += ctx.actual_compressed_size_;
+        total_compress_time_ms += ctx.actual_compress_time_ms_;
+        num_tasks++;
+
+        // Log individual task compression stats if tracing is enabled
+        if (rank_ == 0 && compress_trace_) {
+          std::cerr << "[IowarpEngine] Compression stats: "
+                    << "original=" << ctx.actual_original_size_ << " bytes, "
+                    << "compressed=" << ctx.actual_compressed_size_ << " bytes, "
+                    << "ratio=" << ctx.actual_compression_ratio_ << ", "
+                    << "time=" << ctx.actual_compress_time_ms_ << " ms, "
+                    << "PSNR=" << ctx.actual_psnr_db_ << " dB" << std::endl;
+        }
+      }
+    }
   }
 
   // Clear the deferred tasks vector for the next step
   deferred_tasks_.clear();
+
+  // Print aggregated compression statistics for this step
+  if (rank_ == 0 && num_tasks > 0) {
+    double overall_ratio = (total_compressed_size > 0)
+                               ? static_cast<double>(total_original_size) / total_compressed_size
+                               : 1.0;
+    std::cerr << "[IowarpEngine] Step " << current_step_ << " compression summary: "
+              << "tasks=" << num_tasks << ", "
+              << "total_original=" << total_original_size << " bytes, "
+              << "total_compressed=" << total_compressed_size << " bytes, "
+              << "overall_ratio=" << overall_ratio << ", "
+              << "total_compress_time=" << total_compress_time_ms << " ms" << std::endl;
+  }
+
+  // Measure and log I/O time
+  auto io_end = std::chrono::high_resolution_clock::now();
+  double io_time_ms = std::chrono::duration<double, std::milli>(io_end - io_start).count();
+
+  // Accumulate total I/O time
+  total_io_time_ms_ += io_time_ms;
+
+  // Log per-step I/O time
+  if (rank_ == 0) {
+    std::cerr << "[IowarpEngine] Step " << current_step_
+              << " I/O time: " << io_time_ms << " ms"
+              << " (Total I/O: " << total_io_time_ms_ << " ms)" << std::endl;
+  }
 }
 
 /**

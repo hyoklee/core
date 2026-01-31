@@ -99,6 +99,20 @@ elseif(NOT nlohmann_json_FOUND)
     message(STATUS "nlohmann_json not found - Q-Table predictor will not be built")
 endif()
 
+# Linear Regression Table Predictor Library (no external dependencies)
+add_library(linreg_table_predictor
+    compression/linreg_table_predictor.cc
+)
+target_include_directories(linreg_table_predictor PUBLIC
+    $<BUILD_INTERFACE:${HSHM_ROOT}/include>
+    $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_compile_definitions(linreg_table_predictor PUBLIC HSHM_ENABLE_LINREG_TABLE)
+set_property(TARGET linreg_table_predictor PROPERTY CXX_STANDARD 17)
+list(APPEND HSHM_LIBS linreg_table_predictor)
+message(STATUS "Building Linear Regression Table predictor library")
+
 target_link_libraries(hermes_shm_host PUBLIC
     ${REAL_TIME_FLAGS}
     configure

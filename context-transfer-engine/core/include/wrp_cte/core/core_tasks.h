@@ -487,19 +487,20 @@ struct BlobInfo {
   Timestamp last_modified_; // Last modification time
   Timestamp last_read_;     // Last read time
   int compress_lib_;        // Compression library ID used for this blob (0 = no compression)
+  int compress_preset_;     // Compression preset used (1=FAST, 2=BALANCED, 3=BEST)
   chi::u64 trace_key_;      // Unique trace ID for linking to trace logs (0 = not traced)
 
   BlobInfo()
       : blob_name_(), blocks_(), score_(0.0f),
         last_modified_(std::chrono::steady_clock::now()),
         last_read_(std::chrono::steady_clock::now()),
-        compress_lib_(0), trace_key_(0) {}
+        compress_lib_(0), compress_preset_(2), trace_key_(0) {}
 
   explicit BlobInfo(CHI_MAIN_ALLOC_T *alloc)
       : blob_name_(), blocks_(), score_(0.0f),
         last_modified_(std::chrono::steady_clock::now()),
         last_read_(std::chrono::steady_clock::now()),
-        compress_lib_(0), trace_key_(0) {
+        compress_lib_(0), compress_preset_(2), trace_key_(0) {
     (void)alloc; // Suppress unused parameter warning
   }
 
@@ -508,7 +509,7 @@ struct BlobInfo {
       : blob_name_(blob_name), blocks_(), score_(score),
         last_modified_(std::chrono::steady_clock::now()),
         last_read_(std::chrono::steady_clock::now()),
-        compress_lib_(0), trace_key_(0) {
+        compress_lib_(0), compress_preset_(2), trace_key_(0) {
     (void)alloc; // Suppress unused parameter warning
   }
 
@@ -530,7 +531,8 @@ struct BlobInfo {
  */
 struct Context {
   int dynamic_compress_;   // 0 - skip, 1 - static, 2 - dynamic
-  int compress_lib_;       // The compression library to apply
+  int compress_lib_;       // The compression library to apply (0-10)
+  int compress_preset_;    // Compression preset: 1=FAST, 2=BALANCED, 3=BEST (default=2)
   chi::u32 target_psnr_;   // The acceptable PSNR for lossy compression (0 means infinity)
   int psnr_chance_;        // The chance PSNR will be validated (default 100%)
   bool max_performance_;   // Compression objective (performance vs ratio)
@@ -540,24 +542,39 @@ struct Context {
   chi::u64 trace_key_;     // Unique trace ID for this Put operation
   int trace_node_;         // Node ID where trace was initiated
 
+  // Dynamic statistics (populated after compression)
+  chi::u64 actual_original_size_;      // Original data size in bytes
+  chi::u64 actual_compressed_size_;    // Actual size after compression in bytes
+  double actual_compression_ratio_;    // Actual compression ratio (original/compressed)
+  double actual_compress_time_ms_;     // Actual compression time in milliseconds
+  double actual_psnr_db_;              // Actual PSNR for lossy compression (0 if lossless)
+
   Context()
-      : dynamic_compress_(0), compress_lib_(0), target_psnr_(0),
-        psnr_chance_(100), max_performance_(false),
+      : dynamic_compress_(0), compress_lib_(0), compress_preset_(2),
+        target_psnr_(0), psnr_chance_(100), max_performance_(false),
         consumer_node_(-1), data_type_(0), trace_(false),
-        trace_key_(0), trace_node_(-1) {}
+        trace_key_(0), trace_node_(-1),
+        actual_original_size_(0), actual_compressed_size_(0),
+        actual_compression_ratio_(1.0), actual_compress_time_ms_(0.0),
+        actual_psnr_db_(0.0) {}
 
   explicit Context(CHI_MAIN_ALLOC_T *alloc)
-      : dynamic_compress_(0), compress_lib_(0), target_psnr_(0),
-        psnr_chance_(100), max_performance_(false),
+      : dynamic_compress_(0), compress_lib_(0), compress_preset_(2),
+        target_psnr_(0), psnr_chance_(100), max_performance_(false),
         consumer_node_(-1), data_type_(0), trace_(false),
-        trace_key_(0), trace_node_(-1) {
+        trace_key_(0), trace_node_(-1),
+        actual_original_size_(0), actual_compressed_size_(0),
+        actual_compression_ratio_(1.0), actual_compress_time_ms_(0.0),
+        actual_psnr_db_(0.0) {
     (void)alloc;
   }
 
   // Serialization support for cereal
   template <class Archive> void serialize(Archive &ar) {
-    ar(dynamic_compress_, compress_lib_, target_psnr_, psnr_chance_,
-       max_performance_, consumer_node_, data_type_, trace_, trace_key_, trace_node_);
+    ar(dynamic_compress_, compress_lib_, compress_preset_, target_psnr_, psnr_chance_,
+       max_performance_, consumer_node_, data_type_, trace_, trace_key_, trace_node_,
+       actual_original_size_, actual_compressed_size_, actual_compression_ratio_,
+       actual_compress_time_ms_, actual_psnr_db_);
   }
 };
 
@@ -737,7 +754,7 @@ struct PutBlobTask : public chi::Task {
   IN chi::u64 size_;             // Size of blob data
   IN hipc::ShmPtr<> blob_data_;   // Blob data (shared memory pointer)
   IN float score_;               // Score 0-1 for placement decisions
-  IN Context context_;           // Context for compression control (NEW)
+  INOUT Context context_;        // Context for compression control and statistics
   IN chi::u32 flags_;            // Operation flags
 
   // SHM constructor
@@ -779,7 +796,7 @@ struct PutBlobTask : public chi::Task {
    */
   template <typename Archive> void SerializeOut(Archive &ar) {
     Task::SerializeOut(ar);
-    ar(blob_name_);
+    ar(blob_name_, context_);
     // No bulk transfer needed for PutBlob output (metadata only)
   }
 

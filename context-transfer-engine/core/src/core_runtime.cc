@@ -14,9 +14,14 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <vector>
 #include <wrp_cte/core/core_config.h>
 #include <wrp_cte/core/core_dpe.h>
 #include <wrp_cte/core/core_runtime.h>
+
+#ifdef WRP_CORE_ENABLE_COMPRESS
+#include "hermes_shm/util/compress/compress_factory.h"
+#endif
 
 namespace wrp_cte::core {
 
@@ -621,8 +626,86 @@ chi::TaskResume Runtime::PutBlob(hipc::FullPtr<PutBlobTask> task, chi::RunContex
     }
 
 #ifdef WRP_CORE_ENABLE_COMPRESS
-    // Compression is not fully integrated with shared memory pointers yet.
-    // This section is disabled pending proper buffer handling implementation.
+    // Step 0: Dynamic compression scheduling and execution
+    Context& context = task->context_;
+
+    // Call dynamic scheduling if enabled
+    if (context.dynamic_compress_ == 2) {
+      co_await DynamicPutSchedule(task, ctx);
+    }
+
+    // Apply compression if enabled (either static or dynamic)
+    std::vector<char> compressed_buffer;
+    hipc::ShmPtr<> original_blob_data = blob_data;
+    chi::u64 original_size = size;
+
+    if (context.compress_lib_ > 0 && context.dynamic_compress_ > 0) {
+      // Map compress_lib_ ID to library name
+      const char* lib_names[] = {"brotli", "bzip2", "blosc2", "fpzip", "lz4",
+                                  "lzma", "snappy", "sz3", "zfp", "zlib", "zstd"};
+      std::string library_name = (context.compress_lib_ >= 0 && context.compress_lib_ <= 10) ?
+                                 lib_names[context.compress_lib_] : "zstd";
+
+      // Map preset integer to enum
+      hshm::CompressionPreset preset = hshm::CompressionPreset::BALANCED;
+      if (context.compress_preset_ == 1) preset = hshm::CompressionPreset::FAST;
+      else if (context.compress_preset_ == 2) preset = hshm::CompressionPreset::BALANCED;
+      else if (context.compress_preset_ == 3) preset = hshm::CompressionPreset::BEST;
+
+      // Create compressor with specified preset
+      auto compressor = hshm::CompressionFactory::GetPreset(library_name, preset);
+
+      if (compressor) {
+        auto compress_start = std::chrono::high_resolution_clock::now();
+
+        // Allocate buffer for compressed data (worst case: original size + 5% overhead)
+        compressed_buffer.resize(size + (size / 20) + 1024);
+
+        // Get pointer to original data
+        char* input_data = reinterpret_cast<char*>(CHI_IPC->ToFullPtr(blob_data).ptr_);
+
+        // Compress the data
+        size_t compressed_size = compressed_buffer.size();
+        bool success = compressor->Compress(compressed_buffer.data(), compressed_size,
+                                            input_data, size);
+
+        auto compress_end = std::chrono::high_resolution_clock::now();
+        double compress_time = std::chrono::duration<double, std::milli>(compress_end - compress_start).count();
+
+        if (success && compressed_size < size) {
+          // Compression succeeded and reduced size
+          compressed_buffer.resize(compressed_size);
+
+          // Copy compressed data back into original shared memory buffer
+          // (or allocate new buffer if needed)
+          if (compressed_size <= size) {
+            std::memcpy(input_data, compressed_buffer.data(), compressed_size);
+            size = compressed_size;
+          }
+
+          // Populate compression statistics
+          context.actual_original_size_ = original_size;
+          context.actual_compressed_size_ = compressed_size;
+          context.actual_compression_ratio_ = static_cast<double>(original_size) / compressed_size;
+          context.actual_compress_time_ms_ = compress_time;
+          context.actual_psnr_db_ = 0.0;  // Lossless
+
+          HLOG(kDebug, "Compression: {} bytes -> {} bytes (ratio: {:.2f}, time: {:.2f}ms)",
+               original_size, compressed_size, context.actual_compression_ratio_, compress_time);
+        } else {
+          // Compression failed or didn't reduce size, use original data
+          HLOG(kDebug, "Compression not beneficial, using original data");
+          context.actual_original_size_ = size;
+          context.actual_compressed_size_ = size;
+          context.actual_compression_ratio_ = 1.0;
+          context.actual_compress_time_ms_ = compress_time;
+          context.actual_psnr_db_ = 0.0;
+          context.compress_lib_ = 0;  // Disable compression marker
+        }
+      } else {
+        HLOG(kWarning, "Failed to create compressor for library: {}", library_name);
+      }
+    }
 #endif  // WRP_CORE_ENABLE_COMPRESS
 
     // Step 1: Check if blob exists
@@ -654,7 +737,7 @@ chi::TaskResume Runtime::PutBlob(hipc::FullPtr<PutBlobTask> task, chi::RunContex
       co_return;
     }
 
-    // Step 4: Write data to blob blocks
+    // Step 4: Write data to blob blocks (compressed or uncompressed)
     // (no lock held during expensive I/O operations)
     chi::u32 write_result = 0;
     co_await ModifyExistingData(blob_info_ptr->blocks_, blob_data, size, offset, write_result);
@@ -664,6 +747,13 @@ chi::TaskResume Runtime::PutBlob(hipc::FullPtr<PutBlobTask> task, chi::RunContex
           20 + write_result; // Error: Write failure (20-29 range)
       co_return;
     }
+
+#ifdef WRP_CORE_ENABLE_COMPRESS
+    // Store compression metadata in BlobInfo for future decompression
+    blob_info_ptr->compress_lib_ = context.compress_lib_;
+    blob_info_ptr->compress_preset_ = context.compress_preset_;
+    blob_info_ptr->trace_key_ = context.trace_key_;
+#endif
 
     // Step 5: Calculate size change after I/O completes
     chi::u64 new_blob_size = blob_info_ptr->GetTotalSize();
@@ -766,8 +856,57 @@ chi::TaskResume Runtime::GetBlob(hipc::FullPtr<GetBlobTask> task, chi::RunContex
     }
 
 #ifdef WRP_CORE_ENABLE_COMPRESS
-    // Decompression is not fully integrated with shared memory pointers yet.
-    // This section is disabled pending proper buffer handling implementation.
+    // Step 2.5: Decompress data if it was compressed
+    if (blob_info_ptr->compress_lib_ > 0) {
+      // Map compress_lib_ ID to library name
+      const char* lib_names[] = {"brotli", "bzip2", "blosc2", "fpzip", "lz4",
+                                  "lzma", "snappy", "sz3", "zfp", "zlib", "zstd"};
+      std::string library_name = (blob_info_ptr->compress_lib_ >= 0 && blob_info_ptr->compress_lib_ <= 10) ?
+                                 lib_names[blob_info_ptr->compress_lib_] : "zstd";
+
+      // Map preset integer to enum
+      hshm::CompressionPreset preset = hshm::CompressionPreset::BALANCED;
+      if (blob_info_ptr->compress_preset_ == 1) preset = hshm::CompressionPreset::FAST;
+      else if (blob_info_ptr->compress_preset_ == 2) preset = hshm::CompressionPreset::BALANCED;
+      else if (blob_info_ptr->compress_preset_ == 3) preset = hshm::CompressionPreset::BEST;
+
+      // Create decompressor with same preset that was used for compression
+      auto decompressor = hshm::CompressionFactory::GetPreset(library_name, preset);
+
+      if (decompressor) {
+        auto decompress_start = std::chrono::high_resolution_clock::now();
+
+        // Get pointer to compressed data
+        char* compressed_data = reinterpret_cast<char*>(CHI_IPC->ToFullPtr(blob_data_ptr).ptr_);
+
+        // Allocate buffer for decompressed data (size from task)
+        std::vector<char> decompressed_buffer(size);
+
+        // Decompress the data
+        size_t decompressed_size = decompressed_buffer.size();
+        bool success = decompressor->Decompress(decompressed_buffer.data(), decompressed_size,
+                                                compressed_data, size);
+
+        auto decompress_end = std::chrono::high_resolution_clock::now();
+        double decompress_time = std::chrono::duration<double, std::milli>(decompress_end - decompress_start).count();
+
+        if (success) {
+          // Decompression succeeded, copy back into buffer
+          std::memcpy(compressed_data, decompressed_buffer.data(), decompressed_size);
+
+          HLOG(kDebug, "Decompression: {} bytes -> {} bytes (time: {:.2f}ms)",
+               size, decompressed_size, decompress_time);
+        } else {
+          HLOG(kError, "Decompression failed for blob: {}", blob_name);
+          task->return_code_ = 30;  // Decompression error
+          co_return;
+        }
+      } else {
+        HLOG(kWarning, "Failed to create decompressor for library: {}", library_name);
+        task->return_code_ = 31;  // Decompressor creation error
+        co_return;
+      }
+    }
 #endif  // WRP_CORE_ENABLE_COMPRESS
 
     // Step 3: Update timestamp (no lock needed - just updating values, not
@@ -2391,6 +2530,15 @@ std::tuple<int, int, double> Runtime::BestCompressForNode(
 // Static atomic trace key counter for generating unique trace IDs
 static std::atomic<chi::u64> g_trace_key_counter{1};
 
+// Helper function to decode library ID into separate library and preset
+// Library ID encoding: base_id * 10 + preset_id
+// Returns: pair of (base_library_id, preset_id)
+static std::pair<int, int> DecodeLibraryId(int library_id) {
+  int base_id = library_id / 10;
+  int preset_id = library_id % 10;
+  return {base_id, preset_id};
+}
+
 // Helper function to write trace log entry
 static void WriteTraceLog(const std::string& trace_folder, const std::string& log_name,
                           chi::u32 container_id, const std::string& entry) {
@@ -2429,8 +2577,14 @@ chi::TaskResume Runtime::DynamicPutSchedule(
 
   // For now, use simple size-based heuristics without actual data sampling
   // Proper implementation requires safe ShmPtr dereferencing mechanism
+  // When re-enabled, decode library ID into separate library and preset:
+  // auto [base_lib, preset] = DecodeLibraryId(selected_library_id);
+  // context.compress_lib_ = base_lib;
+  // context.compress_preset_ = preset;
+
   // Disable dynamic compression until proper shared memory access is available
   context.compress_lib_ = 0;
+  context.compress_preset_ = 2;  // BALANCED (default)
   context.dynamic_compress_ = 0;
 
   // Log scheduling decision time if tracing enabled
