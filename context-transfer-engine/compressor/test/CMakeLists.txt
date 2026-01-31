@@ -151,10 +151,34 @@ add_executable(test_compression_contention_exec
 )
 target_link_libraries(test_compression_contention_exec
     hshm::compress
+    hshm::cxx
     ${CMAKE_THREAD_LIBS_INIT}
 )
 target_compile_features(test_compression_contention_exec PRIVATE cxx_std_17)
 add_test(NAME test_compression_contention COMMAND test_compression_contention_exec)
 install(TARGETS test_compression_contention_exec
+    RUNTIME DESTINATION bin
+)
+
+#------------------------------------------------------------------------------
+# Compression Benchmark (unified benchmark for all compression libraries)
+#------------------------------------------------------------------------------
+
+add_executable(test_compression_benchmark_exec
+    test_compression_benchmark.cc
+)
+target_include_directories(test_compression_benchmark_exec PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-transport-primitives/test/unit  # For basic_test.h
+)
+target_link_libraries(test_compression_benchmark_exec
+    wrp_cte::compressor_runtime
+    hshm::compress
+    hshm::cxx
+    Catch2::Catch2WithMain
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+target_compile_features(test_compression_benchmark_exec PRIVATE cxx_std_17)
+add_test(NAME test_compression_benchmark COMMAND test_compression_benchmark_exec)
+install(TARGETS test_compression_benchmark_exec
     RUNTIME DESTINATION bin
 )

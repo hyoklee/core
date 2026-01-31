@@ -49,9 +49,9 @@
  */
 
 #include "basic_test.h"
-#include "hermes_shm/util/compress/compress_factory.h"
-#include "hermes_shm/util/compress/data_stats.h"
-#include "hermes_shm/util/compress/distribution_classifier.h"
+#include "hermes_shm/compress/compress_factory.h"
+#include "hermes_shm/compress/data_stats.h"
+#include "wrp_cte/compressor/models/distribution_classifier.h"
 #include "hermes_shm/util/config_parse.h"
 #include <iostream>
 #include <iomanip>
@@ -72,19 +72,34 @@
 #ifdef __linux__
 #include <sys/resource.h>
 #include <unistd.h>
+#include <ctime>
 #endif
+
+/**
+ * @brief Get CPU time in nanoseconds using CLOCK_PROCESS_CPUTIME_ID.
+ * @return CPU time in nanoseconds, or 0 if not available.
+ */
+inline double GetCpuTimeNs() {
+#ifdef __linux__
+  struct timespec ts;
+  if (clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts) == 0) {
+    return static_cast<double>(ts.tv_sec) * 1e9 + static_cast<double>(ts.tv_nsec);
+  }
+#endif
+  return 0.0;
+}
 
 #if HSHM_ENABLE_COMPRESS
 #include <lzo/lzo1x.h>
 #endif
 
 #if HSHM_ENABLE_COMPRESS
-#include "hermes_shm/util/compress/lossless_modes.h"
+#include "hermes_shm/compress/lossless_modes.h"
 #endif
 
 #if HSHM_ENABLE_COMPRESS && HSHM_ENABLE_LIBPRESSIO
-#include "hermes_shm/util/compress/libpressio.h"
-#include "hermes_shm/util/compress/libpressio_modes.h"
+#include "hermes_shm/compress/libpressio.h"
+#include "hermes_shm/compress/libpressio_modes.h"
 #endif
 
 // Bin configuration for binned distribution generator
@@ -751,8 +766,8 @@ BenchmarkResult BenchmarkCompressor(
   result.block_entropy_mean = block_stats.entropy_mean;
 
   // Classify distribution using mathematical approach
-  auto dist_result = hshm::DistributionClassifierFactory::Classify(
-      input_data.data(), num_elements, dtype);
+  auto dist_result = wrp_cte::compressor::DistributionClassifierFactory::Classify(
+      input_data.data(), num_elements, static_cast<wrp_cte::compressor::DataType>(dtype));
   result.classified_skewness = dist_result.skewness;
   result.classified_kurtosis = dist_result.kurtosis;
 
@@ -773,22 +788,21 @@ BenchmarkResult BenchmarkCompressor(
     return result;
   }
 
-  // Measure compression
+  // Measure compression (CPU time)
   size_t cmpr_size = compressed_data.size();
-  auto start = std::chrono::high_resolution_clock::now();
+  double cpu_start = GetCpuTimeNs();
 
   bool comp_ok = compressor->Compress(compressed_data.data(), cmpr_size,
                                        input_data.data(), data_size);
 
-  auto end = std::chrono::high_resolution_clock::now();
+  double cpu_end = GetCpuTimeNs();
 
   if (!comp_ok || cmpr_size == 0) {
     return result;
   }
 
-  auto compress_duration =
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  result.compress_time_ms = compress_duration.count() / 1000.0;
+  // Convert nanoseconds to milliseconds
+  result.compress_time_ms = (cpu_end - cpu_start) / 1e6;
 
   // Compression ratio
   if (cmpr_size > 0) {
@@ -797,22 +811,21 @@ BenchmarkResult BenchmarkCompressor(
     result.compression_ratio = 0.0;
   }
 
-  // Measure decompression
+  // Measure decompression (CPU time)
   size_t decmpr_size = decompressed_data.size();
-  start = std::chrono::high_resolution_clock::now();
+  cpu_start = GetCpuTimeNs();
 
   bool decomp_ok = compressor->Decompress(decompressed_data.data(), decmpr_size,
                                            compressed_data.data(), cmpr_size);
 
-  end = std::chrono::high_resolution_clock::now();
+  cpu_end = GetCpuTimeNs();
 
   if (!decomp_ok || decmpr_size != data_size) {
     return result;
   }
 
-  auto decompress_duration =
-      std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-  result.decompress_time_ms = decompress_duration.count() / 1000.0;
+  // Convert nanoseconds to milliseconds
+  result.decompress_time_ms = (cpu_end - cpu_start) / 1e6;
 
   // Check for differences between input and decompressed data
   // This is critical for identifying whether lossy compression is actually working

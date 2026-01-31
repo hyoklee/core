@@ -18,6 +18,7 @@
 #include <blosc2.h>
 
 #include "compress.h"
+#include "hermes_shm/util/singleton.h"
 
 namespace hshm {
 
