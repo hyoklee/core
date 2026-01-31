@@ -34,7 +34,7 @@
 #include <sys/resource.h>
 #include <sys/times.h>
 
-#include <hermes_shm/util/compress/compress_factory.h>
+#include <hermes_shm/compress/compress_factory.h>
 
 using namespace std::chrono;
 

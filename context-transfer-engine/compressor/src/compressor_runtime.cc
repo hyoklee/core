@@ -15,7 +15,7 @@
 
 #include "chimaera/worker.h"
 #include "hermes_shm/util/logging.h"
-#include "hermes_shm/util/compress/compress_factory.h"
+#include "hermes_shm/compress/compress_factory.h"
 
 namespace wrp_cte::compressor {
 
