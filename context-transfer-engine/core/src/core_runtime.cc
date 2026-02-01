@@ -1566,8 +1566,8 @@ chi::TaskResume Runtime::ModifyExistingData(
           block.target_offset_ + write_start_in_block, write_size, 0);
       hipc::ShmPtr<> data_ptr = data + data_buffer_offset;
 
-      // Wrap single block in ArrayVector for AsyncWrite
-      chimaera::bdev::ArrayVector<chimaera::bdev::Block, 128> blocks;
+      // Wrap single block in chi::priv::vector for AsyncWrite
+      chi::priv::vector<chimaera::bdev::Block> blocks(HSHM_MALLOC);
       blocks.push_back(bdev_block);
 
       chimaera::bdev::Client cte_clientcopy = block.bdev_client_;
@@ -1678,8 +1678,8 @@ chi::TaskResume Runtime::ReadData(const std::vector<BlobBlock> &blocks,
           block.target_offset_ + read_start_in_block, read_size, 0);
       hipc::ShmPtr<> data_ptr = data + data_buffer_offset;
 
-      // Wrap single block in ArrayVector for AsyncRead
-      chimaera::bdev::ArrayVector<chimaera::bdev::Block, 128> blocks;
+      // Wrap single block in chi::priv::vector for AsyncRead
+      chi::priv::vector<chimaera::bdev::Block> blocks(HSHM_MALLOC);
       blocks.push_back(bdev_block);
 
       chimaera::bdev::Client cte_clientcopy = block.bdev_client_;

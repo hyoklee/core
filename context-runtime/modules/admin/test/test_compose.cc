@@ -8,7 +8,7 @@
 #include <chimaera/bdev/bdev_client.h>
 #include <fstream>
 
-#include "../simple_test.h"
+#include "simple_test.h"
 
 /**
  * Create a temporary compose configuration file

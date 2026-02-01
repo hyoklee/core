@@ -555,7 +555,7 @@ chi::TaskResume Runtime::AllocateBlocks(hipc::FullPtr<AllocateBlocksTask> task,
   // operator
   // task->blocks_ = local_blocks;
   for (size_t i = 0; i < local_blocks.size(); i++) {
-    task->blocks_.emplace_back(local_blocks[i]);
+    task->blocks_.push_back(local_blocks[i]);
   }
 
   HLOG(kDebug, "bdev::AllocateBlocks: SUCCESS - allocated {} blocks, task->blocks_.size()={}",

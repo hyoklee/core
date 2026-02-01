@@ -10,7 +10,7 @@
  * - Various task types from admin module
  */
 
-#include "../simple_test.h"
+#include "simple_test.h"
 #include <memory>
 #include <sstream>
 #include <string>

@@ -6,7 +6,7 @@
  * - CoRwLock: Cooperative reader-writer locks with TaskId grouping
  */
 
-#include "../simple_test.h"
+#include "simple_test.h"
 #include <atomic>
 #include <chrono>
 #include <future>

@@ -18,7 +18,7 @@
 #include <thread>
 #include <vector>
 
-#include "../simple_test.h"
+#include "simple_test.h"
 
 using namespace std::chrono_literals;
 
@@ -60,25 +60,25 @@ bool g_initialized = false;
 int g_test_counter = 0;
 
 /**
- * Helper function to wrap a single block in an ArrayVector
+ * Helper function to wrap a single block in a chi::priv::vector
  * @param block Single block to wrap
- * @return ArrayVector containing the single block
+ * @return chi::priv::vector containing the single block
  */
-inline chimaera::bdev::ArrayVector<chimaera::bdev::Block, 128> WrapBlock(
+inline chi::priv::vector<chimaera::bdev::Block> WrapBlock(
     const chimaera::bdev::Block& block) {
-  chimaera::bdev::ArrayVector<chimaera::bdev::Block, 128> blocks;
+  chi::priv::vector<chimaera::bdev::Block> blocks(HSHM_MALLOC);
   blocks.push_back(block);
   return blocks;
 }
 
 /**
- * Helper function to convert std::vector of blocks to ArrayVector
+ * Helper function to convert std::vector of blocks to chi::priv::vector
  * @param blocks_vec std::vector of blocks
- * @return ArrayVector containing all blocks
+ * @return chi::priv::vector containing all blocks
  */
-inline chimaera::bdev::ArrayVector<chimaera::bdev::Block, 128> ConvertBlocks(
+inline chi::priv::vector<chimaera::bdev::Block> ConvertBlocks(
     const std::vector<chimaera::bdev::Block>& blocks_vec) {
-  chimaera::bdev::ArrayVector<chimaera::bdev::Block, 128> blocks;
+  chi::priv::vector<chimaera::bdev::Block> blocks(HSHM_MALLOC);
   for (const auto& block : blocks_vec) {
     blocks.push_back(block);
   }

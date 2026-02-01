@@ -1,29 +1,31 @@
-# Dockerfile for building the Content Transfer Engine (CTE)
-# DEPRECATED: Use build-cpu.Dockerfile instead.
-# This file is kept for backward compatibility.
+# IOWarp CPU Build Container
+# Builds IOWarp from the current source tree
 #
-# Inherits from iowarp/deps-cpu:latest which contains all build dependencies
-
+# Usage:
+#   docker build -t iowarp/build-cpu:latest -f docker/build-cpu.Dockerfile .
+#
 FROM iowarp/deps-cpu:latest
+LABEL maintainer="llogan@hawk.iit.edu"
+LABEL version="1.0"
+LABEL description="IOWarp CPU build container"
 
 # Set working directory
 WORKDIR /workspace
 
-# Copy the entire CTE source tree
+# Copy the entire source tree
 COPY . /workspace/
 
-# Initialize git submodules and build
+# Initialize git submodules and build using the build-cpu-release preset
 # Install to /usr/local
 RUN sudo chown -R $(whoami):$(whoami) /workspace && \
     git submodule update --init --recursive && \
     mkdir -p build && \
     cd build && \
-    cmake --preset release ../ && \
+    cmake --preset build-cpu-release ../ && \
     sudo make -j$(nproc) install && \
     sudo rm -rf /workspace
 
-
-# Add iowarp-cte to Spack configuration
+# Add iowarp-core to Spack configuration
 RUN echo "  iowarp-core:" >> ~/.spack/packages.yaml && \
     echo "    externals:" >> ~/.spack/packages.yaml && \
     echo "    - spec: iowarp-core@main" >> ~/.spack/packages.yaml && \
@@ -39,3 +41,8 @@ RUN sudo mkdir -p /etc/iowarp && \
 
 # Set runtime configuration environment variable
 ENV WRP_RUNTIME_CONF=/etc/iowarp/wrp_conf.yaml
+
+WORKDIR /home/iowarp
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["/bin/bash"]

@@ -12,7 +12,7 @@
  * Uses the simple custom test framework for testing.
  */
 
-#include "../simple_test.h"
+#include "simple_test.h"
 #include <chrono>
 #include <thread>
 #include <memory>
