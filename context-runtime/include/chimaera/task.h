@@ -338,6 +338,16 @@ class Task {
    * @return Estimated CPU time in microseconds
    */
   HSHM_CROSS_FUN size_t EstCpuTime() const;
+
+  /**
+   * Get the copy space size for serialized task output
+   * Derived classes can override to specify custom copy space sizes
+   * Default is 4KB (4096 bytes) for most tasks
+   * @return Size in bytes for the serialized_task_ capacity
+   */
+  HSHM_CROSS_FUN virtual size_t GetCopySpaceSize() const {
+    return 4096;  // Default 4KB for most tasks
+  }
 };
 
 /**
@@ -357,21 +367,32 @@ enum class ExecMode : u32 {
  *
  * This container holds the serialized task data and completion status
  * for asynchronous task operations.
+ *
+ * Bitfield flags for is_complete_:
+ * - FUTURE_COMPLETE = 1: Task execution completed
+ * - FUTURE_NEW_DATA = 2: New output data available in copy space
  */
 template <typename AllocT = CHI_MAIN_ALLOC_T>
 class FutureShm : public hipc::ShmContainer<AllocT> {
  public:
+  // Bitfield flags for is_complete_
+  static constexpr u32 FUTURE_COMPLETE = 1;      /**< Task execution is complete */
+  static constexpr u32 FUTURE_NEW_DATA = 2;      /**< New output data available */
+
   /** Pool ID for the task */
   PoolId pool_id_;
 
   /** Method ID for the task */
   u32 method_id_;
 
-  /** Serialized task data */
+  /** Size of the output data (0 if fits in serialized_task_) */
+  size_t output_size_;
+
+  /** Serialized task data (or copy space for streaming) */
   hipc::vector<char, AllocT> serialized_task_;
 
-  /** Atomic completion flag (0=not complete, 1=complete) */
-  hipc::atomic<u32> is_complete_;
+  /** Atomic bitfield for completion and data availability flags */
+  hipc::abitfield32_t is_complete_;
 
   /** Size of the shared memory segment containing this FutureShm
    *  Used for lazy registration - shm_name derived from alloc_id (pid.count)
@@ -385,7 +406,8 @@ class FutureShm : public hipc::ShmContainer<AllocT> {
       : hipc::ShmContainer<AllocT>(alloc), serialized_task_(alloc) {
     pool_id_ = PoolId::GetNull();
     method_id_ = 0;
-    is_complete_.store(0);
+    output_size_ = 0;
+    is_complete_.Store(0);
     shm_size_ = 0;
   }
 };
@@ -434,6 +456,7 @@ class Future {
    * @param alloc Allocator to use for FutureShm allocation
    * @param task_ptr FullPtr to the task (wraps private memory with null
    * allocator)
+   * @deprecated Use CHI_IPC->AllocateObj<FutureShm>() instead
    */
   Future(AllocT* alloc, hipc::FullPtr<TaskT> task_ptr)
       : task_ptr_(task_ptr), parent_task_(nullptr), is_owner_(false) {
@@ -445,6 +468,8 @@ class Future {
       if (!task_ptr_.IsNull() && !future_shm_.IsNull()) {
         future_shm_->pool_id_ = task_ptr_->pool_id_;
         future_shm_->method_id_ = task_ptr_->method_;
+        // Preallocate serialized_task_ vector with copy space size
+        future_shm_->serialized_task_.reserve(task_ptr_->GetCopySpaceSize());
       }
     }
   }
@@ -618,7 +643,7 @@ class Future {
     if (future_shm_.IsNull()) {
       return false;
     }
-    return future_shm_->is_complete_.load() != 0;
+    return future_shm_->is_complete_.Test(FutureT::FUTURE_COMPLETE);
   }
 
   /**
@@ -632,7 +657,7 @@ class Future {
    */
   void Complete() {
     if (!future_shm_.IsNull()) {
-      future_shm_->is_complete_.store(1);
+      future_shm_->is_complete_.Set(FutureT::FUTURE_COMPLETE);
     }
   }
 

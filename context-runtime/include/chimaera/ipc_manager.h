@@ -891,11 +891,11 @@ void Future<TaskT, AllocT>::Wait() {
   is_owner_ = true;
 
   if (!task_ptr_.IsNull() && !future_shm_.IsNull()) {
-    // Wait for completion by polling is_complete atomic
+    // Wait for completion by polling is_complete bitfield
     // Busy-wait with thread yielding - works for both client and runtime
     // contexts Coroutine contexts should use co_await Future instead
-    hipc::atomic<u32> &is_complete = future_shm_->is_complete_;
-    while (is_complete.load() == 0) {
+    hipc::abitfield32_t &is_complete = future_shm_->is_complete_;
+    while (!is_complete.Test(FutureShm<AllocT>::FUTURE_COMPLETE)) {
       HSHM_THREAD_MODEL->Yield();
     }
 
