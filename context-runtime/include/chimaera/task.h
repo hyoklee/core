@@ -397,11 +397,14 @@ struct FutureShm {
   /** Method ID for the task */
   u32 method_id_;
 
-  /** Size of the output data (0 if fits in copy_space) */
+  /** Size of input data in copy_space (client → worker direction) */
+  hipc::atomic<size_t> input_size_;
+
+  /** Total size of output data (worker → client direction) */
   hipc::atomic<size_t> output_size_;
 
-  /** Actual size of data currently in copy_space */
-  hipc::atomic<size_t> input_size_;
+  /** Current chunk size in copy_space for streaming output */
+  hipc::atomic<size_t> current_chunk_size_;
 
   /** Total capacity of copy_space buffer */
   hipc::atomic<size_t> capacity_;
@@ -419,8 +422,9 @@ struct FutureShm {
   FutureShm() {
     pool_id_ = PoolId::GetNull();
     method_id_ = 0;
-    output_size_.store(0);
     input_size_.store(0);
+    output_size_.store(0);
+    current_chunk_size_.store(0);
     capacity_.store(0);
     flags_.SetBits(0);
   }

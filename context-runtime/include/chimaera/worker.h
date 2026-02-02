@@ -438,6 +438,26 @@ class Worker {
   u32 ProcessNewTasks();
 
   /**
+   * Ensure IPC allocator is registered for a Future
+   * Handles lazy registration of client memory allocators
+   * @param future_shm_full FullPtr to FutureShm to check allocator for
+   * @return true if allocator is registered or registration succeeded, false on failure
+   */
+  bool EnsureIpcRegistered(const hipc::FullPtr<FutureShm> &future_shm_full);
+
+  /**
+   * Get task pointer from Future, copying from client if needed
+   * Deserializes task if FUTURE_COPY_FROM_CLIENT flag is set
+   * @param future Future object containing FutureShm
+   * @param container Container to allocate task in
+   * @param method_id Method ID for task creation
+   * @return FullPtr to task (either existing or newly deserialized)
+   */
+  hipc::FullPtr<Task> GetOrCopyTaskFromFuture(Future<Task> &future,
+                                               Container *container,
+                                               u32 method_id);
+
+  /**
    * Get the time remaining before the next periodic task should resume
    * Scans all periodic queues to find the task with the shortest remaining time
    * @return Time in microseconds until next periodic task, or 0 if no periodic tasks

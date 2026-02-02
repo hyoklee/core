@@ -4,20 +4,9 @@
 
 #include "chimaera/ipc_manager.h"
 
-#include "chimaera/config_manager.h"
-#include "chimaera/chimaera_manager.h"
-#include "chimaera/admin/admin_client.h"
-#include "chimaera/task_queue.h"
-#include "chimaera/scheduler/scheduler_factory.h"
 #include <arpa/inet.h>
-#include <cerrno>
-#include <cstdlib>
-#include <cstring>
 #include <dirent.h>
 #include <endian.h>
-#include <functional>
-#include <iostream>
-#include <memory>
 #include <netdb.h>
 #include <signal.h>
 #include <sys/mman.h>
@@ -26,6 +15,19 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <zmq.h>
+
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <functional>
+#include <iostream>
+#include <memory>
+
+#include "chimaera/admin/admin_client.h"
+#include "chimaera/chimaera_manager.h"
+#include "chimaera/config_manager.h"
+#include "chimaera/scheduler/scheduler_factory.h"
+#include "chimaera/task_queue.h"
 
 // Global pointer variable definition for IPC manager singleton
 HSHM_DEFINE_GLOBAL_PTR_VAR_CC(chi::IpcManager, g_ipc_manager);
@@ -65,11 +67,13 @@ bool IpcManager::ClientInit() {
   // Create per-process shared memory for client allocations
   // Use configured client_data_segment_size from config
   auto *config = CHI_CONFIG_MANAGER;
-  size_t initial_size = config && config->IsValid()
-      ? config->GetMemorySegmentSize(kClientDataSegment)
-      : hshm::Unit<size_t>::Megabytes(256);  // Default 256MB
+  size_t initial_size =
+      config && config->IsValid()
+          ? config->GetMemorySegmentSize(kClientDataSegment)
+          : hshm::Unit<size_t>::Megabytes(256);  // Default 256MB
   if (!IncreaseMemory(initial_size)) {
-    HLOG(kError, "IpcManager::ClientInit: Failed to create per-process shared memory");
+    HLOG(kError,
+         "IpcManager::ClientInit: Failed to create per-process shared memory");
     return false;
   }
 
@@ -77,10 +81,10 @@ bool IpcManager::ClientInit() {
   if (shared_header_) {
     this_host_.node_id = shared_header_->node_id;
     HLOG(kDebug, "Retrieved node ID from shared memory: 0x{:x}",
-          this_host_.node_id);
+         this_host_.node_id);
   } else {
     HLOG(kError, "Warning: Could not access shared header during ClientInit");
-    this_host_ = Host(); // Default constructor gives node_id = 0
+    this_host_ = Host();  // Default constructor gives node_id = 0
   }
 
   // Initialize HSHM TLS key for task counter
@@ -126,7 +130,7 @@ bool IpcManager::ServerInit() {
   // Identify this host and store node ID in shared header
   if (!IdentifyThisHost()) {
     HLOG(kError, "Warning: Could not identify host, using default node ID");
-    this_host_ = Host(); // Default constructor gives node_id = 0
+    this_host_ = Host();  // Default constructor gives node_id = 0
     if (shared_header_) {
       shared_header_->node_id = this_host_.node_id;
     }
@@ -136,8 +140,7 @@ bool IpcManager::ServerInit() {
       shared_header_->node_id = this_host_.node_id;
     }
 
-    HLOG(kDebug, "Node ID stored in shared memory: 0x{:x}",
-          this_host_.node_id);
+    HLOG(kDebug, "Node ID stored in shared memory: 0x{:x}", this_host_.node_id);
   }
 
   // Initialize HSHM TLS key for task counter (needed for CreateTaskId in
@@ -154,11 +157,13 @@ bool IpcManager::ServerInit() {
 
   // Create per-process shared memory for runtime allocations
   // Use configured client_data_segment_size from config
-  size_t initial_size = config && config->IsValid()
-      ? config->GetMemorySegmentSize(kClientDataSegment)
-      : hshm::Unit<size_t>::Megabytes(256);  // Default 256MB
+  size_t initial_size =
+      config && config->IsValid()
+          ? config->GetMemorySegmentSize(kClientDataSegment)
+          : hshm::Unit<size_t>::Megabytes(256);  // Default 256MB
   if (!IncreaseMemory(initial_size)) {
-    HLOG(kError, "IpcManager::ServerInit: Failed to create per-process shared memory");
+    HLOG(kError,
+         "IpcManager::ServerInit: Failed to create per-process shared memory");
     return false;
   }
 
@@ -228,28 +233,34 @@ void IpcManager::SetNumSchedQueues(u32 num_sched_queues) {
   HLOG(kInfo, "IpcManager: Updated num_sched_queues to {}", num_sched_queues);
 }
 
-void IpcManager::AwakenWorker(TaskLane* lane) {
+void IpcManager::AwakenWorker(TaskLane *lane) {
   if (!lane) {
     HLOG(kWarning, "AwakenWorker: lane is null");
     return;
   }
 
   // Always send signal to ensure worker wakes up
-  // The worker may transition from active->inactive between our check and signal send
-  // Sending signal when already active is safe - it's a no-op if worker is processing
+  // The worker may transition from active->inactive between our check and
+  // signal send Sending signal when already active is safe - it's a no-op if
+  // worker is processing
   pid_t tid = lane->GetTid();
   if (tid > 0) {
-    // Get runtime PID from shared header (client's getpid() won't work for runtime threads)
+    // Get runtime PID from shared header (client's getpid() won't work for
+    // runtime threads)
     pid_t runtime_pid = shared_header_ ? shared_header_->runtime_pid : getpid();
 
     // Send SIGUSR1 to the worker thread in the runtime process
     int result = syscall(SYS_tgkill, runtime_pid, tid, SIGUSR1);
     if (result == 0) {
-      HLOG(kDebug, "AwakenWorker: Sent SIGUSR1 to runtime_pid={}, tid={} (active={}) - SUCCESS",
-            runtime_pid, tid, lane->IsActive());
+      HLOG(kDebug,
+           "AwakenWorker: Sent SIGUSR1 to runtime_pid={}, tid={} (active={}) - "
+           "SUCCESS",
+           runtime_pid, tid, lane->IsActive());
     } else {
-      HLOG(kError, "AwakenWorker: Failed to send SIGUSR1 to runtime_pid={}, tid={} (active={}) - errno={}",
-            runtime_pid, tid, lane->IsActive(), errno);
+      HLOG(kError,
+           "AwakenWorker: Failed to send SIGUSR1 to runtime_pid={}, tid={} "
+           "(active={}) - errno={}",
+           runtime_pid, tid, lane->IsActive(), errno);
     }
   } else {
     HLOG(kWarning, "AwakenWorker: tid={} (invalid), cannot send signal", tid);
@@ -271,13 +282,12 @@ bool IpcManager::ServerInitShm() {
     size_t main_segment_size = config->CalculateMainSegmentSize();
 
     HLOG(kInfo, "Initializing main shared memory segment: {} bytes ({} MB)",
-          main_segment_size, main_segment_size / (1024 * 1024));
+         main_segment_size, main_segment_size / (1024 * 1024));
 
     // Initialize main backend with custom header size
-    if (!main_backend_.shm_init(
-            main_allocator_id_,
-            hshm::Unit<size_t>::Bytes(main_segment_size),
-            main_segment_name)) {
+    if (!main_backend_.shm_init(main_allocator_id_,
+                                hshm::Unit<size_t>::Bytes(main_segment_size),
+                                main_segment_name)) {
       return false;
     }
 
@@ -290,7 +300,8 @@ bool IpcManager::ServerInitShm() {
     // Add main allocator to alloc_map_ for ToFullPtr lookup
     u64 alloc_key = (static_cast<u64>(main_allocator_id_.major_) << 32) |
                     static_cast<u64>(main_allocator_id_.minor_);
-    alloc_map_[alloc_key] = reinterpret_cast<hipc::MultiProcessAllocator*>(main_allocator_);
+    alloc_map_[alloc_key] =
+        reinterpret_cast<hipc::MultiProcessAllocator *>(main_allocator_);
 
     return true;
   } catch (const std::exception &e) {
@@ -323,7 +334,8 @@ bool IpcManager::ClientInitShm() {
     // Add main allocator to alloc_map_ for ToFullPtr lookup
     u64 alloc_key = (static_cast<u64>(main_allocator_id_.major_) << 32) |
                     static_cast<u64>(main_allocator_id_.minor_);
-    alloc_map_[alloc_key] = reinterpret_cast<hipc::MultiProcessAllocator*>(main_allocator_);
+    alloc_map_[alloc_key] =
+        reinterpret_cast<hipc::MultiProcessAllocator *>(main_allocator_);
 
     return true;
   } catch (const std::exception &e) {
@@ -338,21 +350,22 @@ bool IpcManager::ServerInitQueues() {
 
   try {
     // Get the custom header from the backend
-    shared_header_ =
-        main_backend_.template GetSharedHeader<IpcSharedHeader>();
+    shared_header_ = main_backend_.template GetSharedHeader<IpcSharedHeader>();
 
     if (!shared_header_) {
       return false;
     }
 
     // Initialize shared header
-    shared_header_->node_id = 0; // Will be set after host identification
-    shared_header_->runtime_pid = getpid(); // Store runtime's PID for client tgkill
+    shared_header_->node_id = 0;  // Will be set after host identification
+    shared_header_->runtime_pid =
+        getpid();  // Store runtime's PID for client tgkill
 
     // Get worker counts from ConfigManager
     ConfigManager *config = CHI_CONFIG_MANAGER;
     u32 thread_count = config->GetNumThreads();
-    // Note: Last worker serves dual roles as both task worker and network worker
+    // Note: Last worker serves dual roles as both task worker and network
+    // worker
     u32 total_workers = thread_count;
 
     // Store worker count and scheduling queue count
@@ -362,7 +375,9 @@ bool IpcManager::ServerInitQueues() {
     // Get configured queue depth (no longer hardcoded)
     u32 queue_depth = config->GetQueueDepth();
 
-    HLOG(kInfo, "Initializing {} worker queues with depth {} (last worker serves dual role)",
+    HLOG(kInfo,
+         "Initializing {} worker queues with depth {} (last worker serves dual "
+         "role)",
          total_workers, queue_depth);
 
     // Initialize TaskQueue in shared header
@@ -370,8 +385,8 @@ bool IpcManager::ServerInitQueues() {
     new (&shared_header_->worker_queues) TaskQueue(
         main_allocator_,
         total_workers,  // num_lanes equals total worker count
-        2,              // num_priorities (2 priorities: 0=normal, 1=resumed tasks)
-        queue_depth);   // Use configured depth instead of hardcoded 1024
+        2,  // num_priorities (2 priorities: 0=normal, 1=resumed tasks)
+        queue_depth);  // Use configured depth instead of hardcoded 1024
 
     // Create FullPtr reference to the shared TaskQueue
     worker_queues_ = hipc::FullPtr<TaskQueue>(main_allocator_,
@@ -381,9 +396,9 @@ bool IpcManager::ServerInitQueues() {
     // One lane with two priorities (SendIn and SendOut)
     net_queue_ = main_allocator_->NewObj<NetQueue>(
         main_allocator_,
-        1,           // num_lanes: single lane for network operations
-        2,           // num_priorities: 0=SendIn, 1=SendOut
-        queue_depth); // Use configured depth instead of hardcoded 1024
+        1,             // num_lanes: single lane for network operations
+        2,             // num_priorities: 0=SendIn, 1=SendOut
+        queue_depth);  // Use configured depth instead of hardcoded 1024
 
     return !worker_queues_.IsNull() && !net_queue_.IsNull();
   } catch (const std::exception &e) {
@@ -398,8 +413,7 @@ bool IpcManager::ClientInitQueues() {
 
   try {
     // Get the custom header from the backend
-    shared_header_ =
-        main_backend_.template GetSharedHeader<IpcSharedHeader>();
+    shared_header_ = main_backend_.template GetSharedHeader<IpcSharedHeader>();
 
     if (!shared_header_) {
       return false;
@@ -423,7 +437,7 @@ bool IpcManager::StartLocalServer() {
     // Start local ZeroMQ server using HSHM Lightbeam
     std::string addr = "127.0.0.1";
     std::string protocol = "tcp";
-    u32 port = config->GetPort() + 1; // Use ZMQ port + 1 for local server
+    u32 port = config->GetPort() + 1;  // Use ZMQ port + 1 for local server
 
     local_server_ = hshm::lbm::TransportFactory::GetServer(
         addr, hshm::lbm::Transport::kZeroMq, protocol, port);
@@ -452,8 +466,7 @@ bool IpcManager::WaitForLocalServer() {
 
   // Heartbeat server runs on port+2 (main server on port, PULL on port+1)
   u32 heartbeat_port = config->GetPort() + 2;
-  HLOG(kInfo,
-       "Waiting for runtime heartbeat on 127.0.0.1:{} (timeout={}s)",
+  HLOG(kInfo, "Waiting for runtime heartbeat on 127.0.0.1:{} (timeout={}s)",
        heartbeat_port, wait_server_timeout_);
 
   // Create ZeroMQ REQ socket for heartbeat request/response
@@ -482,8 +495,8 @@ bool IpcManager::WaitForLocalServer() {
   std::string url = "tcp://127.0.0.1:" + std::to_string(heartbeat_port);
   int rc = zmq_connect(hb_socket, url.c_str());
   if (rc == -1) {
-    HLOG(kError, "Failed to connect to heartbeat server at {}: {}",
-         url, zmq_strerror(zmq_errno()));
+    HLOG(kError, "Failed to connect to heartbeat server at {}: {}", url,
+         zmq_strerror(zmq_errno()));
     zmq_close(hb_socket);
     zmq_ctx_destroy(hb_ctx);
     return false;
@@ -507,8 +520,7 @@ bool IpcManager::WaitForLocalServer() {
   if (rc == -1) {
     int err = zmq_errno();
     if (err == EAGAIN) {
-      HLOG(kError,
-           "Timeout waiting for runtime after {} seconds",
+      HLOG(kError, "Timeout waiting for runtime after {} seconds",
            wait_server_timeout_);
     } else {
       HLOG(kError, "Failed to receive heartbeat response: {}",
@@ -538,7 +550,7 @@ bool IpcManager::WaitForLocalServer() {
 }
 
 void IpcManager::SetNodeId(const std::string &hostname) {
-  (void)hostname; // Unused parameter
+  (void)hostname;  // Unused parameter
   if (!shared_header_) {
     return;
   }
@@ -580,8 +592,8 @@ bool IpcManager::LoadHostfile() {
       u64 node_id = static_cast<u64>(offset);
       Host host(host_ips[offset], node_id);
       hostfile_map_[node_id] = host;
-      HLOG(kInfo, "  Hostfile[{}]: {} -> Node ID: {}", offset,
-            host_ips[offset], node_id);
+      HLOG(kInfo, "  Hostfile[{}]: {} -> Node ID: {}", offset, host_ips[offset],
+           node_id);
     }
     HLOG(kInfo, "=== Total hosts loaded: {} ===", hostfile_map_.size());
     if (hostfile_map_.empty()) {
@@ -600,11 +612,11 @@ const Host *IpcManager::GetHost(u64 node_id) const {
   if (it == hostfile_map_.end()) {
     // Log all available node IDs when lookup fails
     HLOG(kError,
-          "GetHost: Looking for node_id {} but not found. Available nodes:",
-          node_id);
+         "GetHost: Looking for node_id {} but not found. Available nodes:",
+         node_id);
     for (const auto &pair : hostfile_map_) {
       HLOG(kError, "  Node ID: {} -> IP: {}", pair.first,
-            pair.second.ip_address);
+           pair.second.ip_address);
     }
     return nullptr;
   }
@@ -656,7 +668,7 @@ bool IpcManager::IdentifyThisHost() {
   }
 
   HLOG(kDebug, "Attempting to identify host among {} candidates",
-        hostfile_map_.size());
+       hostfile_map_.size());
 
   // Get port number for error reporting
   ConfigManager *config = CHI_CONFIG_MANAGER;
@@ -674,7 +686,7 @@ bool IpcManager::IdentifyThisHost() {
     try {
       if (TryStartMainServer(host.ip_address)) {
         HLOG(kInfo, "SUCCESS: Main server started on {} (node={})",
-              host.ip_address, host.node_id);
+             host.ip_address, host.node_id);
         this_host_ = host;
         return true;
       }
@@ -716,7 +728,6 @@ const std::string &IpcManager::GetCurrentHostname() const {
   return this_host_.ip_address;
 }
 
-
 bool IpcManager::TryStartMainServer(const std::string &hostname) {
   ConfigManager *config = CHI_CONFIG_MANAGER;
 
@@ -732,9 +743,9 @@ bool IpcManager::TryStartMainServer(const std::string &hostname) {
 
     if (!main_server_) {
       HLOG(kDebug,
-            "Failed to create main server on {}:{} - server creation returned "
-            "null",
-            hostname, port);
+           "Failed to create main server on {}:{} - server creation returned "
+           "null",
+           hostname, port);
       return false;
     }
 
@@ -745,7 +756,8 @@ bool IpcManager::TryStartMainServer(const std::string &hostname) {
     // for local client verification, not distributed communication
     u32 heartbeat_port = port + 2;
     std::string heartbeat_host = "127.0.0.1";
-    HLOG(kDebug, "Starting heartbeat server on {}:{}", heartbeat_host, heartbeat_port);
+    HLOG(kDebug, "Starting heartbeat server on {}:{}", heartbeat_host,
+         heartbeat_port);
 
     // Create raw ZMQ context and REP socket for heartbeat
     heartbeat_ctx_ = zmq_ctx_new();
@@ -762,12 +774,12 @@ bool IpcManager::TryStartMainServer(const std::string &hostname) {
       return false;
     }
 
-    std::string heartbeat_url =
-        protocol + "://" + heartbeat_host + ":" + std::to_string(heartbeat_port);
+    std::string heartbeat_url = protocol + "://" + heartbeat_host + ":" +
+                                std::to_string(heartbeat_port);
     int rc = zmq_bind(heartbeat_socket_, heartbeat_url.c_str());
     if (rc == -1) {
-      HLOG(kError, "Failed to bind heartbeat server to {}: {}",
-           heartbeat_url, zmq_strerror(zmq_errno()));
+      HLOG(kError, "Failed to bind heartbeat server to {}: {}", heartbeat_url,
+           zmq_strerror(zmq_errno()));
       zmq_close(heartbeat_socket_);
       zmq_ctx_destroy(heartbeat_ctx_);
       heartbeat_socket_ = nullptr;
@@ -781,11 +793,11 @@ bool IpcManager::TryStartMainServer(const std::string &hostname) {
 
   } catch (const std::exception &e) {
     HLOG(kDebug, "Failed to start main server on {}:{} - exception: {}",
-          hostname, config->GetPort(), e.what());
+         hostname, config->GetPort(), e.what());
     return false;
   } catch (...) {
     HLOG(kDebug, "Failed to start main server on {}:{} - unknown exception",
-          hostname, config->GetPort());
+         hostname, config->GetPort());
     return false;
   }
 }
@@ -794,14 +806,23 @@ hshm::lbm::Server *IpcManager::GetMainServer() const {
   return main_server_.get();
 }
 
-void *IpcManager::GetHeartbeatSocket() const {
-  return heartbeat_socket_;
-}
+void *IpcManager::GetHeartbeatSocket() const { return heartbeat_socket_; }
 
 const Host &IpcManager::GetThisHost() const { return this_host_; }
 
 FullPtr<char> IpcManager::AllocateBuffer(size_t size) {
-  // Use per-process shared memory allocation strategy for both client and runtime
+  // RUNTIME PATH: Use private memory (HSHM_MALLOC) to avoid shared memory
+  // allocation and IncreaseMemory calls which can cause deadlocks
+  if (CHI_CHIMAERA_MANAGER->IsRuntime()) {
+    // Use HSHM_MALLOC allocator for private memory allocation
+    FullPtr<char> buffer = HSHM_MALLOC->AllocateObjs<char>(size);
+    if (buffer.IsNull()) {
+      HLOG(kError, "AllocateBuffer: HSHM_MALLOC failed for {} bytes", size);
+    }
+    return buffer;
+  }
+
+  // CLIENT PATH: Use per-process shared memory allocation strategy
   // 1. Check last accessed allocator first (fast path)
   if (last_alloc_ != nullptr) {
     FullPtr<char> buffer = last_alloc_->AllocateObjs<char>(size);
@@ -826,10 +847,11 @@ FullPtr<char> IpcManager::AllocateBuffer(size_t size) {
 
   // 3. All existing allocators are full - create new shared memory segment
   // Calculate segment size: (requested_size + 32MB metadata) * 1.2 multiplier
-  size_t new_size = static_cast<size_t>(
-      (size + kShmMetadataOverhead) * kShmAllocationMultiplier);
+  size_t new_size = static_cast<size_t>((size + kShmMetadataOverhead) *
+                                        kShmAllocationMultiplier);
   if (!IncreaseMemory(new_size)) {
-    HLOG(kError, "AllocateBuffer: Failed to increase memory for {} bytes", size);
+    HLOG(kError, "AllocateBuffer: Failed to increase memory for {} bytes",
+         size);
     return FullPtr<char>::GetNull();
   }
 
@@ -841,7 +863,10 @@ FullPtr<char> IpcManager::AllocateBuffer(size_t size) {
     }
   }
 
-  HLOG(kError, "AllocateBuffer: Failed to allocate {} bytes even after increasing memory", size);
+  HLOG(kError,
+       "AllocateBuffer: Failed to allocate {} bytes even after increasing "
+       "memory",
+       size);
   return FullPtr<char>::GetNull();
 }
 
@@ -850,11 +875,17 @@ void IpcManager::FreeBuffer(FullPtr<char> buffer_ptr) {
     return;
   }
 
-  // Check if allocator ID is null (private memory - use free())
+  HLOG(kInfo, "FreeBuffer: alloc_id=({}.{}), ptr_={}",
+       buffer_ptr.shm_.alloc_id_.major_, buffer_ptr.shm_.alloc_id_.minor_,
+       (void *)buffer_ptr.ptr_);
+
+  // Check if allocator ID is null (private memory allocated with HSHM_MALLOC)
   if (buffer_ptr.shm_.alloc_id_ == hipc::AllocatorId::GetNull()) {
-    // Private memory - use free
-    char *raw_ptr = reinterpret_cast<char *>(buffer_ptr.shm_.off_.load());
-    free(raw_ptr);
+    // Private memory - use HSHM_MALLOC->Free() to properly deallocate
+    HLOG(kInfo,
+         "FreeBuffer: Using HSHM_MALLOC->Free() for private memory at ptr_={}",
+         (void *)buffer_ptr.ptr_);
+    HSHM_MALLOC->Free(buffer_ptr);
     return;
   }
 
@@ -877,8 +908,8 @@ void IpcManager::FreeBuffer(FullPtr<char> buffer_ptr) {
        buffer_ptr.shm_.alloc_id_.major_, buffer_ptr.shm_.alloc_id_.minor_);
 }
 
-hshm::lbm::Client* IpcManager::GetOrCreateClient(const std::string& addr,
-                                                  int port) {
+hshm::lbm::Client *IpcManager::GetOrCreateClient(const std::string &addr,
+                                                 int port) {
   // Create key for the pool map
   std::string key = addr + ":" + std::to_string(port);
 
@@ -903,7 +934,7 @@ hshm::lbm::Client* IpcManager::GetOrCreateClient(const std::string& addr,
   }
 
   // Store in pool and return raw pointer
-  hshm::lbm::Client* raw_ptr = client.get();
+  hshm::lbm::Client *raw_ptr = client.get();
   client_pool_[key] = std::move(client);
 
   HLOG(kInfo, "[ClientPool] Connection established to {}", key);
@@ -913,11 +944,12 @@ hshm::lbm::Client* IpcManager::GetOrCreateClient(const std::string& addr,
 void IpcManager::ClearClientPool() {
   std::lock_guard<std::mutex> lock(client_pool_mutex_);
   HLOG(kInfo, "[ClientPool] Clearing {} persistent connections",
-        client_pool_.size());
+       client_pool_.size());
   client_pool_.clear();
 }
 
-void IpcManager::EnqueueNetTask(Future<Task> future, NetQueuePriority priority) {
+void IpcManager::EnqueueNetTask(Future<Task> future,
+                                NetQueuePriority priority) {
   if (net_queue_.IsNull()) {
     HLOG(kError, "EnqueueNetTask: net_queue_ is null");
     return;
@@ -925,20 +957,22 @@ void IpcManager::EnqueueNetTask(Future<Task> future, NetQueuePriority priority) 
 
   // Get lane 0 (single lane) with the specified priority
   u32 priority_idx = static_cast<u32>(priority);
-  auto& lane = net_queue_->GetLane(0, priority_idx);
+  auto &lane = net_queue_->GetLane(0, priority_idx);
   lane.Push(future);
 
-  HLOG(kDebug, "EnqueueNetTask: Enqueued task to priority {} queue", priority_idx);
+  HLOG(kDebug, "EnqueueNetTask: Enqueued task to priority {} queue",
+       priority_idx);
 }
 
-bool IpcManager::TryPopNetTask(NetQueuePriority priority, Future<Task>& future) {
+bool IpcManager::TryPopNetTask(NetQueuePriority priority,
+                               Future<Task> &future) {
   if (net_queue_.IsNull()) {
     return false;
   }
 
   // Get lane 0 (single lane) with the specified priority
   u32 priority_idx = static_cast<u32>(priority);
-  auto& lane = net_queue_->GetLane(0, priority_idx);
+  auto &lane = net_queue_->GetLane(0, priority_idx);
 
   if (lane.Pop(future)) {
     return true;
@@ -952,6 +986,7 @@ bool IpcManager::TryPopNetTask(NetQueuePriority priority, Future<Task>& future) 
 //==============================================================================
 
 bool IpcManager::IncreaseMemory(size_t size) {
+  HLOG(kDebug, "IncreaseMemory CALLED: size={}", size);
   std::lock_guard<std::mutex> lock(shm_mutex_);
   // Acquire writer lock on allocator_map_lock_ during memory increase
   // This ensures exclusive access to the allocator_map_ structures
@@ -961,13 +996,16 @@ bool IpcManager::IncreaseMemory(size_t size) {
   u32 index = shm_count_.fetch_add(1, std::memory_order_relaxed);
 
   // Create shared memory name: chimaera_{pid}_{index}
-  std::string shm_name = "chimaera_" + std::to_string(pid) + "_" + std::to_string(index);
+  std::string shm_name =
+      "chimaera_" + std::to_string(pid) + "_" + std::to_string(index);
 
   // Add 32MB metadata overhead
   size_t total_size = size + kShmMetadataOverhead;
 
-  HLOG(kInfo, "IpcManager::IncreaseMemory: Creating {} with size {} ({} + {} overhead)",
-       shm_name, total_size, size, kShmMetadataOverhead);
+  HLOG(
+      kInfo,
+      "IpcManager::IncreaseMemory: Creating {} with size {} ({} + {} overhead)",
+      shm_name, total_size, size, kShmMetadataOverhead);
 
   try {
     // Create the shared memory backend
@@ -977,12 +1015,12 @@ bool IpcManager::IncreaseMemory(size_t size) {
     hipc::AllocatorId alloc_id(static_cast<u32>(pid), index);
 
     // Initialize shared memory using backend's shm_init method
-    if (!backend->shm_init(alloc_id,
-                           hshm::Unit<size_t>::Bytes(total_size),
+    if (!backend->shm_init(alloc_id, hshm::Unit<size_t>::Bytes(total_size),
                            shm_name)) {
       HLOG(kError, "IpcManager::IncreaseMemory: Failed to create shm for {}",
            shm_name);
       shm_count_.fetch_sub(1, std::memory_order_relaxed);
+      allocator_map_lock_.WriteUnlock();  // CRITICAL: Release lock before returning
       return false;
     }
 
@@ -991,9 +1029,11 @@ bool IpcManager::IncreaseMemory(size_t size) {
         backend->MakeAlloc<hipc::MultiProcessAllocator>();
 
     if (allocator == nullptr) {
-      HLOG(kError, "IpcManager::IncreaseMemory: Failed to create allocator for {}",
+      HLOG(kError,
+           "IpcManager::IncreaseMemory: Failed to create allocator for {}",
            shm_name);
       shm_count_.fetch_sub(1, std::memory_order_relaxed);
+      allocator_map_lock_.WriteUnlock();  // CRITICAL: Release lock before returning
       return false;
     }
 
@@ -1005,7 +1045,8 @@ bool IpcManager::IncreaseMemory(size_t size) {
     client_backends_.push_back(std::move(backend));
     last_alloc_ = allocator;
 
-    HLOG(kInfo, "IpcManager::IncreaseMemory: Created allocator {} with ID ({}.{})",
+    HLOG(kInfo,
+         "IpcManager::IncreaseMemory: Created allocator {} with ID ({}.{})",
          shm_name, alloc_id.major_, alloc_id.minor_);
 
     // Release the lock before returning
@@ -1025,7 +1066,8 @@ bool IpcManager::IncreaseMemory(size_t size) {
   }
 }
 
-bool IpcManager::RegisterMemory(const hipc::AllocatorId &alloc_id, size_t shm_size) {
+bool IpcManager::RegisterMemory(const hipc::AllocatorId &alloc_id) {
+  HLOG(kDebug, "RegisterMemory CALLED: alloc_id=({}.{})", alloc_id.major_, alloc_id.minor_);
   std::lock_guard<std::mutex> lock(shm_mutex_);
   // Acquire writer lock on allocator_map_lock_ during memory registration
   allocator_map_lock_.WriteLock(0);
@@ -1033,17 +1075,18 @@ bool IpcManager::RegisterMemory(const hipc::AllocatorId &alloc_id, size_t shm_si
   // Derive shm_name from alloc_id: chimaera_{pid}_{index}
   pid_t owner_pid = static_cast<pid_t>(alloc_id.major_);
   u32 shm_index = alloc_id.minor_;
-  std::string shm_name = "chimaera_" + std::to_string(owner_pid) + "_" + std::to_string(shm_index);
+  std::string shm_name =
+      "chimaera_" + std::to_string(owner_pid) + "_" + std::to_string(shm_index);
 
-  HLOG(kInfo, "IpcManager::RegisterMemory: Registering {} (size={}) from pid {}",
-       shm_name, shm_size, owner_pid);
+  HLOG(kInfo,
+       "IpcManager::RegisterMemory: Registering {} from pid {}",
+       shm_name, owner_pid);
 
   // Check if already registered
   u64 alloc_key = (static_cast<u64>(alloc_id.major_) << 32) |
                   static_cast<u64>(alloc_id.minor_);
   if (alloc_map_.find(alloc_key) != alloc_map_.end()) {
-    HLOG(kInfo,
-         "IpcManager::RegisterMemory: {} already registered, skipping",
+    HLOG(kInfo, "IpcManager::RegisterMemory: {} already registered, skipping",
          shm_name);
     allocator_map_lock_.WriteUnlock();
     return true;  // Already registered
@@ -1053,9 +1096,9 @@ bool IpcManager::RegisterMemory(const hipc::AllocatorId &alloc_id, size_t shm_si
     // Attach to the shared memory backend (already created by client)
     auto backend = std::make_unique<hipc::PosixShmMmap>();
     if (!backend->shm_attach(shm_name)) {
-      HLOG(kError,
-           "IpcManager::RegisterMemory: Failed to attach to shm {}",
+      HLOG(kError, "IpcManager::RegisterMemory: Failed to attach to shm {}",
            shm_name);
+      allocator_map_lock_.WriteUnlock();  // CRITICAL: Release lock before returning
       return false;
     }
 
@@ -1067,6 +1110,7 @@ bool IpcManager::RegisterMemory(const hipc::AllocatorId &alloc_id, size_t shm_si
       HLOG(kError,
            "IpcManager::RegisterMemory: Failed to attach allocator for {}",
            shm_name);
+      allocator_map_lock_.WriteUnlock();  // CRITICAL: Release lock before returning
       return false;
     }
 
@@ -1100,7 +1144,8 @@ ClientShmInfo IpcManager::GetClientShmInfo(u32 index) const {
   }
 
   pid_t pid = getpid();
-  std::string shm_name = "chimaera_" + std::to_string(pid) + "_" + std::to_string(index);
+  std::string shm_name =
+      "chimaera_" + std::to_string(pid) + "_" + std::to_string(index);
 
   hipc::MultiProcessAllocator *allocator = alloc_vector_[index];
   hipc::AllocatorId alloc_id = allocator->GetId();
@@ -1115,6 +1160,7 @@ ClientShmInfo IpcManager::GetClientShmInfo(u32 index) const {
 }
 
 size_t IpcManager::WreapDeadIpcs() {
+  HLOG(kDebug, "WreapDeadIpcs CALLED");
   std::lock_guard<std::mutex> lock(shm_mutex_);
   // Acquire writer lock on allocator_map_lock_ during reaping
   allocator_map_lock_.WriteLock(0);
@@ -1147,7 +1193,9 @@ size_t IpcManager::WreapDeadIpcs() {
     // kill(pid, 0) returns 0 if process exists, -1 with ESRCH if not
     if (kill(owner_pid, 0) == -1 && errno == ESRCH) {
       // Process is dead - mark for removal
-      HLOG(kInfo, "WreapDeadIpcs: Process {} is dead, marking allocator ({}.{}) for removal",
+      HLOG(kInfo,
+           "WreapDeadIpcs: Process {} is dead, marking allocator ({}.{}) for "
+           "removal",
            owner_pid, major, minor);
       keys_to_remove.push_back(alloc_key);
     }
@@ -1165,8 +1213,8 @@ size_t IpcManager::WreapDeadIpcs() {
 
     // Get the allocator ID to construct shm_name
     hipc::AllocatorId alloc_id = allocator->GetId();
-    std::string shm_name = "chimaera_" + std::to_string(alloc_id.major_) +
-                           "_" + std::to_string(alloc_id.minor_);
+    std::string shm_name = "chimaera_" + std::to_string(alloc_id.major_) + "_" +
+                           std::to_string(alloc_id.minor_);
 
     // Find and destroy the corresponding backend
     for (auto backend_it = client_backends_.begin();
@@ -1175,7 +1223,8 @@ size_t IpcManager::WreapDeadIpcs() {
           (*backend_it)->header_->id_.major_ == alloc_id.major_ &&
           (*backend_it)->header_->id_.minor_ == alloc_id.minor_) {
         // Destroy the shared memory
-        HLOG(kInfo, "WreapDeadIpcs: Destroying shared memory {} for allocator ({}.{})",
+        HLOG(kInfo,
+             "WreapDeadIpcs: Destroying shared memory {} for allocator ({}.{})",
              shm_name, alloc_id.major_, alloc_id.minor_);
         (*backend_it)->shm_destroy();
         client_backends_.erase(backend_it);
@@ -1184,7 +1233,8 @@ size_t IpcManager::WreapDeadIpcs() {
     }
 
     // Remove from alloc_vector_ if present
-    auto vec_it = std::find(alloc_vector_.begin(), alloc_vector_.end(), allocator);
+    auto vec_it =
+        std::find(alloc_vector_.begin(), alloc_vector_.end(), allocator);
     if (vec_it != alloc_vector_.end()) {
       alloc_vector_.erase(vec_it);
     }
@@ -1200,7 +1250,8 @@ size_t IpcManager::WreapDeadIpcs() {
   }
 
   if (reaped_count > 0) {
-    HLOG(kInfo, "WreapDeadIpcs: Reaped {} shared memory segments from dead processes",
+    HLOG(kInfo,
+         "WreapDeadIpcs: Reaped {} shared memory segments from dead processes",
          reaped_count);
   }
 
@@ -1211,6 +1262,7 @@ size_t IpcManager::WreapDeadIpcs() {
 }
 
 size_t IpcManager::WreapAllIpcs() {
+  HLOG(kDebug, "WreapAllIpcs CALLED");
   std::lock_guard<std::mutex> lock(shm_mutex_);
   // Acquire writer lock on allocator_map_lock_ during cleanup
   allocator_map_lock_.WriteLock(0);
@@ -1246,8 +1298,8 @@ size_t IpcManager::WreapAllIpcs() {
 
     // Get the allocator ID to construct shm_name
     hipc::AllocatorId alloc_id = allocator->GetId();
-    std::string shm_name = "chimaera_" + std::to_string(alloc_id.major_) +
-                           "_" + std::to_string(alloc_id.minor_);
+    std::string shm_name = "chimaera_" + std::to_string(alloc_id.major_) + "_" +
+                           std::to_string(alloc_id.minor_);
 
     // Find and destroy the corresponding backend
     for (auto backend_it = client_backends_.begin();
@@ -1256,7 +1308,8 @@ size_t IpcManager::WreapAllIpcs() {
           (*backend_it)->header_->id_.major_ == alloc_id.major_ &&
           (*backend_it)->header_->id_.minor_ == alloc_id.minor_) {
         // Destroy the shared memory
-        HLOG(kInfo, "WreapAllIpcs: Destroying shared memory {} for allocator ({}.{})",
+        HLOG(kInfo,
+             "WreapAllIpcs: Destroying shared memory {} for allocator ({}.{})",
              shm_name, alloc_id.major_, alloc_id.minor_);
         (*backend_it)->shm_destroy();
         client_backends_.erase(backend_it);
@@ -1305,7 +1358,8 @@ size_t IpcManager::ClearUserIpcs() {
   // Open /dev/shm directory
   DIR *dir = opendir(shm_dir);
   if (dir == nullptr) {
-    HLOG(kWarning, "ClearUserIpcs: Failed to open {}: {}", shm_dir, strerror(errno));
+    HLOG(kWarning, "ClearUserIpcs: Failed to open {}: {}", shm_dir,
+         strerror(errno));
     return 0;
   }
 
@@ -1328,7 +1382,8 @@ size_t IpcManager::ClearUserIpcs() {
     // Attempt to remove the file
     // Use shm_unlink for proper shared memory cleanup
     if (shm_unlink(entry->d_name) == 0) {
-      HLOG(kDebug, "ClearUserIpcs: Removed shared memory segment: {}", entry->d_name);
+      HLOG(kDebug, "ClearUserIpcs: Removed shared memory segment: {}",
+           entry->d_name);
       removed_count++;
     } else {
       // Permission denied or other error - silently ignore
@@ -1343,7 +1398,8 @@ size_t IpcManager::ClearUserIpcs() {
   closedir(dir);
 
   if (removed_count > 0) {
-    HLOG(kInfo, "ClearUserIpcs: Removed {} shared memory segments from previous runs",
+    HLOG(kInfo,
+         "ClearUserIpcs: Removed {} shared memory segments from previous runs",
          removed_count);
   }
 
@@ -1352,34 +1408,35 @@ size_t IpcManager::ClearUserIpcs() {
 
 Future<Task> IpcManager::MakeFuture(hipc::FullPtr<Task> task_ptr,
                                     bool force_copy) {
-  HLOG(kInfo, "MakeFuture: called with task_ptr={}, force_copy={}",
-       task_ptr.IsNull() ? "null" : "valid", force_copy);
+  // Check task_ptr validity once at the start - null is an error
+  if (task_ptr.IsNull()) {
+    HLOG(kError, "MakeFuture: called with null task_ptr");
+    return Future<Task>();
+  }
+
+  HLOG(kInfo, "MakeFuture: called with valid task_ptr, force_copy={}", force_copy);
+
   if (!CHI_CHIMAERA_MANAGER->IsRuntime() || force_copy) {
     // CLIENT PATH or FORCE COPY: Serialize the task into Future
     HLOG(kInfo, "MakeFuture: CLIENT PATH");
-    // Get copy space size from task
-    size_t copy_space_size = task_ptr.IsNull() ? 4096 : task_ptr->GetCopySpaceSize();
 
-    // Allocate FutureShm with copy_space using AllocateBuffer
+    // Get copy space size from task
+    size_t copy_space_size = task_ptr->GetCopySpaceSize();
+
+    // Allocate and construct FutureShm with copy_space using NewObj
     size_t alloc_size = sizeof(FutureShm) + copy_space_size;
     hipc::FullPtr<char> buffer = AllocateBuffer(alloc_size);
     if (buffer.IsNull()) {
-      return Future<Task>();  // Return null future on allocation failure
+      return Future<Task>();
     }
 
     // Construct FutureShm in-place using placement new
-    FutureShm* future_shm_ptr =
-        new (buffer.ptr_) FutureShm();
+    FutureShm *future_shm_ptr = new (buffer.ptr_) FutureShm();
 
     // Initialize FutureShm fields
-    if (!task_ptr.IsNull()) {
-      future_shm_ptr->pool_id_ = task_ptr->pool_id_;
-      future_shm_ptr->method_id_ = task_ptr->method_;
-    }
+    future_shm_ptr->pool_id_ = task_ptr->pool_id_;
+    future_shm_ptr->method_id_ = task_ptr->method_;
     future_shm_ptr->capacity_.store(copy_space_size);
-
-    // Set FUTURE_COPY_FROM_CLIENT flag - worker will need to deserialize from copy_space
-    future_shm_ptr->flags_.SetBits(FutureShm::FUTURE_COPY_FROM_CLIENT);
 
     // Serialize task using LocalSaveTaskArchive with kSerializeIn mode
     LocalSaveTaskArchive archive(LocalMsgType::kSerializeIn);
@@ -1388,74 +1445,84 @@ Future<Task> IpcManager::MakeFuture(hipc::FullPtr<Task> task_ptr,
     // Get serialized data and copy to FutureShm's copy_space
     const std::vector<char> &serialized = archive.GetData();
     size_t serialized_size = serialized.size();
+    HLOG(kInfo,
+         "MakeFuture: CLIENT PATH - Serialized {} bytes, copy_space_size={}",
+         serialized_size, copy_space_size);
+    if (serialized_size >= 8) {
+      HLOG(kInfo,
+           "MakeFuture: CLIENT PATH - First 8 bytes: {} {} {} {} {} {} {} {}",
+           (unsigned int)(unsigned char)serialized[0],
+           (unsigned int)(unsigned char)serialized[1],
+           (unsigned int)(unsigned char)serialized[2],
+           (unsigned int)(unsigned char)serialized[3],
+           (unsigned int)(unsigned char)serialized[4],
+           (unsigned int)(unsigned char)serialized[5],
+           (unsigned int)(unsigned char)serialized[6],
+           (unsigned int)(unsigned char)serialized[7]);
+    }
     if (serialized_size > copy_space_size) {
-      HLOG(kWarning, "Serialized task size {} exceeds copy space {}, truncating",
+      HLOG(kError,
+           "Serialized task size {} exceeds copy space {}, TRUNCATING - DATA "
+           "WILL BE CORRUPTED!",
            serialized_size, copy_space_size);
       serialized_size = copy_space_size;
     }
     memcpy(future_shm_ptr->copy_space, serialized.data(), serialized_size);
-    future_shm_ptr->input_size_.store(serialized_size);
+    future_shm_ptr->input_size_.store(serialized_size, std::memory_order_release);
 
-    // Delete the client's task object - we've serialized it and no longer need it
-    // The worker will deserialize and create a new task object from the serialized data
-    delete task_ptr.ptr_;
+    // Memory fence: Ensure copy_space and input_size_ writes are visible before flag
+    std::atomic_thread_fence(std::memory_order_release);
 
-    // Create Future with ShmPtr but NULL task_ptr (worker will deserialize and set it)
-    hipc::ShmPtr<FutureShm> future_shm_shmptr = buffer.shm_.template Cast<FutureShm>();
-    hipc::FullPtr<Task> null_task_ptr;  // Default constructor creates null pointer
-    Future<Task> future(future_shm_shmptr, null_task_ptr);
+    // Set FUTURE_COPY_FROM_CLIENT flag - worker will deserialize from copy_space
+    future_shm_ptr->flags_.SetBits(FutureShm::FUTURE_COPY_FROM_CLIENT);
 
-    HLOG(kInfo, "MakeFuture: CLIENT PATH complete, returning future");
+    HLOG(kInfo,
+         "MakeFuture: CLIENT PATH - Copied {} bytes to copy_space at offset {}",
+         serialized_size, offsetof(FutureShm, copy_space));
+
+    // Delete the client's task object ONLY if in true CLIENT mode (not
+    // colocated runtime) In RUNTIME mode with force_copy (TASK_FORCE_NET), keep
+    // the task alive for caller The worker will deserialize and create a new
+    // task object from the serialized data
+    hipc::ShmPtr<FutureShm> future_shm_shmptr =
+        buffer.shm_.template Cast<FutureShm>();
+
+    HLOG(kInfo,
+         "MakeFuture: CLIENT PATH - Created ShmPtr: alloc_id=({}.{}), off_={}, "
+         "buffer.ptr_={}",
+         future_shm_shmptr.alloc_id_.major_, future_shm_shmptr.alloc_id_.minor_,
+         future_shm_shmptr.off_.load(), (void *)buffer.ptr_);
+
+    // When force_copy is true, ALWAYS keep the original task_ptr alive
+    // The worker will deserialize and execute a copy, but caller keeps the
+    // original
+    HLOG(kInfo,
+         "MakeFuture: CLIENT PATH (force_copy) - preserving original task_ptr");
+    Future<Task> future(future_shm_shmptr, task_ptr);
+    HLOG(kInfo,
+         "MakeFuture: CLIENT PATH (force_copy) complete, returning future with "
+         "task_ptr preserved");
     return future;
   } else {
     // RUNTIME PATH: Create Future with task pointer directly (no serialization)
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - entry");
+    // Runtime doesn't copy/serialize, so no copy_space needed
+    HLOG(kInfo, "MakeFuture: RUNTIME PATH");
 
-    // Check task_ptr validity
-    bool is_null = task_ptr.IsNull();
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - IsNull returned: {}", is_null);
-
-    // Get copy space size from task
-    size_t copy_space_size;
-    if (is_null) {
-      HLOG(kInfo, "MakeFuture: RUNTIME PATH - task_ptr is null, using default 4096");
-      copy_space_size = 4096;
-    } else {
-      HLOG(kInfo, "MakeFuture: RUNTIME PATH - task_ptr is valid, calling GetCopySpaceSize()");
-      copy_space_size = task_ptr->GetCopySpaceSize();
-      HLOG(kInfo, "MakeFuture: RUNTIME PATH - GetCopySpaceSize() returned {}", copy_space_size);
+    // Allocate and construct FutureShm using NewObj (no copy_space for runtime)
+    hipc::FullPtr<FutureShm> future_shm = NewObj<FutureShm>();
+    if (future_shm.IsNull()) {
+      return Future<Task>();
     }
-
-    // Allocate FutureShm with copy_space using AllocateBuffer
-    size_t alloc_size = sizeof(FutureShm) + copy_space_size;
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - about to AllocateBuffer({})", alloc_size);
-    hipc::FullPtr<char> buffer = AllocateBuffer(alloc_size);
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - AllocateBuffer returned, IsNull={}", buffer.IsNull());
-    if (buffer.IsNull()) {
-      return Future<Task>();  // Return null future on allocation failure
-    }
-
-    // Construct FutureShm in-place using placement new
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - about to placement new FutureShm");
-    FutureShm* future_shm_ptr =
-        new (buffer.ptr_) FutureShm();
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - placement new complete");
 
     // Initialize FutureShm fields
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - initializing FutureShm fields");
-    if (!task_ptr.IsNull()) {
-      future_shm_ptr->pool_id_ = task_ptr->pool_id_;
-      future_shm_ptr->method_id_ = task_ptr->method_;
-    }
-    future_shm_ptr->capacity_.store(copy_space_size);
+    future_shm.ptr_->pool_id_ = task_ptr->pool_id_;
+    future_shm.ptr_->method_id_ = task_ptr->method_;
+    future_shm.ptr_->capacity_.store(0);  // No copy_space in runtime path
 
     // Create Future with ShmPtr and task_ptr (no serialization needed)
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - creating Future object");
-    hipc::ShmPtr<FutureShm> future_shm_shmptr = buffer.shm_.template Cast<FutureShm>();
-    Future<Task> future(future_shm_shmptr, task_ptr);
-    HLOG(kInfo, "MakeFuture: RUNTIME PATH - returning future");
+    Future<Task> future(future_shm.shm_, task_ptr);
     return future;
   }
 }
 
-} // namespace chi
+}  // namespace chi

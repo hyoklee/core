@@ -356,6 +356,72 @@ void Worker::SetLane(TaskLane *lane) {
 
 TaskLane *Worker::GetLane() const { return assigned_lane_; }
 
+bool Worker::EnsureIpcRegistered(const hipc::FullPtr<FutureShm> &future_shm_full) {
+  auto *ipc_manager = CHI_IPC;
+  hipc::AllocatorId alloc_id = future_shm_full.shm_.alloc_id_;
+
+  // Only register if not null allocator and not already registered
+  if (alloc_id != hipc::AllocatorId::GetNull()) {
+    auto test_ptr = ipc_manager->ToFullPtr(future_shm_full.shm_);
+    if (test_ptr.IsNull()) {
+      // Allocator not registered - register it now
+      bool registered = ipc_manager->RegisterMemory(alloc_id);
+      if (!registered) {
+        // Registration failed
+        HLOG(kError,
+             "Worker {}: Failed to register memory for alloc_id ({}.{})",
+             worker_id_, alloc_id.major_, alloc_id.minor_);
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+hipc::FullPtr<Task> Worker::GetOrCopyTaskFromFuture(Future<Task> &future,
+                                                     Container *container,
+                                                     u32 method_id) {
+  auto future_shm = future.GetFutureShm();
+  FullPtr<Task> task_full_ptr = future.GetTaskPtr();
+
+  // Check FUTURE_COPY_FROM_CLIENT flag to determine if task needs to be loaded
+  if (future_shm->flags_.Any(FutureShm::FUTURE_COPY_FROM_CLIENT) &&
+      !future_shm->flags_.Any(FutureShm::FUTURE_WAS_COPIED)) {
+    // CLIENT PATH: Load task from serialized data in FutureShm copy_space
+    // Only copy if not already copied (FUTURE_WAS_COPIED not set)
+
+    // Memory fence: Ensure we see all client writes to copy_space and input_size_
+    std::atomic_thread_fence(std::memory_order_acquire);
+
+    size_t input_size = future_shm->input_size_.load();
+    HLOG(kInfo, "Worker::GetOrCopyTaskFromFuture: Deserializing task from copy_space, input_size={}, future_shm.ptr_={}, copy_space={}",
+         input_size, (void*)future_shm.ptr_, (void*)future_shm->copy_space);
+    std::vector<char> serialized_data(future_shm->copy_space,
+                                      future_shm->copy_space + input_size);
+    HLOG(kInfo, "Worker::GetOrCopyTaskFromFuture: Created serialized_data vector with {} bytes", serialized_data.size());
+    if (serialized_data.size() >= 8) {
+      HLOG(kInfo, "Worker::GetOrCopyTaskFromFuture: First 8 bytes of serialized data: {} {} {} {} {} {} {} {}",
+           (unsigned int)(unsigned char)serialized_data[0], (unsigned int)(unsigned char)serialized_data[1],
+           (unsigned int)(unsigned char)serialized_data[2], (unsigned int)(unsigned char)serialized_data[3],
+           (unsigned int)(unsigned char)serialized_data[4], (unsigned int)(unsigned char)serialized_data[5],
+           (unsigned int)(unsigned char)serialized_data[6], (unsigned int)(unsigned char)serialized_data[7]);
+    }
+    LocalLoadTaskArchive archive(serialized_data);
+    HLOG(kInfo, "Worker::GetOrCopyTaskFromFuture: Calling LocalAllocLoadTask...");
+    task_full_ptr = container->LocalAllocLoadTask(method_id, archive);
+    HLOG(kInfo, "Worker::GetOrCopyTaskFromFuture: LocalAllocLoadTask returned");
+
+    // Update the Future's task pointer
+    future.GetTaskPtr() = task_full_ptr;
+
+    // Mark as copied to prevent re-copying if task migrates between workers
+    future_shm->flags_.SetBits(FutureShm::FUTURE_WAS_COPIED);
+  }
+  // RUNTIME PATH or ALREADY COPIED: Task pointer is already set in future
+
+  return task_full_ptr;
+}
+
 u32 Worker::ProcessNewTasks() {
   // Process up to 16 tasks from this worker's lane per iteration
   const u32 MAX_TASKS_PER_ITERATION = 16;
@@ -373,37 +439,22 @@ u32 Worker::ProcessNewTasks() {
       tasks_processed++;
       SetCurrentRunContext(nullptr);
 
-      // Check if allocator needs to be registered (lazy registration for client
-      // memory)
-      auto *ipc_manager = CHI_IPC;
-      auto future_shm_full = future.GetFutureShm();
-      hipc::AllocatorId alloc_id = future_shm_full.shm_.alloc_id_;
-
-      // Only register if not null allocator and not already registered
-      if (alloc_id != hipc::AllocatorId::GetNull()) {
-        auto test_ptr = ipc_manager->ToFullPtr(future_shm_full.shm_);
-        if (test_ptr.IsNull()) {
-          // Allocator not registered - register it now
-          // shm_size will be determined by shm_attach
-          bool registered = ipc_manager->RegisterMemory(alloc_id, 0);
-          if (!registered) {
-            // Registration failed - mark task as error and skip
-            HLOG(kError,
-                 "Worker {}: Failed to register memory for alloc_id ({}.{})",
-                 worker_id_, alloc_id.major_, alloc_id.minor_);
-            future_shm_full->flags_.SetBits(1);
-            continue;
-          }
-        }
-      }
-
-      // Get pool_id and method_id from FutureShm
+      // Get FutureShm once (avoid duplicate calls)
       auto future_shm = future.GetFutureShm();
       if (future_shm.IsNull()) {
         HLOG(kError, "Worker {}: Failed to get FutureShm (null pointer)",
              worker_id_);
         continue;
       }
+
+      // Ensure IPC allocator is registered for this Future
+      if (!EnsureIpcRegistered(future_shm)) {
+        // Registration failed - mark task as error and skip
+        future_shm->flags_.SetBits(1);
+        continue;
+      }
+
+      // Get pool_id and method_id from FutureShm
       PoolId pool_id = future_shm->pool_id_;
       u32 method_id = future_shm->method_id_;
 
@@ -419,28 +470,8 @@ u32 Worker::ProcessNewTasks() {
         continue;
       }
 
-      // Check FUTURE_COPY_FROM_CLIENT flag to determine if task needs to be
-      // loaded
-      FullPtr<Task> task_full_ptr = future.GetTaskPtr();
-
-      if (future_shm->flags_.Any(FutureShm::FUTURE_COPY_FROM_CLIENT) &&
-          !future_shm->flags_.Any(FutureShm::FUTURE_WAS_COPIED)) {
-        // CLIENT PATH: Load task from serialized data in FutureShm copy_space
-        // Only copy if not already copied (FUTURE_WAS_COPIED not set)
-        size_t input_size = future_shm->input_size_.load();
-        std::vector<char> serialized_data(future_shm->copy_space,
-                                          future_shm->copy_space + input_size);
-        LocalLoadTaskArchive archive(serialized_data);
-        task_full_ptr = container->LocalAllocLoadTask(method_id, archive);
-
-        // Update the Future's task pointer
-        future.GetTaskPtr() = task_full_ptr;
-
-        // Mark as copied to prevent re-copying if task migrates between workers
-        future_shm->flags_.SetBits(FutureShm::FUTURE_WAS_COPIED);
-      }
-      // RUNTIME PATH or ALREADY COPIED: Task pointer is already set in future,
-      // no need to load
+      // Get or copy task from Future (handles deserialization if needed)
+      FullPtr<Task> task_full_ptr = GetOrCopyTaskFromFuture(future, container, method_id);
 
       // Allocate stack and RunContext before routing
       if (!task_full_ptr->IsRouted()) {
@@ -1255,7 +1286,11 @@ bool Worker::EndTaskBeginClientTransfer(const FullPtr<Task> &task_ptr,
   if (serialized.size() <= copy_space_capacity) {
     // Path 1 (fits): Copy directly into copy_space
     std::memcpy(future_shm->copy_space, serialized.data(), serialized.size());
-    future_shm->input_size_.store(serialized.size());
+    future_shm->current_chunk_size_.store(serialized.size(), std::memory_order_release);
+
+    // Memory fence: Ensure copy_space writes are visible before flag
+    std::atomic_thread_fence(std::memory_order_release);
+
     return true;  // Task is complete
   }
 
@@ -1263,10 +1298,13 @@ bool Worker::EndTaskBeginClientTransfer(const FullPtr<Task> &task_ptr,
   // Copy first chunk to copy_space
   size_t first_chunk_size = copy_space_capacity;
   std::memcpy(future_shm->copy_space, serialized.data(), first_chunk_size);
-  future_shm->input_size_.store(first_chunk_size);
+  future_shm->current_chunk_size_.store(first_chunk_size, std::memory_order_release);
 
   // Store remaining data in streaming_buffers_ for later chunks
   streaming_buffers_[future_shm_ptr] = {serialized, first_chunk_size};
+
+  // Memory fence: Ensure copy_space writes are visible before flag
+  std::atomic_thread_fence(std::memory_order_release);
 
   // Set FUTURE_NEW_DATA flag to signal first chunk is ready
   future_shm->flags_.SetBits(FutureShm::FUTURE_NEW_DATA);
@@ -1676,6 +1714,9 @@ void Worker::ReschedulePeriodicTask(RunContext *run_ctx,
     return;
   }
 
+  HLOG(kDebug, "ReschedulePeriodicTask: task={}, yield_time_us={}",
+       task_ptr->task_id_, run_ctx->yield_time_us_);
+
   // Get the lane from the run context
   TaskLane *lane = run_ctx->lane_;
   if (!lane) {
@@ -1803,8 +1844,11 @@ void Worker::CopyTaskOutputToClient() {
     size_t chunk_size = std::min(remaining, copy_space_capacity);
     std::memcpy(future_shm->copy_space, serialized_data.data() + bytes_sent,
                 chunk_size);
-    future_shm->input_size_.store(chunk_size);
+    future_shm->current_chunk_size_.store(chunk_size, std::memory_order_release);
     bytes_sent += chunk_size;
+
+    // Memory fence: Ensure copy_space writes are visible before flag
+    std::atomic_thread_fence(std::memory_order_release);
 
     // Set FUTURE_NEW_DATA flag to signal chunk is ready
     future_shm->flags_.SetBits(FutureShm::FUTURE_NEW_DATA);
