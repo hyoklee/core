@@ -205,8 +205,8 @@ if [ "$DO_DISTRIBUTED" = true ]; then
         print_warning "Skipping distributed tests (Docker not available)"
         print_info "Install Docker to enable distributed tests"
     else
-        # Find all distributed test directories
-        DISTRIBUTED_DIRS=$(find "${REPO_ROOT}" -type d -path "*/test/unit/distributed" 2>/dev/null)
+        # Find all distributed test directories (in integration folders)
+        DISTRIBUTED_DIRS=$(find "${REPO_ROOT}" -type d -path "*/test/integration/distributed" 2>/dev/null)
 
         if [ -z "$DISTRIBUTED_DIRS" ]; then
             print_warning "No distributed test directories found"
@@ -217,7 +217,7 @@ if [ "$DO_DISTRIBUTED" = true ]; then
 
             for TEST_DIR in $DISTRIBUTED_DIRS; do
                 if [ -f "${TEST_DIR}/run_tests.sh" ]; then
-                    COMPONENT_NAME=$(echo "$TEST_DIR" | sed 's|.*/\([^/]*\)/test/unit/distributed|\1|')
+                    COMPONENT_NAME=$(echo "$TEST_DIR" | sed 's|.*/\([^/]*\)/test/integration/distributed|\1|')
                     print_info "Running distributed tests for: ${COMPONENT_NAME}"
 
                     DIST_TEST_COUNT=$((DIST_TEST_COUNT + 1))

@@ -31,6 +31,7 @@ option(WRP_CORE_ENABLE_DOXYGEN "Check how well the code is documented" OFF)
 option(WRP_CORE_ENABLE_RPATH "Enable RPATH configuration with absolute paths" ON)
 option(WRP_CORE_ENABLE_CPACK "Enable CPack for package generation" OFF)
 option(WRP_CORE_ENABLE_CONDA "Enable Conda environment configuration (adds Conda paths to include/link directories)" OFF)
+option(WRP_CORE_ENABLE_DOCKER_CI "Enable Docker-based integration tests (requires Docker)" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries (.dll/.so) instead of static ones (.lib/.a)" ON)
 
 # Installation Prefix Configuration
