@@ -31,7 +31,7 @@
         "--shm-size=2gb",
         "--gpus=all"
     ],
-    "initializeCommand": "bash -c 'mkdir -p ~/.ssh ~/.claude && touch ~/.claude.json'",
+    "initializeCommand": "bash -c 'umask 077 && mkdir -p ~/.ssh ~/.claude && chmod 700 ~/.ssh && touch ~/.claude.json'",
     // NOTE: If container fails to start with GPU error, run on host:
     //   sudo apt-get install -y nvidia-container-toolkit
     //   sudo nvidia-ctk runtime configure --runtime=docker
