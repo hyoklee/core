@@ -1,3 +1,36 @@
+/*
+ * Copyright (c) 2024, Gnosis Research Center, Illinois Institute of Technology
+ * All rights reserved.
+ *
+ * This file is part of IOWarp Core.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 /**
  * Runtime implementation for Admin ChiMod
  *
@@ -574,11 +607,7 @@ chi::TaskResume Runtime::Send(hipc::FullPtr<SendTask> task,
   }
 
   // Track whether this execution did actual work
-  if (did_send) {
-    rctx.did_work_ = true;
-  } else {
-    rctx.did_work_ = false;
-  }
+  rctx.did_work_ = did_send;
 
   task->SetReturnCode(0);
   co_return;
@@ -657,6 +686,7 @@ void Runtime::RecvIn(hipc::FullPtr<RecvTask> task,
     // Send task for execution using IpcManager::Send with awake_event=false
     // Note: This creates a Future and enqueues it to worker lanes
     // awake_event=false prevents setting parent task for received remote tasks
+    // Note: IsClientThread is false since this is runtime code
     (void)ipc_manager->Send(task_ptr, false);
   }
 
@@ -935,8 +965,6 @@ chi::TaskResume Runtime::Heartbeat(hipc::FullPtr<HeartbeatTask> task,
 
 chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
                                  chi::RunContext &rctx) {
-  HLOG(kInfo, "Admin: Executing Monitor task - START");
-
   // Get work orchestrator to access all workers
   auto *work_orchestrator = CHI_WORK_ORCHESTRATOR;
   if (!work_orchestrator) {
@@ -966,9 +994,6 @@ chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
   }
 
   task->SetReturnCode(0);
-  HLOG(kInfo, "Monitor: Collected stats from {} workers - COMPLETE",
-       task->info_.size());
-
   (void)rctx;
   co_return;
 }
@@ -1057,8 +1082,8 @@ chi::TaskResume Runtime::WreapDeadIpcs(hipc::FullPtr<WreapDeadIpcsTask> task,
   auto *ipc_manager = CHI_IPC;
 
   // Call IpcManager::WreapDeadIpcs to reap shared memory from dead processes
-  task->reaped_count_ = ipc_manager->WreapDeadIpcs();
-  // task->reaped_count_ = 0;
+  // task->reaped_count_ = ipc_manager->WreapDeadIpcs();
+  task->reaped_count_ = 0;
 
   // Mark whether we did work (for periodic task efficiency tracking)
   if (task->reaped_count_ > 0) {
