@@ -8,6 +8,7 @@ set(HSHM_LIBS "")
 # BUILD HSHM FOR HOST ONLY
 set(SRC_FILES
     system_info.cc
+    malloc_allocator.cc
     # memory_manager.cc  # NOTE: Deleted during hard refactoring
 )
 
@@ -15,65 +16,10 @@ set(SRC_FILES
 add_library(hermes_shm_host ${SRC_FILES})
 
 #------------------------------------------------------------------------------
-# Compression Predictor Libraries (Optional)
+# Note: Compression Predictor Libraries (XGBoost, Dense NN, Q-Table, LinReg)
+# have been moved to the compressor chimod in context-transfer-engine/compressor
 #------------------------------------------------------------------------------
 
-# XGBoost Predictor Library
-find_package(xgboost QUIET)
-if(xgboost_FOUND)
-    add_library(xgboost_predictor
-        compression/xgboost_predictor.cc
-    )
-    target_include_directories(xgboost_predictor PUBLIC
-        $<BUILD_INTERFACE:${HSHM_ROOT}/include>
-        $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-    )
-    target_link_libraries(xgboost_predictor PUBLIC
-        xgboost::xgboost
-    )
-    set_property(TARGET xgboost_predictor PROPERTY CXX_STANDARD 17)
-    list(APPEND HSHM_LIBS xgboost_predictor)
-    message(STATUS "Building XGBoost predictor library")
-endif()
-
-# Dense NN Predictor Library (requires Eigen, MiniDNN, and nlohmann_json)
-find_package(Eigen3 QUIET)
-find_package(nlohmann_json QUIET)
-# MiniDNN is header-only, check if it exists
-set(MINIDNN_INCLUDE_DIR "${HSHM_ROOT}/external/MiniDNN/include")
-if(EXISTS "${MINIDNN_INCLUDE_DIR}/MiniDNN.h")
-    set(MINIDNN_FOUND TRUE)
-else()
-    set(MINIDNN_FOUND FALSE)
-endif()
-
-if(Eigen3_FOUND AND MINIDNN_FOUND AND nlohmann_json_FOUND)
-    add_library(dense_nn_predictor
-        compression/dense_nn_predictor.cc
-    )
-    target_include_directories(dense_nn_predictor PUBLIC
-        $<BUILD_INTERFACE:${HSHM_ROOT}/include>
-        $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/include>
-        $<BUILD_INTERFACE:${MINIDNN_INCLUDE_DIR}>
-        $<INSTALL_INTERFACE:include>
-    )
-    target_link_libraries(dense_nn_predictor PUBLIC
-        Eigen3::Eigen
-        nlohmann_json::nlohmann_json
-    )
-    set_property(TARGET dense_nn_predictor PROPERTY CXX_STANDARD 17)
-    list(APPEND HSHM_LIBS dense_nn_predictor)
-    message(STATUS "Building Dense NN predictor library with MiniDNN + Eigen")
-elseif(NOT Eigen3_FOUND)
-    message(STATUS "Eigen3 not found - Dense NN predictor will not be built")
-    message(STATUS "  Install with: conda install -c conda-forge eigen")
-elseif(NOT MINIDNN_FOUND)
-    message(STATUS "MiniDNN not found - Dense NN predictor will not be built")
-    message(STATUS "  Clone to: ${HSHM_ROOT}/external/MiniDNN")
-elseif(NOT nlohmann_json_FOUND)
-    message(STATUS "nlohmann_json not found - Dense NN predictor will not be built")
-endif()
 target_link_libraries(hermes_shm_host PUBLIC
     ${REAL_TIME_FLAGS}
     configure
@@ -103,7 +49,7 @@ endif()
 list(APPEND HSHM_LIBS cxx)
 
 # BUILD HSHM FOR CUDA ONLY
-if(HSHM_ENABLE_CUDA)
+if(WRP_CORE_ENABLE_CUDA)
     add_cuda_library(hermes_shm_cuda SHARED TRUE ${SRC_FILES})
     target_link_libraries(hermes_shm_cuda PUBLIC host_deps)
     target_compile_definitions(hermes_shm_cuda PUBLIC HSHM_ENABLE_CUDA=1)
@@ -123,7 +69,7 @@ if(HSHM_ENABLE_CUDA)
 endif()
 
 # BUILD HSHM FOR ROCM ONLY
-if(HSHM_ENABLE_ROCM)
+if(WRP_CORE_ENABLE_ROCM)
     add_rocm_gpu_library(hermes_shm_rocm_gpu STATIC TRUE ${SRC_FILES})
     target_link_libraries(hermes_shm_rocm_gpu PUBLIC host_deps)
     target_compile_definitions(hermes_shm_rocm_gpu PUBLIC HSHM_ENABLE_ROCM=1)
@@ -170,17 +116,9 @@ if(TARGET cereal AND NOT TARGET cereal::cereal)
     set(_CEREAL_TARGET cereal)
 endif()
 
+# Install compiled libraries (interface libraries are installed in parent CMakeLists.txt)
 install(TARGETS
     ${HSHM_LIBS}
-    configure
-    serialize
-    interceptor
-    lightbeam
-    thread_all
-    mpi
-    compress
-    encrypt
-    host_deps
     ${_CEREAL_TARGET}
     EXPORT
     ${HSHM_EXPORTED_TARGETS}
@@ -188,9 +126,3 @@ install(TARGETS
     ARCHIVE DESTINATION lib
     RUNTIME DESTINATION bin)
 
-# -----------------------------------------------------------------------------
-# Coverage
-# -----------------------------------------------------------------------------
-if(HSHM_ENABLE_COVERAGE)
-    set_coverage_flags(hermes_shm_host)
-endif()

@@ -1,3 +1,36 @@
+/*
+ * Copyright (c) 2024, Gnosis Research Center, Illinois Institute of Technology
+ * All rights reserved.
+ *
+ * This file is part of IOWarp Core.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 #include <wrp_cte/core/core_config.h>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
@@ -140,6 +173,11 @@ bool Config::Validate() const {
     return false;
   }
 
+  if (performance_.stat_targets_period_ms_ == 0 || performance_.stat_targets_period_ms_ > 60000) {
+    HLOG(kError, "Config validation error: Invalid stat_targets_period_ms {} (must be 1-60000)", performance_.stat_targets_period_ms_);
+    return false;
+  }
+
   // Validate target configuration
   if (targets_.neighborhood_ == 0 || targets_.neighborhood_ > 1024) {
     HLOG(kError, "Config validation error: Invalid neighborhood {} (must be 1-1024)", targets_.neighborhood_);
@@ -176,7 +214,19 @@ std::string Config::GetParameterString(const std::string &param_name) const {
   if (param_name == "poll_period_ms") {
     return std::to_string(targets_.poll_period_ms_);
   }
-  
+  if (param_name == "monitor_interval_ms") {
+    return std::to_string(compression_.monitor_interval_ms_);
+  }
+  if (param_name == "dnn_model_weights_path") {
+    return compression_.dnn_model_weights_path_;
+  }
+  if (param_name == "dnn_samples_before_reinforce") {
+    return std::to_string(compression_.dnn_samples_before_reinforce_);
+  }
+  if (param_name == "trace_folder_path") {
+    return compression_.trace_folder_path_;
+  }
+
   return ""; // Parameter not found
 }
 
@@ -211,7 +261,23 @@ bool Config::SetParameterFromString(const std::string &param_name,
       targets_.poll_period_ms_ = static_cast<chi::u32>(std::stoul(value));
       return true;
     }
-    
+    if (param_name == "monitor_interval_ms") {
+      compression_.monitor_interval_ms_ = static_cast<chi::u32>(std::stoul(value));
+      return true;
+    }
+    if (param_name == "dnn_model_weights_path") {
+      compression_.dnn_model_weights_path_ = value;
+      return true;
+    }
+    if (param_name == "dnn_samples_before_reinforce") {
+      compression_.dnn_samples_before_reinforce_ = static_cast<chi::u32>(std::stoul(value));
+      return true;
+    }
+    if (param_name == "trace_folder_path") {
+      compression_.trace_folder_path_ = value;
+      return true;
+    }
+
     return false; // Parameter not found
     
   } catch (const std::exception &e) {
@@ -248,12 +314,19 @@ bool Config::ParseYamlNode(const YAML::Node &node) {
       return false;
     }
   }
-  
+
+  // Parse compression configuration
+  if (node["compression"]) {
+    if (!ParseCompressionConfig(node["compression"])) {
+      return false;
+    }
+  }
+
   // Parse environment variable configuration
   if (node["config_env_var"]) {
     config_env_var_ = node["config_env_var"].as<std::string>();
   }
-  
+
   return true;
 }
 
@@ -301,13 +374,25 @@ void Config::EmitYaml(YAML::Emitter &emitter) const {
   emitter << YAML::Key << "dpe" << YAML::Value << YAML::BeginMap;
   emitter << YAML::Key << "dpe_type" << YAML::Value << dpe_.dpe_type_;
   emitter << YAML::EndMap;
-  
+
+  // Emit compression configuration
+  emitter << YAML::Key << "compression" << YAML::Value << YAML::BeginMap;
+  emitter << YAML::Key << "monitor_interval_ms" << YAML::Value << compression_.monitor_interval_ms_;
+  emitter << YAML::Key << "dnn_model_weights_path" << YAML::Value << compression_.dnn_model_weights_path_;
+  emitter << YAML::Key << "dnn_samples_before_reinforce" << YAML::Value << compression_.dnn_samples_before_reinforce_;
+  emitter << YAML::Key << "trace_folder_path" << YAML::Value << compression_.trace_folder_path_;
+  emitter << YAML::EndMap;
+
   emitter << YAML::EndMap;
 }
 
 bool Config::ParsePerformanceConfig(const YAML::Node &node) {
   if (node["target_stat_interval_ms"]) {
     performance_.target_stat_interval_ms_ = node["target_stat_interval_ms"].as<chi::u32>();
+  }
+
+  if (node["stat_targets_period_ms"]) {
+    performance_.stat_targets_period_ms_ = node["stat_targets_period_ms"].as<chi::u32>();
   }
 
   if (node["max_concurrent_operations"]) {
@@ -421,18 +506,56 @@ bool Config::ParseStorageConfig(const YAML::Node &node) {
 bool Config::ParseDpeConfig(const YAML::Node &node) {
   if (node["dpe_type"]) {
     std::string dpe_type = node["dpe_type"].as<std::string>();
-    
+
     // Validate DPE type
-    if (dpe_type != "random" && dpe_type != "round_robin" && 
+    if (dpe_type != "random" && dpe_type != "round_robin" &&
         dpe_type != "roundrobin" && dpe_type != "max_bw" && dpe_type != "maxbw") {
       HLOG(kError, "Config error: Invalid dpe_type '{}' (must be 'random', 'round_robin', or 'max_bw')", dpe_type);
       return false;
     }
-    
+
     dpe_.dpe_type_ = dpe_type;
   }
-  
+
   HLOG(kInfo, "Parsed DPE configuration: type={}", dpe_.dpe_type_);
+  return true;
+}
+
+bool Config::ParseCompressionConfig(const YAML::Node &node) {
+  if (node["monitor_interval_ms"]) {
+    compression_.monitor_interval_ms_ = node["monitor_interval_ms"].as<chi::u32>();
+  }
+
+  if (node["qtable_model_path"]) {
+    std::string path = node["qtable_model_path"].as<std::string>();
+    compression_.qtable_model_path_ = hshm::ConfigParse::ExpandPath(path);
+  }
+
+  if (node["qtable_learning_rate"]) {
+    compression_.qtable_learning_rate_ = node["qtable_learning_rate"].as<float>();
+  }
+
+  if (node["dnn_model_weights_path"]) {
+    std::string path = node["dnn_model_weights_path"].as<std::string>();
+    compression_.dnn_model_weights_path_ = hshm::ConfigParse::ExpandPath(path);
+  }
+
+  if (node["dnn_samples_before_reinforce"]) {
+    compression_.dnn_samples_before_reinforce_ = node["dnn_samples_before_reinforce"].as<chi::u32>();
+  }
+
+  if (node["trace_folder_path"]) {
+    std::string path = node["trace_folder_path"].as<std::string>();
+    compression_.trace_folder_path_ = hshm::ConfigParse::ExpandPath(path);
+  }
+
+  HLOG(kInfo, "Parsed compression configuration: monitor_interval={}ms, qtable_model='{}', "
+       "dnn_weights='{}', samples={}, trace_folder='{}'",
+       compression_.monitor_interval_ms_,
+       compression_.qtable_model_path_,
+       compression_.dnn_model_weights_path_,
+       compression_.dnn_samples_before_reinforce_,
+       compression_.trace_folder_path_);
   return true;
 }
 

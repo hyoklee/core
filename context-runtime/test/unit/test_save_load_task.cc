@@ -1,3 +1,36 @@
+/*
+ * Copyright (c) 2024, Gnosis Research Center, Illinois Institute of Technology
+ * All rights reserved.
+ *
+ * This file is part of IOWarp Core.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright notice,
+ *    this list of conditions and the following disclaimer in the documentation
+ *    and/or other materials provided with the distribution.
+ *
+ * 3. Neither the name of the copyright holder nor the names of its
+ *    contributors may be used to endorse or promote products derived from
+ *    this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
 /**
  * Unit tests for Container SaveTask and LoadTask methods
  *
@@ -19,6 +52,7 @@
 
 // Include Chimaera headers
 #include <chimaera/chimaera.h>
+#include <hermes_shm/memory/allocator/malloc_allocator.h>
 #include <chimaera/container.h>
 #include <chimaera/ipc_manager.h>
 #include <chimaera/module_manager.h>
@@ -40,9 +74,9 @@
 using namespace chi;
 
 namespace {
-// Helper allocator for tests
-hipc::MultiProcessAllocator* GetTestAllocator() {
-  return CHI_IPC->GetMainAlloc();
+// Helper allocator for tests - uses HSHM_MALLOC for non-IPC allocations
+hipc::MallocAllocator* GetTestAllocator() {
+  return HSHM_MALLOC;
 }
 
 // Initialize Chimaera runtime for tests
@@ -126,10 +160,10 @@ TEST_CASE("SaveTask and LoadTask - Admin CreateTask full flow",
 
   // Create task manually (matching pattern from test_task_archive.cc)
   auto loaded_in_task = ipc_manager->NewTask<chimaera::admin::CreateTask>();
-  loaded_in_task->chimod_name_ = chi::priv::string(alloc, std::string(""));
-  loaded_in_task->pool_name_ = chi::priv::string(alloc, std::string(""));
-  loaded_in_task->chimod_params_ = chi::priv::string(alloc, std::string(""));
-  loaded_in_task->error_message_ = chi::priv::string(alloc, std::string(""));
+  loaded_in_task->chimod_name_ = chi::priv::string(HSHM_MALLOC, std::string(""));
+  loaded_in_task->pool_name_ = chi::priv::string(HSHM_MALLOC, std::string(""));
+  loaded_in_task->chimod_params_ = chi::priv::string(HSHM_MALLOC, std::string(""));
+  loaded_in_task->error_message_ = chi::priv::string(HSHM_MALLOC, std::string(""));
   load_in_archive >> *loaded_in_task;
 
   hipc::FullPtr<chi::Task> loaded_in_task_ptr = loaded_in_task.template Cast<chi::Task>();
@@ -154,7 +188,7 @@ TEST_CASE("SaveTask and LoadTask - Admin CreateTask full flow",
   // Step 5: Modify output parameters in loaded task
   loaded_in_task->new_pool_id_ = chi::PoolId(7000, 0);
   loaded_in_task->error_message_ =
-      chi::priv::string(alloc, std::string("test error message from server"));
+      chi::priv::string(HSHM_MALLOC, std::string("test error message from server"));
   loaded_in_task->SetReturnCode(42);
 
   // Step 6: SaveOut - serialize OUT/INOUT parameters
@@ -172,10 +206,10 @@ TEST_CASE("SaveTask and LoadTask - Admin CreateTask full flow",
 
   // Create task manually (matching pattern from test_task_archive.cc)
   auto loaded_out_task = ipc_manager->NewTask<chimaera::admin::CreateTask>();
-  loaded_out_task->chimod_name_ = chi::priv::string(alloc, std::string(""));
-  loaded_out_task->pool_name_ = chi::priv::string(alloc, std::string(""));
-  loaded_out_task->chimod_params_ = chi::priv::string(alloc, std::string(""));
-  loaded_out_task->error_message_ = chi::priv::string(alloc, std::string(""));
+  loaded_out_task->chimod_name_ = chi::priv::string(HSHM_MALLOC, std::string(""));
+  loaded_out_task->pool_name_ = chi::priv::string(HSHM_MALLOC, std::string(""));
+  loaded_out_task->chimod_params_ = chi::priv::string(HSHM_MALLOC, std::string(""));
+  loaded_out_task->error_message_ = chi::priv::string(HSHM_MALLOC, std::string(""));
   load_out_archive >> *loaded_out_task;
 
   REQUIRE(!loaded_out_task.IsNull());
@@ -329,7 +363,7 @@ TEST_CASE("SaveTask and LoadTask - Admin SendTask full flow",
 
   // Step 5: Modify output parameters
   loaded_in_task->error_message_ =
-      chi::priv::string(alloc, std::string("send completed successfully"));
+      chi::priv::string(HSHM_MALLOC, std::string("send completed successfully"));
 
   // Step 6: SaveOut
   chi::SaveTaskArchive save_out_archive(chi::MsgType::kSerializeOut);
@@ -412,7 +446,7 @@ TEST_CASE("SaveTask and LoadTask - Admin DestroyPoolTask full flow",
   }
 
   // Step 5: Modify output parameters
-  loaded_in_task->error_message_ = chi::priv::string(alloc, std::string("pool destroyed"));
+  loaded_in_task->error_message_ = chi::priv::string(HSHM_MALLOC, std::string("pool destroyed"));
 
   // Step 6: SaveOut
   chi::SaveTaskArchive save_out_archive(chi::MsgType::kSerializeOut);

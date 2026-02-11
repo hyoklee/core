@@ -31,6 +31,7 @@ option(WRP_CORE_ENABLE_DOXYGEN "Check how well the code is documented" OFF)
 option(WRP_CORE_ENABLE_RPATH "Enable RPATH configuration with absolute paths" ON)
 option(WRP_CORE_ENABLE_CPACK "Enable CPack for package generation" OFF)
 option(WRP_CORE_ENABLE_CONDA "Enable Conda environment configuration (adds Conda paths to include/link directories)" OFF)
+option(WRP_CORE_ENABLE_DOCKER_CI "Enable Docker-based integration tests (requires Docker)" OFF)
 option(BUILD_SHARED_LIBS "Build shared libraries (.dll/.so) instead of static ones (.lib/.a)" ON)
 
 # Installation Prefix Configuration
@@ -89,8 +90,15 @@ option(WRP_CORE_ENABLE_THALLIUM "Build tests which depend on thallium" OFF)
 # Data and Serialization Features
 #------------------------------------------------------------------------------
 option(WRP_CORE_ENABLE_CEREAL "Enable serialization using cereal" ON)
-option(WRP_CORE_ENABLE_COMPRESS "Enable compression" OFF)
+option(WRP_CTE_ENABLE_COMPRESS "Enable compression support (builds compressor chimod and tests)" OFF)
 option(WRP_CORE_ENABLE_ENCRYPT "Enable encryption" OFF)
+
+# Set internal compression flags from WRP_CTE_ENABLE_COMPRESS
+if(WRP_CTE_ENABLE_COMPRESS)
+    set(WRP_CORE_ENABLE_COMPRESS ON)
+else()
+    set(WRP_CORE_ENABLE_COMPRESS OFF)
+endif()
 option(WRP_CORE_ENABLE_HDF5 "Enable HDF5 support in CAE" ON)
 
 #------------------------------------------------------------------------------
@@ -106,7 +114,6 @@ option(WRP_CORE_ENABLE_JARVIS "Enable Jarvis CI infrastructure installation" OFF
 # HermesShm (context-transport-primitives) Options
 #------------------------------------------------------------------------------
 option(HSHM_ENABLE_TESTS "Enable tests for HermesShm" ON)
-option(HSHM_ENABLE_BENCHMARKS "Enable benchmarks for HermesShm" ON)
 option(HSHM_ENABLE_PTHREADS "Support spawning pthreads" OFF)
 option(HSHM_ENABLE_WINDOWS_THREADS "Support spawning windows threads" OFF)
 option(HSHM_DEBUG_LOCK "Used for debugging locks" OFF)
@@ -117,15 +124,10 @@ set(HSHM_LOG_LEVEL "1" CACHE STRING "Log level threshold (0=Debug, 1=Info, 2=War
 # Chimaera (context-runtime) Options
 #------------------------------------------------------------------------------
 option(CHIMAERA_ENABLE_TESTS "Enable tests for Chimaera runtime" ON)
-option(CHIMAERA_ENABLE_BENCHMARKS "Enable benchmarks for Chimaera runtime" ON)
 
 #------------------------------------------------------------------------------
 # CTE (context-transfer-engine) Options
 #------------------------------------------------------------------------------
-option(WRP_CTE_ENABLE_TESTS "Enable tests for CTE" ON)
-option(WRP_CTE_ENABLE_BENCHMARKS "Enable benchmarks for CTE" ON)
-option(WRP_CTE_ENABLE_PYTHON "Enable Python bindings for CTE (requires WRP_CORE_ENABLE_PYTHON=ON)" ON)
-
 # CTE Adapter Options (require WRP_CORE_ENABLE_ELF=ON)
 option(WRP_CTE_ENABLE_POSIX_ADAPTER "Enable POSIX adapter" ON)
 option(WRP_CTE_ENABLE_STDIO_ADAPTER "Enable STDIO adapter" OFF)
@@ -137,15 +139,7 @@ option(WRP_CTE_ENABLE_ADIOS2_ADAPTER "Enable ADIOS2 adapter" OFF)
 #------------------------------------------------------------------------------
 # CAE (context-assimilation-engine) Options
 #------------------------------------------------------------------------------
-option(WRP_CAE_ENABLE_TESTS "Enable tests for CAE" ON)
-option(WRP_CAE_ENABLE_BENCHMARKS "Enable benchmarks for CAE" ON)
 option(CAE_ENABLE_GLOBUS "Enable Globus transfer support in CAE" OFF)
-
-#------------------------------------------------------------------------------
-# CEE (context-exploration-engine) Options
-#------------------------------------------------------------------------------
-option(WRP_CEE_ENABLE_TESTS "Enable tests for CEE" ON)
-option(WRP_CEE_ENABLE_BENCHMARKS "Enable benchmarks for CEE" ON)
 
 #------------------------------------------------------------------------------
 # External Examples and Applications
@@ -165,18 +159,6 @@ option(WRP_CORE_ENABLE_GRAY_SCOTT "Enable Gray-Scott ADIOS2 example (requires AD
 if(NOT WRP_CORE_ENABLE_TESTS)
     set(HSHM_ENABLE_TESTS OFF)
     set(CHIMAERA_ENABLE_TESTS OFF)
-    set(WRP_CTE_ENABLE_TESTS OFF)
-    set(WRP_CAE_ENABLE_TESTS OFF)
-    set(WRP_CEE_ENABLE_TESTS OFF)
-endif()
-
-# Apply master benchmark switch
-if(NOT WRP_CORE_ENABLE_BENCHMARKS)
-    set(HSHM_ENABLE_BENCHMARKS OFF)
-    set(CHIMAERA_ENABLE_BENCHMARKS OFF)
-    set(WRP_CTE_ENABLE_BENCHMARKS OFF)
-    set(WRP_CAE_ENABLE_BENCHMARKS OFF)
-    set(WRP_CEE_ENABLE_BENCHMARKS OFF)
 endif()
 
 # Set HSHM_ENABLE_* aliases for backward compatibility
@@ -189,41 +171,18 @@ set(HSHM_ENABLE_THALLIUM ${WRP_CORE_ENABLE_THALLIUM} CACHE BOOL "Enable Thallium
 set(HSHM_ENABLE_OPENMP ${WRP_CORE_ENABLE_OPENMP} CACHE BOOL "Enable OpenMP (controlled by WRP_CORE_ENABLE_OPENMP)" FORCE)
 set(HSHM_ENABLE_CEREAL ${WRP_CORE_ENABLE_CEREAL} CACHE BOOL "Enable Cereal (controlled by WRP_CORE_ENABLE_CEREAL)" FORCE)
 set(HSHM_ENABLE_DOXYGEN ${WRP_CORE_ENABLE_DOXYGEN} CACHE BOOL "Enable Doxygen (controlled by WRP_CORE_ENABLE_DOXYGEN)" FORCE)
-set(HSHM_ENABLE_COMPRESS ${WRP_CORE_ENABLE_COMPRESS} CACHE BOOL "Enable Compress (controlled by WRP_CORE_ENABLE_COMPRESS)" FORCE)
+set(HSHM_ENABLE_COMPRESS ${WRP_CTE_ENABLE_COMPRESS} CACHE BOOL "Enable Compress (controlled by WRP_CTE_ENABLE_COMPRESS)" FORCE)
 set(HSHM_ENABLE_ENCRYPT ${WRP_CORE_ENABLE_ENCRYPT} CACHE BOOL "Enable Encrypt (controlled by WRP_CORE_ENABLE_ENCRYPT)" FORCE)
 set(HSHM_ENABLE_ELF ${WRP_CORE_ENABLE_ELF} CACHE BOOL "Enable ELF (controlled by WRP_CORE_ENABLE_ELF)" FORCE)
 set(HSHM_ENABLE_CUDA ${WRP_CORE_ENABLE_CUDA} CACHE BOOL "Enable CUDA (controlled by WRP_CORE_ENABLE_CUDA)" FORCE)
 set(HSHM_ENABLE_ROCM ${WRP_CORE_ENABLE_ROCM} CACHE BOOL "Enable ROCm (controlled by WRP_CORE_ENABLE_ROCM)" FORCE)
-set(HSHM_ENABLE_COVERAGE ${WRP_CORE_ENABLE_COVERAGE} CACHE BOOL "Enable Coverage (controlled by WRP_CORE_ENABLE_COVERAGE)" FORCE)
-
-# Also disable tests/benchmarks for disabled components
-if(NOT WRP_CORE_ENABLE_CTE)
-    set(WRP_CTE_ENABLE_TESTS OFF)
-    set(WRP_CTE_ENABLE_BENCHMARKS OFF)
-endif()
-
-if(NOT WRP_CORE_ENABLE_CAE)
-    set(WRP_CAE_ENABLE_TESTS OFF)
-    set(WRP_CAE_ENABLE_BENCHMARKS OFF)
-endif()
-
-if(NOT WRP_CORE_ENABLE_CEE)
-    set(WRP_CEE_ENABLE_TESTS OFF)
-    set(WRP_CEE_ENABLE_BENCHMARKS OFF)
-endif()
+# Note: Coverage is handled globally via add_compile_options when WRP_CORE_ENABLE_COVERAGE=ON
+# No need for component-level HSHM_ENABLE_COVERAGE
 
 # Print final test/benchmark configuration
 message(STATUS "Test/Benchmark Configuration:")
-message(STATUS "  HSHM_ENABLE_TESTS: ${HSHM_ENABLE_TESTS}")
-message(STATUS "  HSHM_ENABLE_BENCHMARKS: ${HSHM_ENABLE_BENCHMARKS}")
-message(STATUS "  CHIMAERA_ENABLE_TESTS: ${CHIMAERA_ENABLE_TESTS}")
-message(STATUS "  CHIMAERA_ENABLE_BENCHMARKS: ${CHIMAERA_ENABLE_BENCHMARKS}")
-message(STATUS "  WRP_CTE_ENABLE_TESTS: ${WRP_CTE_ENABLE_TESTS}")
-message(STATUS "  WRP_CTE_ENABLE_BENCHMARKS: ${WRP_CTE_ENABLE_BENCHMARKS}")
-message(STATUS "  WRP_CAE_ENABLE_TESTS: ${WRP_CAE_ENABLE_TESTS}")
-message(STATUS "  WRP_CAE_ENABLE_BENCHMARKS: ${WRP_CAE_ENABLE_BENCHMARKS}")
-message(STATUS "  WRP_CEE_ENABLE_TESTS: ${WRP_CEE_ENABLE_TESTS}")
-message(STATUS "  WRP_CEE_ENABLE_BENCHMARKS: ${WRP_CEE_ENABLE_BENCHMARKS}")
+message(STATUS "  WRP_CORE_ENABLE_TESTS: ${WRP_CORE_ENABLE_TESTS}")
+message(STATUS "  WRP_CORE_ENABLE_BENCHMARKS: ${WRP_CORE_ENABLE_BENCHMARKS}")
 
 # Read environment variables from .env.cmake if enabled
 if(WRP_CORE_ENABLE_CMAKE_DOTENV)
@@ -317,12 +276,12 @@ endif()
 find_package(Threads REQUIRED)
 
 # Compression libraries (conditional)
-if(WRP_CORE_ENABLE_COMPRESS)
-    message(STATUS "WRP_CORE_ENABLE_COMPRESS is ON")
+if(WRP_CTE_ENABLE_COMPRESS)
+    message(STATUS "WRP_CTE_ENABLE_COMPRESS is ON")
 
     # Verify conda environment is enabled for compression libraries
     if(NOT WRP_CORE_ENABLE_CONDA OR NOT IN_CONDA_BUILD)
-        message(FATAL_ERROR "WRP_CORE_ENABLE_COMPRESS requires WRP_CORE_ENABLE_CONDA=ON. Please enable conda or install compression libraries manually.")
+        message(FATAL_ERROR "WRP_CTE_ENABLE_COMPRESS requires WRP_CORE_ENABLE_CONDA=ON. Please enable conda or install compression libraries manually.")
     endif()
 
     # Libraries with pkg-config support - verify they're from conda
@@ -402,7 +361,7 @@ if(WRP_CORE_ENABLE_COMPRESS)
 
     # LibPressio - try find_package first (CMake-based), fall back to pkg-config
     # Make it optional since libpressio may not be installed
-    set(HSHM_HAS_LIBPRESSIO OFF)
+    set(HSHM_ENABLE_LIBPRESSIO OFF)
     find_package(LibPressio QUIET)
     if(LibPressio_FOUND)
         message(STATUS "found libpressio.h via CMake at ${LibPressio_INCLUDE_DIRS}")
@@ -416,12 +375,12 @@ if(WRP_CORE_ENABLE_COMPRESS)
         endif()
         set(libpressio_INCLUDE_DIRS ${LibPressio_INCLUDE_DIRS})
         set(libpressio_LIBRARY_DIRS "")
-        set(HSHM_HAS_LIBPRESSIO ON)
+        set(HSHM_ENABLE_LIBPRESSIO ON)
     else()
         pkg_check_modules(libpressio QUIET libpressio)
         if(libpressio_FOUND)
             message(STATUS "found libpressio.h at ${libpressio_INCLUDE_DIRS}")
-            set(HSHM_HAS_LIBPRESSIO ON)
+            set(HSHM_ENABLE_LIBPRESSIO ON)
         else()
             message(STATUS "libpressio not found - LibPressio wrapper will be disabled")
             set(libpressio_LIBRARIES "")
@@ -464,11 +423,14 @@ if(WRP_CORE_ENABLE_COMPRESS)
         ${blosc2_LIBRARY_DIRS}
     )
     # Only add libpressio if found
-    if(HSHM_HAS_LIBPRESSIO)
+    if(HSHM_ENABLE_LIBPRESSIO)
         list(APPEND COMPRESS_LIBS ${libpressio_LIBRARIES})
         list(APPEND COMPRESS_INCLUDES ${libpressio_INCLUDE_DIRS})
         list(APPEND COMPRESS_LIB_DIRS ${libpressio_LIBRARY_DIRS})
     endif()
+
+    # Make HSHM_ENABLE_LIBPRESSIO available to subdirectories (HSHM)
+    set(HSHM_ENABLE_LIBPRESSIO ${HSHM_ENABLE_LIBPRESSIO} CACHE BOOL "Enable LibPressio wrapper (auto-detected)" FORCE)
 endif()
 
 # Encryption libraries (conditional)
@@ -752,8 +714,8 @@ message(STATUS "yaml-cpp already found by IowarpCoreCommon")
 # Context Transport Primitives (formerly cte-hermes-shm) - Required by runtime
 message(STATUS "Building context-transport-primitives component")
 
-# Detect ELF library if enabled (HSHM_ENABLE_ELF is set from WRP_CORE_ENABLE_ELF at line 86)
-if(HSHM_ENABLE_ELF)
+# Detect ELF library if enabled
+if(WRP_CORE_ENABLE_ELF)
     pkg_check_modules(libelf REQUIRED libelf)
     message(STATUS "found libelf.h at ${libelf_INCLUDE_DIRS}")
 

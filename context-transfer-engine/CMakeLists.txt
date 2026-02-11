@@ -4,8 +4,10 @@ project(content_transfer_engine)
 # Set root directory for this component
 set(WRP_CTE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Note: WRP_CTE_ENABLE_COMPRESS is defined in root CMakeLists.txt
+# It controls both compressor chimod building and HSHM compression support
+
 # Python bindings are controlled by WRP_CORE_ENABLE_PYTHON in root CMakeLists.txt
-# WRP_CTE_ENABLE_PYTHON is defined in root CMakeLists.txt
 # CTE_ENABLE_ASAN is set by root CMakeLists.txt
 
 # C++ standard, compile commands, RPATH, ASAN, and output directories are all set by root CMakeLists.txt
@@ -33,6 +35,14 @@ message(STATUS "Found Chimaera framework - building full ChiMod implementation")
 # Add the core ChiMod
 add_subdirectory(core)
 
+# Add the compressor ChiMod (optional - only if compression is enabled)
+if(WRP_CTE_ENABLE_COMPRESS)
+    message(STATUS "CTE: Compression enabled - building compressor chimod")
+    add_subdirectory(compressor)
+else()
+    message(STATUS "CTE: Compression disabled - skipping compressor chimod (use -DWRP_CTE_ENABLE_COMPRESS=ON to enable)")
+endif()
+
 # Add the bdev ChiMod (when it exists)
 # add_subdirectory(chimods/bdev)
 
@@ -44,8 +54,8 @@ add_subdirectory(adapter)
 include(CTest)
 
 # Add tests if enabled
-# WRP_CTE_ENABLE_TESTS is set by root CMakeLists.txt
-if(WRP_CTE_ENABLE_TESTS)
+# Tests are controlled by WRP_CORE_ENABLE_TESTS in root CMakeLists.txt
+if(WRP_CORE_ENABLE_TESTS)
   add_subdirectory(test)
   message(STATUS "CTE tests enabled - added test subdirectory")
 endif()
@@ -54,8 +64,8 @@ endif()
 add_subdirectory(wrapper)
 
 # Add benchmarks if enabled
-# WRP_CTE_ENABLE_BENCHMARKS is set by root CMakeLists.txt
-if(WRP_CTE_ENABLE_BENCHMARKS)
+# Benchmarks are controlled by WRP_CORE_ENABLE_BENCHMARKS
+if(WRP_CORE_ENABLE_BENCHMARKS)
   add_subdirectory(benchmark)
   message(STATUS "CTE benchmarks enabled - added benchmark subdirectory")
 endif()
