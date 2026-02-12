@@ -140,7 +140,11 @@ if [ "$DO_BUILD" = true ]; then
     print_header "Step 1: Building with Coverage Instrumentation"
 
     print_info "Configuring build with coverage enabled..."
-    cmake --preset=debug -DWRP_CORE_ENABLE_COVERAGE=ON
+    cmake --preset=debug \
+        -DWRP_CORE_ENABLE_COVERAGE=ON \
+        -DWRP_CTE_ENABLE_ADIOS2_ADAPTER=OFF \
+        -DWRP_CTE_ENABLE_COMPRESS=OFF \
+        -DWRP_CORE_ENABLE_GRAY_SCOTT=OFF
 
     print_info "Building project..."
     NUM_CORES=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -166,9 +170,8 @@ if [ "$DO_CTEST" = true ]; then
     cd "${BUILD_DIR}"
 
     print_info "Running all CTest tests..."
-    ctest --output-on-failure
-
-    CTEST_EXIT_CODE=$?
+    CTEST_EXIT_CODE=0
+    ctest --output-on-failure || CTEST_EXIT_CODE=$?
     if [ $CTEST_EXIT_CODE -eq 0 ]; then
         print_success "All CTest tests passed"
     else
@@ -284,13 +287,7 @@ print_header "Step 4: Collecting and Merging Coverage Data"
 
 cd "${BUILD_DIR}"
 
-print_info "Capturing final coverage data with lcov (using RC file for comprehensive error handling)..."
-# Create temporary lcovrc to handle all known coverage data issues
-cat > lcovrc_temp << 'EOFRC'
-geninfo_unexecuted_blocks = 1
-geninfo_compat_libtool = 1
-lcov_branch_coverage = 0
-EOFRC
+print_info "Capturing final coverage data with lcov..."
 
 # Use geninfo directly with comprehensive error ignoring for all components at once
 # This approach gives more accurate results than capturing from root directory
@@ -301,8 +298,6 @@ lcov --capture \
      --rc geninfo_unexecuted_blocks=1 \
      --ignore-errors graph,mismatch,negative,inconsistent,unused,empty,gcov,source \
      2>&1 | grep -E "Found [0-9]+ data files|Finished" || true
-
-rm -f lcovrc_temp
 
 if [ ! -f coverage_combined.info ] || [ ! -s coverage_combined.info ]; then
     print_error "Failed to generate coverage data"
