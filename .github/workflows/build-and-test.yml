@@ -28,6 +28,13 @@ jobs:
         ./install.sh
     - name: Calculate coverage
       run: |
-        source ~/miniconda3/etc/profile.d/conda.sh
+        # Activate conda from wherever install.sh set it up
+        if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+          source "$HOME/miniconda3/etc/profile.d/conda.sh"
+        elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+          source "$HOME/anaconda3/etc/profile.d/conda.sh"
+        elif command -v conda &>/dev/null; then
+          eval "$(conda shell.bash hook)"
+        fi
         conda activate iowarp
         ./CI/calculate_coverage.sh --all --clean
