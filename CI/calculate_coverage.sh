@@ -15,12 +15,14 @@
 #   --run-distributed     Run distributed tests (requires Docker)
 #   --all                 Build and run all tests (equivalent to --build --run-ctest --run-distributed)
 #   --clean               Clean build directory before starting
+#   --site SITE_NAME      Submit results to CDash with the given site name
 #   --help                Show this help message
 #
 # Examples:
 #   ./CI/calculate_coverage.sh              # Just generate reports from existing data
 #   ./CI/calculate_coverage.sh --all        # Full build + test + report generation
 #   ./CI/calculate_coverage.sh --run-ctest  # Run CTest and generate reports
+#   ./CI/calculate_coverage.sh --all --site ubu-24.amd64  # Full run + CDash submit
 #
 ################################################################################
 
@@ -36,6 +38,7 @@ DO_BUILD=false
 DO_CTEST=false
 DO_DISTRIBUTED=false
 CLEAN_BUILD=false
+SITE_NAME=""
 
 # Colors for output
 RED='\033[0;31m'
@@ -103,6 +106,10 @@ while [[ $# -gt 0 ]]; do
             CLEAN_BUILD=true
             shift
             ;;
+        --site)
+            SITE_NAME="$2"
+            shift 2
+            ;;
         --help|-h)
             show_help
             ;;
@@ -169,14 +176,39 @@ if [ "$DO_CTEST" = true ]; then
 
     cd "${BUILD_DIR}"
 
-    print_info "Running all CTest tests..."
-    CTEST_EXIT_CODE=0
-    ctest --output-on-failure || CTEST_EXIT_CODE=$?
-    if [ $CTEST_EXIT_CODE -eq 0 ]; then
-        print_success "All CTest tests passed"
+    if [ -n "${SITE_NAME}" ]; then
+        print_info "Running tests and submitting to CDash (site: ${SITE_NAME})..."
+        # Generate CTest dashboard script for CDash submission
+        cat > "${BUILD_DIR}/cdash_coverage.cmake" << EOFCMAKE
+set(CTEST_SITE "${SITE_NAME}")
+set(CTEST_BUILD_NAME "coverage")
+set(CTEST_SOURCE_DIRECTORY "${REPO_ROOT}")
+set(CTEST_BINARY_DIRECTORY "${BUILD_DIR}")
+set(CTEST_DROP_METHOD "https")
+set(CTEST_DROP_SITE "my.cdash.org")
+set(CTEST_DROP_LOCATION "/submit.php?project=HERMES")
+set(CTEST_DROP_SITE_CDASH TRUE)
+set(CTEST_COVERAGE_COMMAND "gcov")
+ctest_start("Experimental")
+ctest_test(RETURN_VALUE test_result)
+ctest_coverage()
+ctest_submit()
+if(NOT test_result EQUAL 0)
+  message("Some tests failed (exit code: \${test_result})")
+endif()
+EOFCMAKE
+        ctest -S "${BUILD_DIR}/cdash_coverage.cmake" -VV || true
+        print_success "CDash submission complete"
     else
-        print_error "Some CTest tests failed (exit code: $CTEST_EXIT_CODE)"
-        print_warning "Continuing with coverage generation..."
+        print_info "Running all CTest tests..."
+        CTEST_EXIT_CODE=0
+        ctest --output-on-failure || CTEST_EXIT_CODE=$?
+        if [ $CTEST_EXIT_CODE -eq 0 ]; then
+            print_success "All CTest tests passed"
+        else
+            print_error "Some CTest tests failed (exit code: $CTEST_EXIT_CODE)"
+            print_warning "Continuing with coverage generation..."
+        fi
     fi
 
     cd "${REPO_ROOT}"

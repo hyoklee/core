@@ -37,4 +37,5 @@ jobs:
           eval "$(conda shell.bash hook)"
         fi
         conda activate iowarp
-        ./CI/calculate_coverage.sh --all --clean
+        SITE_NAME=${{ contains(matrix.os, 'arm') && '"ubu-24.arm64"' || '"ubu-24.amd64"' }}
+        ./CI/calculate_coverage.sh --all --clean --site ${SITE_NAME}
