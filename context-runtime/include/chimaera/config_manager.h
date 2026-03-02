@@ -51,6 +51,7 @@ struct PoolConfig {
   PoolId pool_id_;           /**< Pool ID for this module */
   PoolQuery pool_query_;     /**< Pool query routing (Dynamic or Local) */
   std::string config_;       /**< Remaining YAML configuration as string */
+  bool restart_ = false;     /**< If true, store compose file for crash-restart */
 
   PoolConfig() = default;
 
@@ -69,7 +70,7 @@ struct PoolConfig {
    */
   template <class Archive>
   void serialize(Archive& ar) {
-    ar(mod_name_, pool_name_, pool_id_, pool_query_, config_);
+    ar(mod_name_, pool_name_, pool_id_, pool_query_, config_, restart_);
   }
 };
 
@@ -86,8 +87,8 @@ struct ComposeConfig {
  * Configuration manager singleton
  *
  * Inherits from hshm BaseConfig and manages YAML configuration parsing.
- * Reads configuration from CHI_SERVER_CONF or WRP_RUNTIME_CONF environment variables.
- * CHI_SERVER_CONF is checked first; WRP_RUNTIME_CONF is used as fallback.
+ * Config lookup: CHI_SERVER_CONF env -> WRP_RUNTIME_CONF env ->
+ * ~/.chimaera/chimaera.yaml -> bare minimum defaults.
  * Uses HSHM global cross pointer variable singleton pattern.
  */
 class ConfigManager : public hshm::BaseConfig {
@@ -121,9 +122,13 @@ class ConfigManager : public hshm::BaseConfig {
   bool LoadYaml(const std::string& config_path);
 
   /**
-   * Get server configuration file path from environment
-   * Checks CHI_SERVER_CONF first, then falls back to WRP_RUNTIME_CONF
-   * @return Configuration file path or empty string if neither is set
+   * Get server configuration file path
+   * Lookup order:
+   *   1. CHI_SERVER_CONF env var
+   *   2. WRP_RUNTIME_CONF env var
+   *   3. ~/.chimaera/chimaera.yaml (if it exists)
+   *   4. Empty string (bare minimum defaults, no compose)
+   * @return Configuration file path or empty string if no config found
    */
   std::string GetServerConfigPath() const;
 
@@ -157,6 +162,12 @@ class ConfigManager : public hshm::BaseConfig {
    * @return Port number for networking
    */
   u32 GetPort() const;
+
+  /**
+   * Get server address for client connections
+   * @return Server address (default: "127.0.0.1", overridden by CHI_SERVER_ADDR)
+   */
+  std::string GetServerAddr() const;
 
   /**
    * Get neighborhood size for range query splitting
@@ -194,6 +205,12 @@ class ConfigManager : public hshm::BaseConfig {
    * @return Compose configuration with all pool definitions
    */
   const ComposeConfig& GetComposeConfig() const { return compose_config_; }
+
+  /**
+   * Get configuration directory for persistent runtime config
+   * @return Directory path for storing persistent runtime configuration
+   */
+  std::string GetConfDir() const { return conf_dir_; }
 
   /**
    * Get wait_for_restart timeout in seconds
@@ -236,12 +253,12 @@ class ConfigManager : public hshm::BaseConfig {
   // Configuration parameters
   u32 num_threads_ = 4;
   u32 queue_depth_ = 1024;
-  u32 process_reaper_workers_ = 1;
 
   size_t main_segment_size_ = hshm::Unit<size_t>::Gigabytes(1);
   size_t client_data_segment_size_ = hshm::Unit<size_t>::Megabytes(256);
 
-  u32 port_ = 5555;
+  u32 port_ = 9413;
+  std::string server_addr_ = "127.0.0.1";
   u32 neighborhood_size_ = 32;
 
   // Shared memory segment names with environment variable support
@@ -264,6 +281,9 @@ class ConfigManager : public hshm::BaseConfig {
 
   // Compose configuration
   ComposeConfig compose_config_;
+
+  // Configuration directory for persistent runtime config
+  std::string conf_dir_ = "/tmp/chimaera";
 };
 
 }  // namespace chi

@@ -27,6 +27,12 @@ void Runtime::Init(const chi::PoolId &pool_id, const std::string &pool_name,
   client_ = Client(pool_id);
 }
 
+void Runtime::Restart(const chi::PoolId &pool_id, const std::string &pool_name,
+                      chi::u32 container_id) {
+  is_restart_ = true;
+  Init(pool_id, pool_name, container_id);
+}
+
 chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr, chi::RunContext& rctx) {
   switch (method) {
     case Method::kCreate: {
@@ -39,6 +45,12 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
       // Cast task FullPtr to specific type
       hipc::FullPtr<DestroyTask> typed_task = task_ptr.template Cast<DestroyTask>();
       co_await Destroy(typed_task, rctx);
+      break;
+    }
+    case Method::kMonitor: {
+      // Cast task FullPtr to specific type
+      hipc::FullPtr<MonitorTask> typed_task = task_ptr.template Cast<MonitorTask>();
+      co_await Monitor(typed_task, rctx);
       break;
     }
     case Method::kRegisterTarget: {
@@ -131,6 +143,12 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
       co_await GetContainedBlobs(typed_task, rctx);
       break;
     }
+    case Method::kGetBlobInfo: {
+      // Cast task FullPtr to specific type
+      hipc::FullPtr<GetBlobInfoTask> typed_task = task_ptr.template Cast<GetBlobInfoTask>();
+      co_await GetBlobInfo(typed_task, rctx);
+      break;
+    }
     case Method::kTagQuery: {
       // Cast task FullPtr to specific type
       hipc::FullPtr<TagQueryTask> typed_task = task_ptr.template Cast<TagQueryTask>();
@@ -149,10 +167,16 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
       co_await GetTargetInfo(typed_task, rctx);
       break;
     }
-    case Method::kGetBlobInfo: {
+    case Method::kFlushMetadata: {
       // Cast task FullPtr to specific type
-      hipc::FullPtr<GetBlobInfoTask> typed_task = task_ptr.template Cast<GetBlobInfoTask>();
-      co_await GetBlobInfo(typed_task, rctx);
+      hipc::FullPtr<FlushMetadataTask> typed_task = task_ptr.template Cast<FlushMetadataTask>();
+      co_await FlushMetadata(typed_task, rctx);
+      break;
+    }
+    case Method::kFlushData: {
+      // Cast task FullPtr to specific type
+      hipc::FullPtr<FlushDataTask> typed_task = task_ptr.template Cast<FlushDataTask>();
+      co_await FlushData(typed_task, rctx);
       break;
     }
     default: {
@@ -175,6 +199,10 @@ void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
     }
     case Method::kDestroy: {
       ipc_manager->DelTask(task_ptr.template Cast<DestroyTask>());
+      break;
+    }
+    case Method::kMonitor: {
+      ipc_manager->DelTask(task_ptr.template Cast<MonitorTask>());
       break;
     }
     case Method::kRegisterTarget: {
@@ -237,6 +265,10 @@ void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
       ipc_manager->DelTask(task_ptr.template Cast<GetContainedBlobsTask>());
       break;
     }
+    case Method::kGetBlobInfo: {
+      ipc_manager->DelTask(task_ptr.template Cast<GetBlobInfoTask>());
+      break;
+    }
     case Method::kTagQuery: {
       ipc_manager->DelTask(task_ptr.template Cast<TagQueryTask>());
       break;
@@ -249,8 +281,12 @@ void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
       ipc_manager->DelTask(task_ptr.template Cast<GetTargetInfoTask>());
       break;
     }
-    case Method::kGetBlobInfo: {
-      ipc_manager->DelTask(task_ptr.template Cast<GetBlobInfoTask>());
+    case Method::kFlushMetadata: {
+      ipc_manager->DelTask(task_ptr.template Cast<FlushMetadataTask>());
+      break;
+    }
+    case Method::kFlushData: {
+      ipc_manager->DelTask(task_ptr.template Cast<FlushDataTask>());
       break;
     }
     default: {
@@ -274,6 +310,11 @@ void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
       archive << *typed_task.ptr_;
       break;
     }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      archive << *typed_task.ptr_;
+      break;
+    }
     case Method::kRegisterTarget: {
       auto typed_task = task_ptr.template Cast<RegisterTargetTask>();
       archive << *typed_task.ptr_;
@@ -349,6 +390,11 @@ void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
       archive << *typed_task.ptr_;
       break;
     }
+    case Method::kGetBlobInfo: {
+      auto typed_task = task_ptr.template Cast<GetBlobInfoTask>();
+      archive << *typed_task.ptr_;
+      break;
+    }
     case Method::kTagQuery: {
       auto typed_task = task_ptr.template Cast<TagQueryTask>();
       archive << *typed_task.ptr_;
@@ -364,8 +410,13 @@ void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
       archive << *typed_task.ptr_;
       break;
     }
-    case Method::kGetBlobInfo: {
-      auto typed_task = task_ptr.template Cast<GetBlobInfoTask>();
+    case Method::kFlushMetadata: {
+      auto typed_task = task_ptr.template Cast<FlushMetadataTask>();
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kFlushData: {
+      auto typed_task = task_ptr.template Cast<FlushDataTask>();
       archive << *typed_task.ptr_;
       break;
     }
@@ -389,6 +440,11 @@ void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
       archive >> *typed_task.ptr_;
       break;
     }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      archive >> *typed_task.ptr_;
+      break;
+    }
     case Method::kRegisterTarget: {
       auto typed_task = task_ptr.template Cast<RegisterTargetTask>();
       archive >> *typed_task.ptr_;
@@ -464,6 +520,11 @@ void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
       archive >> *typed_task.ptr_;
       break;
     }
+    case Method::kGetBlobInfo: {
+      auto typed_task = task_ptr.template Cast<GetBlobInfoTask>();
+      archive >> *typed_task.ptr_;
+      break;
+    }
     case Method::kTagQuery: {
       auto typed_task = task_ptr.template Cast<TagQueryTask>();
       archive >> *typed_task.ptr_;
@@ -479,8 +540,13 @@ void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
       archive >> *typed_task.ptr_;
       break;
     }
-    case Method::kGetBlobInfo: {
-      auto typed_task = task_ptr.template Cast<GetBlobInfoTask>();
+    case Method::kFlushMetadata: {
+      auto typed_task = task_ptr.template Cast<FlushMetadataTask>();
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kFlushData: {
+      auto typed_task = task_ptr.template Cast<FlushDataTask>();
       archive >> *typed_task.ptr_;
       break;
     }
@@ -504,128 +570,146 @@ void Runtime::LocalLoadTask(chi::u32 method, chi::LocalLoadTaskArchive& archive,
   switch (method) {
     case Method::kCreate: {
       auto typed_task = task_ptr.template Cast<CreateTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kDestroy: {
       auto typed_task = task_ptr.template Cast<DestroyTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kRegisterTarget: {
       auto typed_task = task_ptr.template Cast<RegisterTargetTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kUnregisterTarget: {
       auto typed_task = task_ptr.template Cast<UnregisterTargetTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kListTargets: {
       auto typed_task = task_ptr.template Cast<ListTargetsTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kStatTargets: {
       auto typed_task = task_ptr.template Cast<StatTargetsTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetOrCreateTag: {
       auto typed_task = task_ptr.template Cast<core::GetOrCreateTagTask<core::CreateParams>>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kPutBlob: {
       auto typed_task = task_ptr.template Cast<PutBlobTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetBlob: {
       auto typed_task = task_ptr.template Cast<GetBlobTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kReorganizeBlob: {
       auto typed_task = task_ptr.template Cast<ReorganizeBlobTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kDelBlob: {
       auto typed_task = task_ptr.template Cast<DelBlobTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kDelTag: {
       auto typed_task = task_ptr.template Cast<DelTagTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetTagSize: {
       auto typed_task = task_ptr.template Cast<GetTagSizeTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kPollTelemetryLog: {
       auto typed_task = task_ptr.template Cast<PollTelemetryLogTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetBlobScore: {
       auto typed_task = task_ptr.template Cast<GetBlobScoreTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetBlobSize: {
       auto typed_task = task_ptr.template Cast<GetBlobSizeTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetContainedBlobs: {
       auto typed_task = task_ptr.template Cast<GetContainedBlobsTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
-      break;
-    }
-    case Method::kTagQuery: {
-      auto typed_task = task_ptr.template Cast<TagQueryTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
-      break;
-    }
-    case Method::kBlobQuery: {
-      auto typed_task = task_ptr.template Cast<BlobQueryTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
-      break;
-    }
-    case Method::kGetTargetInfo: {
-      auto typed_task = task_ptr.template Cast<GetTargetInfoTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kGetBlobInfo: {
       auto typed_task = task_ptr.template Cast<GetBlobInfoTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kTagQuery: {
+      auto typed_task = task_ptr.template Cast<TagQueryTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kBlobQuery: {
+      auto typed_task = task_ptr.template Cast<BlobQueryTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kGetTargetInfo: {
+      auto typed_task = task_ptr.template Cast<GetTargetInfoTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kFlushMetadata: {
+      auto typed_task = task_ptr.template Cast<FlushMetadataTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kFlushData: {
+      auto typed_task = task_ptr.template Cast<FlushDataTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     default: {
@@ -648,128 +732,146 @@ void Runtime::LocalSaveTask(chi::u32 method, chi::LocalSaveTaskArchive& archive,
   switch (method) {
     case Method::kCreate: {
       auto typed_task = task_ptr.template Cast<CreateTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kDestroy: {
       auto typed_task = task_ptr.template Cast<DestroyTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kRegisterTarget: {
       auto typed_task = task_ptr.template Cast<RegisterTargetTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kUnregisterTarget: {
       auto typed_task = task_ptr.template Cast<UnregisterTargetTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kListTargets: {
       auto typed_task = task_ptr.template Cast<ListTargetsTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kStatTargets: {
       auto typed_task = task_ptr.template Cast<StatTargetsTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetOrCreateTag: {
       auto typed_task = task_ptr.template Cast<core::GetOrCreateTagTask<core::CreateParams>>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kPutBlob: {
       auto typed_task = task_ptr.template Cast<PutBlobTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetBlob: {
       auto typed_task = task_ptr.template Cast<GetBlobTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kReorganizeBlob: {
       auto typed_task = task_ptr.template Cast<ReorganizeBlobTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kDelBlob: {
       auto typed_task = task_ptr.template Cast<DelBlobTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kDelTag: {
       auto typed_task = task_ptr.template Cast<DelTagTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetTagSize: {
       auto typed_task = task_ptr.template Cast<GetTagSizeTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kPollTelemetryLog: {
       auto typed_task = task_ptr.template Cast<PollTelemetryLogTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetBlobScore: {
       auto typed_task = task_ptr.template Cast<GetBlobScoreTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetBlobSize: {
       auto typed_task = task_ptr.template Cast<GetBlobSizeTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetContainedBlobs: {
       auto typed_task = task_ptr.template Cast<GetContainedBlobsTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
-      break;
-    }
-    case Method::kTagQuery: {
-      auto typed_task = task_ptr.template Cast<TagQueryTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
-      break;
-    }
-    case Method::kBlobQuery: {
-      auto typed_task = task_ptr.template Cast<BlobQueryTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
-      break;
-    }
-    case Method::kGetTargetInfo: {
-      auto typed_task = task_ptr.template Cast<GetTargetInfoTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kGetBlobInfo: {
       auto typed_task = task_ptr.template Cast<GetBlobInfoTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kTagQuery: {
+      auto typed_task = task_ptr.template Cast<TagQueryTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kBlobQuery: {
+      auto typed_task = task_ptr.template Cast<BlobQueryTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kGetTargetInfo: {
+      auto typed_task = task_ptr.template Cast<GetTargetInfoTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kFlushMetadata: {
+      auto typed_task = task_ptr.template Cast<FlushMetadataTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kFlushData: {
+      auto typed_task = task_ptr.template Cast<FlushDataTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     default: {
@@ -803,6 +905,17 @@ hipc::FullPtr<chi::Task> Runtime::NewCopyTask(chi::u32 method, hipc::FullPtr<chi
       if (!new_task_ptr.IsNull()) {
         // Copy task fields (includes base Task fields)
         auto task_typed = orig_task_ptr.template Cast<DestroyTask>();
+        new_task_ptr->Copy(task_typed);
+        return new_task_ptr.template Cast<chi::Task>();
+      }
+      break;
+    }
+    case Method::kMonitor: {
+      // Allocate new task
+      auto new_task_ptr = ipc_manager->NewTask<MonitorTask>();
+      if (!new_task_ptr.IsNull()) {
+        // Copy task fields (includes base Task fields)
+        auto task_typed = orig_task_ptr.template Cast<MonitorTask>();
         new_task_ptr->Copy(task_typed);
         return new_task_ptr.template Cast<chi::Task>();
       }
@@ -973,6 +1086,17 @@ hipc::FullPtr<chi::Task> Runtime::NewCopyTask(chi::u32 method, hipc::FullPtr<chi
       }
       break;
     }
+    case Method::kGetBlobInfo: {
+      // Allocate new task
+      auto new_task_ptr = ipc_manager->NewTask<GetBlobInfoTask>();
+      if (!new_task_ptr.IsNull()) {
+        // Copy task fields (includes base Task fields)
+        auto task_typed = orig_task_ptr.template Cast<GetBlobInfoTask>();
+        new_task_ptr->Copy(task_typed);
+        return new_task_ptr.template Cast<chi::Task>();
+      }
+      break;
+    }
     case Method::kTagQuery: {
       // Allocate new task
       auto new_task_ptr = ipc_manager->NewTask<TagQueryTask>();
@@ -1006,12 +1130,23 @@ hipc::FullPtr<chi::Task> Runtime::NewCopyTask(chi::u32 method, hipc::FullPtr<chi
       }
       break;
     }
-    case Method::kGetBlobInfo: {
+    case Method::kFlushMetadata: {
       // Allocate new task
-      auto new_task_ptr = ipc_manager->NewTask<GetBlobInfoTask>();
+      auto new_task_ptr = ipc_manager->NewTask<FlushMetadataTask>();
       if (!new_task_ptr.IsNull()) {
         // Copy task fields (includes base Task fields)
-        auto task_typed = orig_task_ptr.template Cast<GetBlobInfoTask>();
+        auto task_typed = orig_task_ptr.template Cast<FlushMetadataTask>();
+        new_task_ptr->Copy(task_typed);
+        return new_task_ptr.template Cast<chi::Task>();
+      }
+      break;
+    }
+    case Method::kFlushData: {
+      // Allocate new task
+      auto new_task_ptr = ipc_manager->NewTask<FlushDataTask>();
+      if (!new_task_ptr.IsNull()) {
+        // Copy task fields (includes base Task fields)
+        auto task_typed = orig_task_ptr.template Cast<FlushDataTask>();
         new_task_ptr->Copy(task_typed);
         return new_task_ptr.template Cast<chi::Task>();
       }
@@ -1027,7 +1162,7 @@ hipc::FullPtr<chi::Task> Runtime::NewCopyTask(chi::u32 method, hipc::FullPtr<chi
       break;
     }
   }
-
+  
   (void)deep;    // Deep copy parameter reserved for future use
   return hipc::FullPtr<chi::Task>();
 }
@@ -1045,6 +1180,10 @@ hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 method) {
     }
     case Method::kDestroy: {
       auto new_task_ptr = ipc_manager->NewTask<DestroyTask>();
+      return new_task_ptr.template Cast<chi::Task>();
+    }
+    case Method::kMonitor: {
+      auto new_task_ptr = ipc_manager->NewTask<MonitorTask>();
       return new_task_ptr.template Cast<chi::Task>();
     }
     case Method::kRegisterTarget: {
@@ -1107,6 +1246,10 @@ hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 method) {
       auto new_task_ptr = ipc_manager->NewTask<GetContainedBlobsTask>();
       return new_task_ptr.template Cast<chi::Task>();
     }
+    case Method::kGetBlobInfo: {
+      auto new_task_ptr = ipc_manager->NewTask<GetBlobInfoTask>();
+      return new_task_ptr.template Cast<chi::Task>();
+    }
     case Method::kTagQuery: {
       auto new_task_ptr = ipc_manager->NewTask<TagQueryTask>();
       return new_task_ptr.template Cast<chi::Task>();
@@ -1119,8 +1262,12 @@ hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 method) {
       auto new_task_ptr = ipc_manager->NewTask<GetTargetInfoTask>();
       return new_task_ptr.template Cast<chi::Task>();
     }
-    case Method::kGetBlobInfo: {
-      auto new_task_ptr = ipc_manager->NewTask<GetBlobInfoTask>();
+    case Method::kFlushMetadata: {
+      auto new_task_ptr = ipc_manager->NewTask<FlushMetadataTask>();
+      return new_task_ptr.template Cast<chi::Task>();
+    }
+    case Method::kFlushData: {
+      auto new_task_ptr = ipc_manager->NewTask<FlushDataTask>();
       return new_task_ptr.template Cast<chi::Task>();
     }
     default: {
@@ -1145,6 +1292,14 @@ void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> origin_task_pt
       // Get typed tasks for Aggregate call
       auto typed_origin = origin_task_ptr.template Cast<DestroyTask>();
       auto typed_replica = replica_task_ptr.template Cast<DestroyTask>();
+      // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
+      typed_origin.ptr_->Aggregate(typed_replica);
+      break;
+    }
+    case Method::kMonitor: {
+      // Get typed tasks for Aggregate call
+      auto typed_origin = origin_task_ptr.template Cast<MonitorTask>();
+      auto typed_replica = replica_task_ptr.template Cast<MonitorTask>();
       // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
       typed_origin.ptr_->Aggregate(typed_replica);
       break;
@@ -1269,6 +1424,14 @@ void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> origin_task_pt
       typed_origin.ptr_->Aggregate(typed_replica);
       break;
     }
+    case Method::kGetBlobInfo: {
+      // Get typed tasks for Aggregate call
+      auto typed_origin = origin_task_ptr.template Cast<GetBlobInfoTask>();
+      auto typed_replica = replica_task_ptr.template Cast<GetBlobInfoTask>();
+      // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
+      typed_origin.ptr_->Aggregate(typed_replica);
+      break;
+    }
     case Method::kTagQuery: {
       // Get typed tasks for Aggregate call
       auto typed_origin = origin_task_ptr.template Cast<TagQueryTask>();
@@ -1293,10 +1456,18 @@ void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> origin_task_pt
       typed_origin.ptr_->Aggregate(typed_replica);
       break;
     }
-    case Method::kGetBlobInfo: {
+    case Method::kFlushMetadata: {
       // Get typed tasks for Aggregate call
-      auto typed_origin = origin_task_ptr.template Cast<GetBlobInfoTask>();
-      auto typed_replica = replica_task_ptr.template Cast<GetBlobInfoTask>();
+      auto typed_origin = origin_task_ptr.template Cast<FlushMetadataTask>();
+      auto typed_replica = replica_task_ptr.template Cast<FlushMetadataTask>();
+      // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
+      typed_origin.ptr_->Aggregate(typed_replica);
+      break;
+    }
+    case Method::kFlushData: {
+      // Get typed tasks for Aggregate call
+      auto typed_origin = origin_task_ptr.template Cast<FlushDataTask>();
+      auto typed_replica = replica_task_ptr.template Cast<FlushDataTask>();
       // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
       typed_origin.ptr_->Aggregate(typed_replica);
       break;

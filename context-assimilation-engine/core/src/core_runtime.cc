@@ -31,11 +31,13 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <hdf5.h>
 #include <wrp_cae/core/core_runtime.h>
 #include <wrp_cae/core/factory/assimilation_ctx.h>
 #include <wrp_cae/core/factory/assimilator_factory.h>
+#ifdef WRP_CAE_ENABLE_HDF5
+#include <hdf5.h>
 #include <wrp_cae/core/factory/hdf5_file_assimilator.h>
+#endif
 
 #include <cereal/archives/binary.hpp>
 #include <cereal/types/vector.hpp>
@@ -51,6 +53,13 @@
 CHI_TASK_CC(wrp_cae::core::Runtime)
 
 namespace wrp_cae::core {
+
+chi::TaskResume Runtime::Monitor(hipc::FullPtr<MonitorTask> task,
+                                 chi::RunContext &rctx) {
+  task->SetReturnCode(0);
+  (void)rctx;
+  co_return;
+}
 
 void Runtime::Create(hipc::FullPtr<CreateTask> task, chi::RunContext& ctx) {
   // Container is already initialized via Init() before Create is called
@@ -148,6 +157,7 @@ chi::TaskResume Runtime::ParseOmni(hipc::FullPtr<ParseOmniTask> task,
 
 chi::TaskResume Runtime::ProcessHdf5Dataset(
     hipc::FullPtr<ProcessHdf5DatasetTask> task, chi::RunContext& ctx) {
+#ifdef WRP_CAE_ENABLE_HDF5
   HLOG(kInfo, "ProcessHdf5Dataset: file='{}', dataset='{}', tag_prefix='{}'",
        task->file_path_.str(), task->dataset_path_.str(),
        task->tag_prefix_.str());
@@ -185,7 +195,11 @@ chi::TaskResume Runtime::ProcessHdf5Dataset(
          task->dataset_path_.str());
     task->result_code_ = 0;
   }
-
+#else
+  task->result_code_ = -1;
+  task->error_message_ =
+      chi::priv::string("HDF5 support not compiled in", HSHM_MALLOC);
+#endif
   co_return;
 }
 

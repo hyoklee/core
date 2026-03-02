@@ -64,6 +64,7 @@ void EnsureInitialized() {
   if (!g_initialized) {
     chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
     g_initialized = true;
+    SimpleTest::g_test_finalize = chi::CHIMAERA_FINALIZE;
   }
 }
 
@@ -82,7 +83,7 @@ TEST_CASE("Autogen - Admin MonitorTask SaveTask/LoadTask", "[autogen][admin][mon
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -92,7 +93,7 @@ TEST_CASE("Autogen - Admin MonitorTask SaveTask/LoadTask", "[autogen][admin][mon
   SECTION("SaveTask and LoadTask for MonitorTask") {
     // Create MonitorTask
     auto orig_task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (orig_task.IsNull()) {
       INFO("Failed to create MonitorTask - skipping test");
@@ -127,7 +128,7 @@ TEST_CASE("Autogen - Admin FlushTask SaveTask/LoadTask", "[autogen][admin][flush
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -163,41 +164,41 @@ TEST_CASE("Autogen - Admin FlushTask SaveTask/LoadTask", "[autogen][admin][flush
   }
 }
 
-TEST_CASE("Autogen - Admin HeartbeatTask SaveTask/LoadTask", "[autogen][admin][heartbeat]") {
+TEST_CASE("Autogen - Admin ClientConnectTask SaveTask/LoadTask", "[autogen][admin][clientconnect]") {
   EnsureInitialized();
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
     return;
   }
 
-  SECTION("SaveTask and LoadTask for HeartbeatTask") {
-    auto orig_task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("SaveTask and LoadTask for ClientConnectTask") {
+    auto orig_task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
 
     if (orig_task.IsNull()) {
-      INFO("Failed to create HeartbeatTask - skipping test");
+      INFO("Failed to create ClientConnectTask - skipping test");
       return;
     }
 
     chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeIn);
     hipc::FullPtr<chi::Task> task_ptr = orig_task.template Cast<chi::Task>();
-    container->SaveTask(chimaera::admin::Method::kHeartbeat, save_archive, task_ptr);
+    container->SaveTask(chimaera::admin::Method::kClientConnect, save_archive, task_ptr);
 
     std::string save_data = save_archive.GetData();
     chi::LoadTaskArchive load_archive(save_data);
     load_archive.msg_type_ = chi::MsgType::kSerializeIn;
 
-    auto loaded_task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>();
+    auto loaded_task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>();
     hipc::FullPtr<chi::Task> loaded_ptr = loaded_task.template Cast<chi::Task>();
-    container->LoadTask(chimaera::admin::Method::kHeartbeat, load_archive, loaded_ptr);
+    container->LoadTask(chimaera::admin::Method::kClientConnect, load_archive, loaded_ptr);
 
     REQUIRE(!loaded_task.IsNull());
-    INFO("HeartbeatTask SaveTask/LoadTask completed successfully");
+    INFO("ClientConnectTask SaveTask/LoadTask completed successfully");
 
     ipc_manager->DelTask(orig_task);
     ipc_manager->DelTask(loaded_task);
@@ -209,7 +210,7 @@ TEST_CASE("Autogen - Admin NewTask for all methods", "[autogen][admin][newtask]"
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -224,7 +225,7 @@ TEST_CASE("Autogen - Admin NewTask for all methods", "[autogen][admin][newtask]"
         chimaera::admin::Method::kGetOrCreatePool,
         chimaera::admin::Method::kDestroyPool,
         chimaera::admin::Method::kFlush,
-        chimaera::admin::Method::kHeartbeat,
+        chimaera::admin::Method::kClientConnect,
         chimaera::admin::Method::kMonitor,
         chimaera::admin::Method::kSubmitBatch
     };
@@ -244,7 +245,7 @@ TEST_CASE("Autogen - Admin NewCopyTask", "[autogen][admin][copytask]") {
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -273,7 +274,7 @@ TEST_CASE("Autogen - Admin NewCopyTask", "[autogen][admin][copytask]") {
 
   SECTION("NewCopyTask for MonitorTask") {
     auto orig_task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (orig_task.IsNull()) {
       INFO("Failed to create original task - skipping test");
@@ -291,8 +292,8 @@ TEST_CASE("Autogen - Admin NewCopyTask", "[autogen][admin][copytask]") {
     ipc_manager->DelTask(orig_task);
   }
 
-  SECTION("NewCopyTask for HeartbeatTask") {
-    auto orig_task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("NewCopyTask for ClientConnectTask") {
+    auto orig_task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
 
     if (orig_task.IsNull()) {
@@ -301,10 +302,10 @@ TEST_CASE("Autogen - Admin NewCopyTask", "[autogen][admin][copytask]") {
     }
 
     hipc::FullPtr<chi::Task> task_ptr = orig_task.template Cast<chi::Task>();
-    auto copied_task = container->NewCopyTask(chimaera::admin::Method::kHeartbeat, task_ptr, false);
+    auto copied_task = container->NewCopyTask(chimaera::admin::Method::kClientConnect, task_ptr, false);
 
     if (!copied_task.IsNull()) {
-      INFO("NewCopyTask for HeartbeatTask succeeded");
+      INFO("NewCopyTask for ClientConnectTask succeeded");
       ipc_manager->DelTask(copied_task);
     }
 
@@ -317,7 +318,7 @@ TEST_CASE("Autogen - Admin Aggregate", "[autogen][admin][aggregate]") {
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -348,9 +349,9 @@ TEST_CASE("Autogen - Admin Aggregate", "[autogen][admin][aggregate]") {
 
   SECTION("Aggregate for MonitorTask") {
     auto origin_task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
     auto replica_task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (origin_task.IsNull() || replica_task.IsNull()) {
       INFO("Failed to create tasks - skipping test");
@@ -374,7 +375,7 @@ TEST_CASE("Autogen - Admin LocalSaveTask/LocalLoadTask", "[autogen][admin][local
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -409,7 +410,7 @@ TEST_CASE("Autogen - Admin LocalSaveTask/LocalLoadTask", "[autogen][admin][local
 
   SECTION("LocalSaveTask and LocalLoadTask for MonitorTask") {
     auto orig_task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (orig_task.IsNull()) {
       INFO("Failed to create task - skipping test");
@@ -431,8 +432,8 @@ TEST_CASE("Autogen - Admin LocalSaveTask/LocalLoadTask", "[autogen][admin][local
     ipc_manager->DelTask(orig_task);
   }
 
-  SECTION("LocalSaveTask and LocalLoadTask for HeartbeatTask") {
-    auto orig_task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("LocalSaveTask and LocalLoadTask for ClientConnectTask") {
+    auto orig_task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
 
     if (orig_task.IsNull()) {
@@ -442,13 +443,13 @@ TEST_CASE("Autogen - Admin LocalSaveTask/LocalLoadTask", "[autogen][admin][local
 
     chi::LocalSaveTaskArchive save_archive(chi::LocalMsgType::kSerializeIn);
     hipc::FullPtr<chi::Task> task_ptr = orig_task.template Cast<chi::Task>();
-    container->LocalSaveTask(chimaera::admin::Method::kHeartbeat, save_archive, task_ptr);
+    container->LocalSaveTask(chimaera::admin::Method::kClientConnect, save_archive, task_ptr);
 
-    auto loaded_task = container->NewTask(chimaera::admin::Method::kHeartbeat);
+    auto loaded_task = container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!loaded_task.IsNull()) {
       chi::LocalLoadTaskArchive load_archive(save_archive.GetData());
-      container->LocalLoadTask(chimaera::admin::Method::kHeartbeat, load_archive, loaded_task);
-      INFO("LocalSaveTask/LocalLoadTask for HeartbeatTask completed");
+      container->LocalLoadTask(chimaera::admin::Method::kClientConnect, load_archive, loaded_task);
+      INFO("LocalSaveTask/LocalLoadTask for ClientConnectTask completed");
       ipc_manager->DelTask(loaded_task);
     }
 
@@ -467,7 +468,7 @@ TEST_CASE("Autogen - Admin DelTask for all methods", "[autogen][admin][deltask]"
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -479,7 +480,7 @@ TEST_CASE("Autogen - Admin DelTask for all methods", "[autogen][admin][deltask]"
     std::vector<std::pair<chi::u32, std::string>> methods = {
         {chimaera::admin::Method::kFlush, "FlushTask"},
         {chimaera::admin::Method::kMonitor, "MonitorTask"},
-        {chimaera::admin::Method::kHeartbeat, "HeartbeatTask"},
+        {chimaera::admin::Method::kClientConnect, "ClientConnectTask"},
     };
 
     for (const auto& [method, name] : methods) {
@@ -678,7 +679,7 @@ TEST_CASE("Autogen - Admin StopRuntimeTask coverage", "[autogen][admin][stoprunt
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -715,7 +716,7 @@ TEST_CASE("Autogen - Admin DestroyPoolTask coverage", "[autogen][admin][destroyp
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -767,7 +768,7 @@ TEST_CASE("Autogen - Admin SubmitBatchTask coverage", "[autogen][admin][submitba
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -804,7 +805,7 @@ TEST_CASE("Autogen - Admin CreateTask and DestroyTask coverage", "[autogen][admi
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -865,7 +866,7 @@ TEST_CASE("Autogen - Admin GetOrCreatePoolTask coverage", "[autogen][admin][geto
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -902,7 +903,7 @@ TEST_CASE("Autogen - Admin SendTask and RecvTask coverage", "[autogen][admin][se
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -1718,7 +1719,7 @@ TEST_CASE("Autogen - Admin Container SaveTask/LoadTask all methods", "[autogen][
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -2499,9 +2500,9 @@ TEST_CASE("Autogen - Admin Additional Task Coverage", "[autogen][admin][addition
 
   SECTION("Copy for MonitorTask") {
     auto task1 = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
     auto task2 = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (!task1.IsNull() && !task2.IsNull()) {
       task2->Copy(task1);
@@ -2511,15 +2512,15 @@ TEST_CASE("Autogen - Admin Additional Task Coverage", "[autogen][admin][addition
     }
   }
 
-  SECTION("Copy for HeartbeatTask") {
-    auto task1 = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("Copy for ClientConnectTask") {
+    auto task1 = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
-    auto task2 = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+    auto task2 = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
 
     if (!task1.IsNull() && !task2.IsNull()) {
       task2->Copy(task1);
-      INFO("HeartbeatTask Copy completed");
+      INFO("ClientConnectTask Copy completed");
       ipc_manager->DelTask(task1);
       ipc_manager->DelTask(task2);
     }
@@ -2541,9 +2542,9 @@ TEST_CASE("Autogen - Admin Additional Task Coverage", "[autogen][admin][addition
 
   SECTION("Aggregate for MonitorTask") {
     auto task1 = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
     auto task2 = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (!task1.IsNull() && !task2.IsNull()) {
       task1->Aggregate(task2);
@@ -2553,15 +2554,15 @@ TEST_CASE("Autogen - Admin Additional Task Coverage", "[autogen][admin][addition
     }
   }
 
-  SECTION("Aggregate for HeartbeatTask") {
-    auto task1 = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("Aggregate for ClientConnectTask") {
+    auto task1 = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
-    auto task2 = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+    auto task2 = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
 
     if (!task1.IsNull() && !task2.IsNull()) {
       task1->Aggregate(task2);
-      INFO("HeartbeatTask Aggregate completed");
+      INFO("ClientConnectTask Aggregate completed");
       ipc_manager->DelTask(task1);
       ipc_manager->DelTask(task2);
     }
@@ -2847,7 +2848,7 @@ TEST_CASE("Autogen - Admin Container advanced operations", "[autogen][admin][con
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* admin_container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* admin_container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (admin_container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -2886,11 +2887,11 @@ TEST_CASE("Autogen - Admin Container advanced operations", "[autogen][admin][con
       ipc_manager->DelTask(task1b);
     }
 
-    auto task2a = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
-    auto task2b = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+    auto task2a = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
+    auto task2b = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!task2a.IsNull() && !task2b.IsNull()) {
-      admin_container->Aggregate(chimaera::admin::Method::kHeartbeat, task2a, task2b);
-      INFO("Admin Container Aggregate for Heartbeat completed");
+      admin_container->Aggregate(chimaera::admin::Method::kClientConnect, task2a, task2b);
+      INFO("Admin Container Aggregate for ClientConnect completed");
       ipc_manager->DelTask(task2a);
       ipc_manager->DelTask(task2b);
     }
@@ -3342,7 +3343,7 @@ TEST_CASE("Autogen - Admin SerializeOut coverage", "[autogen][admin][serializeou
 
   SECTION("SerializeOut for MonitorTask") {
     auto task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
     if (!task.IsNull()) {
       chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeOut);
       save_archive << *task;
@@ -3350,7 +3351,7 @@ TEST_CASE("Autogen - Admin SerializeOut coverage", "[autogen][admin][serializeou
       chi::LoadTaskArchive load_archive(data);
       load_archive.msg_type_ = chi::MsgType::kSerializeOut;
       auto loaded = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-          chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+          chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
       load_archive >> *loaded;
       INFO("MonitorTask SerializeOut completed");
       ipc_manager->DelTask(task);
@@ -3358,8 +3359,8 @@ TEST_CASE("Autogen - Admin SerializeOut coverage", "[autogen][admin][serializeou
     }
   }
 
-  SECTION("SerializeOut for HeartbeatTask") {
-    auto task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("SerializeOut for ClientConnectTask") {
+    auto task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
     if (!task.IsNull()) {
       chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeOut);
@@ -3367,10 +3368,10 @@ TEST_CASE("Autogen - Admin SerializeOut coverage", "[autogen][admin][serializeou
       std::string data = save_archive.GetData();
       chi::LoadTaskArchive load_archive(data);
       load_archive.msg_type_ = chi::MsgType::kSerializeOut;
-      auto loaded = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+      auto loaded = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
           chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
       load_archive >> *loaded;
-      INFO("HeartbeatTask SerializeOut completed");
+      INFO("ClientConnectTask SerializeOut completed");
       ipc_manager->DelTask(task);
       ipc_manager->DelTask(loaded);
     }
@@ -3662,7 +3663,7 @@ TEST_CASE("Autogen - Admin Container DelTask coverage", "[autogen][admin][contai
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* admin_container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* admin_container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (admin_container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -3682,10 +3683,10 @@ TEST_CASE("Autogen - Admin Container DelTask coverage", "[autogen][admin][contai
       INFO("Admin Container DelTask for Monitor completed");
     }
 
-    auto task3 = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+    auto task3 = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!task3.IsNull()) {
-      admin_container->DelTask(chimaera::admin::Method::kHeartbeat, task3);
-      INFO("Admin Container DelTask for Heartbeat completed");
+      admin_container->DelTask(chimaera::admin::Method::kClientConnect, task3);
+      INFO("Admin Container DelTask for ClientConnect completed");
     }
 
     auto task4 = admin_container->NewTask(chimaera::admin::Method::kCreate);
@@ -4064,7 +4065,7 @@ TEST_CASE("Autogen - Admin NewCopyTask comprehensive", "[autogen][admin][newcopy
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* admin_container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* admin_container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (admin_container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -4167,12 +4168,12 @@ TEST_CASE("Autogen - Admin NewCopyTask comprehensive", "[autogen][admin][newcopy
     }
   }
 
-  SECTION("NewCopyTask for Heartbeat") {
-    auto orig = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+  SECTION("NewCopyTask for ClientConnect") {
+    auto orig = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!orig.IsNull()) {
-      auto copy = admin_container->NewCopyTask(chimaera::admin::Method::kHeartbeat, orig, false);
+      auto copy = admin_container->NewCopyTask(chimaera::admin::Method::kClientConnect, orig, false);
       if (!copy.IsNull()) {
-        INFO("Admin NewCopyTask for Heartbeat completed");
+        INFO("Admin NewCopyTask for ClientConnect completed");
         ipc_manager->DelTask(copy);
       }
       ipc_manager->DelTask(orig);
@@ -4189,7 +4190,7 @@ TEST_CASE("Autogen - Admin Aggregate comprehensive", "[autogen][admin][aggregate
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* admin_container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* admin_container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (admin_container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -4305,7 +4306,7 @@ TEST_CASE("Autogen - Admin SaveTask/LoadTask comprehensive", "[autogen][admin][s
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* admin_container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* admin_container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (admin_container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -4380,34 +4381,34 @@ TEST_CASE("Autogen - Admin SaveTask/LoadTask comprehensive", "[autogen][admin][s
     }
   }
 
-  SECTION("SaveTask/LoadTask SerializeIn for Heartbeat") {
-    auto task = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+  SECTION("SaveTask/LoadTask SerializeIn for ClientConnect") {
+    auto task = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!task.IsNull()) {
       chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeIn);
-      admin_container->SaveTask(chimaera::admin::Method::kHeartbeat, save_archive, task);
-      auto loaded = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+      admin_container->SaveTask(chimaera::admin::Method::kClientConnect, save_archive, task);
+      auto loaded = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
       if (!loaded.IsNull()) {
         chi::LoadTaskArchive load_archive(save_archive.GetData());
         load_archive.msg_type_ = chi::MsgType::kSerializeIn;
-        admin_container->LoadTask(chimaera::admin::Method::kHeartbeat, load_archive, loaded);
-        INFO("SaveTask/LoadTask SerializeIn for Heartbeat completed");
+        admin_container->LoadTask(chimaera::admin::Method::kClientConnect, load_archive, loaded);
+        INFO("SaveTask/LoadTask SerializeIn for ClientConnect completed");
         ipc_manager->DelTask(loaded);
       }
       ipc_manager->DelTask(task);
     }
   }
 
-  SECTION("SaveTask/LoadTask SerializeOut for Heartbeat") {
-    auto task = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+  SECTION("SaveTask/LoadTask SerializeOut for ClientConnect") {
+    auto task = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!task.IsNull()) {
       chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeOut);
-      admin_container->SaveTask(chimaera::admin::Method::kHeartbeat, save_archive, task);
-      auto loaded = admin_container->NewTask(chimaera::admin::Method::kHeartbeat);
+      admin_container->SaveTask(chimaera::admin::Method::kClientConnect, save_archive, task);
+      auto loaded = admin_container->NewTask(chimaera::admin::Method::kClientConnect);
       if (!loaded.IsNull()) {
         chi::LoadTaskArchive load_archive(save_archive.GetData());
         load_archive.msg_type_ = chi::MsgType::kSerializeOut;
-        admin_container->LoadTask(chimaera::admin::Method::kHeartbeat, load_archive, loaded);
-        INFO("SaveTask/LoadTask SerializeOut for Heartbeat completed");
+        admin_container->LoadTask(chimaera::admin::Method::kClientConnect, load_archive, loaded);
+        INFO("SaveTask/LoadTask SerializeOut for ClientConnect completed");
         ipc_manager->DelTask(loaded);
       }
       ipc_manager->DelTask(task);
@@ -4989,18 +4990,18 @@ TEST_CASE("Autogen - Admin All Methods Comprehensive", "[autogen][admin][all][co
 
   SECTION("MonitorTask full coverage") {
     auto task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
     if (!task.IsNull()) {
       chi::SaveTaskArchive save_in(chi::MsgType::kSerializeIn);
       save_in << *task;
       chi::LoadTaskArchive load_in(save_in.GetData());
       load_in.msg_type_ = chi::MsgType::kSerializeIn;
       auto loaded_in = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-          chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+          chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
       load_in >> *loaded_in;
 
       auto task2 = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-          chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+          chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
       if (!task2.IsNull()) {
         task2->Copy(task);
         task->Aggregate(task2);
@@ -5012,26 +5013,26 @@ TEST_CASE("Autogen - Admin All Methods Comprehensive", "[autogen][admin][all][co
     }
   }
 
-  SECTION("HeartbeatTask full coverage") {
-    auto task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("ClientConnectTask full coverage") {
+    auto task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
     if (!task.IsNull()) {
       chi::SaveTaskArchive save_in(chi::MsgType::kSerializeIn);
       save_in << *task;
       chi::LoadTaskArchive load_in(save_in.GetData());
       load_in.msg_type_ = chi::MsgType::kSerializeIn;
-      auto loaded_in = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+      auto loaded_in = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
           chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
       load_in >> *loaded_in;
 
-      auto task2 = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+      auto task2 = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
           chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
       if (!task2.IsNull()) {
         task2->Copy(task);
         task->Aggregate(task2);
         ipc_manager->DelTask(task2);
       }
-      INFO("HeartbeatTask full coverage completed");
+      INFO("ClientConnectTask full coverage completed");
       ipc_manager->DelTask(loaded_in);
       ipc_manager->DelTask(task);
     }
@@ -6976,16 +6977,9 @@ TEST_CASE("Autogen - CAE CreateParams coverage", "[autogen][cae][createparams]")
     INFO("CreateParams default constructor test passed");
   }
 
-  SECTION("CreateParams constructor with allocator") {
-    // CreateParams takes CHI_MAIN_ALLOC_T* (MultiProcessAllocator)
-    // We can pass nullptr since the constructor body is empty
-    wrp_cae::core::CreateParams params(nullptr);
-    INFO("CreateParams allocator constructor test passed");
-  }
-
-  SECTION("CreateParams copy constructor with allocator") {
+  SECTION("CreateParams copy constructor") {
     wrp_cae::core::CreateParams params1;
-    wrp_cae::core::CreateParams params2(nullptr, params1);
+    wrp_cae::core::CreateParams params2(params1);
     INFO("CreateParams copy constructor test passed");
   }
 }
@@ -8162,7 +8156,7 @@ TEST_CASE("Autogen - CTE Runtime AllocLoadTask coverage", "[autogen][cte][runtim
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(wrp_cte::core::kCtePoolId);
+  auto* container = pool_manager->GetStaticContainer(wrp_cte::core::kCtePoolId);
 
   if (container == nullptr) {
     INFO("CTE container not available - skipping test");
@@ -8238,7 +8232,7 @@ TEST_CASE("Autogen - Admin Runtime AllocLoadTask coverage", "[autogen][admin][ru
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -8302,19 +8296,19 @@ TEST_CASE("Autogen - Admin Runtime AllocLoadTask coverage", "[autogen][admin][ru
     }
   }
 
-  SECTION("AllocLoadTask for HeartbeatTask") {
-    auto orig_task = container->NewTask(chimaera::admin::Method::kHeartbeat);
+  SECTION("AllocLoadTask for ClientConnectTask") {
+    auto orig_task = container->NewTask(chimaera::admin::Method::kClientConnect);
     if (!orig_task.IsNull()) {
       chi::SaveTaskArchive save_archive(chi::MsgType::kSerializeIn);
-      container->SaveTask(chimaera::admin::Method::kHeartbeat, save_archive, orig_task);
+      container->SaveTask(chimaera::admin::Method::kClientConnect, save_archive, orig_task);
 
       std::string save_data = save_archive.GetData();
       chi::LoadTaskArchive load_archive(save_data);
       load_archive.msg_type_ = chi::MsgType::kSerializeIn;
 
-      auto loaded_task = container->AllocLoadTask(chimaera::admin::Method::kHeartbeat, load_archive);
+      auto loaded_task = container->AllocLoadTask(chimaera::admin::Method::kClientConnect, load_archive);
       if (!loaded_task.IsNull()) {
-        INFO("AllocLoadTask for HeartbeatTask succeeded");
+        INFO("AllocLoadTask for ClientConnectTask succeeded");
         ipc_manager->DelTask(loaded_task);
       }
       ipc_manager->DelTask(orig_task);
@@ -8722,7 +8716,7 @@ TEST_CASE("Autogen - Bdev Container NewCopyTask coverage", "[autogen][bdev][cont
   // Look for any bdev pool
   for (chi::u32 major = 200; major < 210; ++major) {
     bdev_pool_id = chi::PoolId(major, 0);
-    auto* container = pool_manager->GetContainer(bdev_pool_id);
+    auto* container = pool_manager->GetStaticContainer(bdev_pool_id);
     if (container != nullptr) {
       found_bdev = true;
       break;
@@ -8734,7 +8728,7 @@ TEST_CASE("Autogen - Bdev Container NewCopyTask coverage", "[autogen][bdev][cont
     return;
   }
 
-  auto* container = pool_manager->GetContainer(bdev_pool_id);
+  auto* container = pool_manager->GetStaticContainer(bdev_pool_id);
 
   SECTION("NewCopyTask for WriteTask") {
     auto orig_task = container->NewTask(chimaera::bdev::Method::kWrite);
@@ -8781,7 +8775,7 @@ TEST_CASE("Autogen - Admin Container NewCopyTask coverage", "[autogen][admin][co
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -8844,7 +8838,7 @@ TEST_CASE("Autogen - CTE Container NewCopyTask coverage", "[autogen][cte][contai
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(wrp_cte::core::kCtePoolId);
+  auto* container = pool_manager->GetStaticContainer(wrp_cte::core::kCtePoolId);
 
   if (container == nullptr) {
     INFO("CTE container not available - skipping test");
@@ -8916,7 +8910,7 @@ TEST_CASE("Autogen - Admin Container SaveTask SerializeOut coverage", "[autogen]
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -9013,7 +9007,7 @@ TEST_CASE("Autogen - CTE Container SaveTask SerializeOut coverage", "[autogen][c
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(wrp_cte::core::kCtePoolId);
+  auto* container = pool_manager->GetStaticContainer(wrp_cte::core::kCtePoolId);
 
   if (container == nullptr) {
     INFO("CTE container not available - skipping test");
@@ -9100,7 +9094,7 @@ TEST_CASE("Autogen - Admin Container AllocLoadTask full coverage", "[autogen][ad
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -9255,7 +9249,7 @@ TEST_CASE("Autogen - CAE Container NewTask coverage", "[autogen][cae][container]
 
   // Use the well-known CAE pool ID
   chi::PoolId cae_pool_id = wrp_cae::core::kCaePoolId;
-  auto* container = pool_manager->GetContainer(cae_pool_id);
+  auto* container = pool_manager->GetStaticContainer(cae_pool_id);
 
   if (container == nullptr) {
     INFO("No CAE container found - skipping test");
@@ -9303,7 +9297,7 @@ TEST_CASE("Autogen - CAE Container NewCopyTask coverage", "[autogen][cae][contai
 
   // Use the well-known CAE pool ID
   chi::PoolId cae_pool_id = wrp_cae::core::kCaePoolId;
-  auto* container = pool_manager->GetContainer(cae_pool_id);
+  auto* container = pool_manager->GetStaticContainer(cae_pool_id);
 
   if (container == nullptr) {
     INFO("No CAE container found - skipping test");
@@ -9355,7 +9349,7 @@ TEST_CASE("Autogen - CAE Container Aggregate coverage", "[autogen][cae][containe
 
   // Use the well-known CAE pool ID
   chi::PoolId cae_pool_id = wrp_cae::core::kCaePoolId;
-  auto* container = pool_manager->GetContainer(cae_pool_id);
+  auto* container = pool_manager->GetStaticContainer(cae_pool_id);
 
   if (container == nullptr) {
     INFO("No CAE container found - skipping test");
@@ -9404,7 +9398,7 @@ TEST_CASE("Autogen - CAE Container SaveTask coverage", "[autogen][cae][container
 
   // Use the well-known CAE pool ID
   chi::PoolId cae_pool_id = wrp_cae::core::kCaePoolId;
-  auto* container = pool_manager->GetContainer(cae_pool_id);
+  auto* container = pool_manager->GetStaticContainer(cae_pool_id);
 
   if (container == nullptr) {
     INFO("No CAE container found - skipping test");
@@ -9480,7 +9474,7 @@ TEST_CASE("Autogen - CAE Container AllocLoadTask coverage", "[autogen][cae][cont
 
   // Use the well-known CAE pool ID
   chi::PoolId cae_pool_id = wrp_cae::core::kCaePoolId;
-  auto* container = pool_manager->GetContainer(cae_pool_id);
+  auto* container = pool_manager->GetStaticContainer(cae_pool_id);
 
   if (container == nullptr) {
     INFO("No CAE container found - skipping test");
@@ -9553,7 +9547,7 @@ TEST_CASE("Autogen - CAE Container DelTask coverage", "[autogen][cae][container]
 
   // Use the well-known CAE pool ID
   chi::PoolId cae_pool_id = wrp_cae::core::kCaePoolId;
-  auto* container = pool_manager->GetContainer(cae_pool_id);
+  auto* container = pool_manager->GetStaticContainer(cae_pool_id);
 
   if (container == nullptr) {
     INFO("No CAE container found - skipping test");
@@ -9602,7 +9596,7 @@ TEST_CASE("Autogen - Admin WreapDeadIpcs Container Methods", "[autogen][admin][w
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -9709,7 +9703,7 @@ TEST_CASE("Autogen - Admin LocalAllocLoadTask Additional Methods", "[autogen][ad
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -9737,7 +9731,7 @@ TEST_CASE("Autogen - Admin LocalAllocLoadTask Additional Methods", "[autogen][ad
 
   SECTION("Monitor LocalAllocLoadTask") {
     auto orig_task = ipc_manager->NewTask<chimaera::admin::MonitorTask>(
-        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
+        chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local(), std::string("status"));
 
     if (!orig_task.IsNull()) {
       chi::LocalSaveTaskArchive save_archive(chi::LocalMsgType::kSerializeOut);
@@ -9754,19 +9748,19 @@ TEST_CASE("Autogen - Admin LocalAllocLoadTask Additional Methods", "[autogen][ad
     }
   }
 
-  SECTION("Heartbeat LocalAllocLoadTask") {
-    auto orig_task = ipc_manager->NewTask<chimaera::admin::HeartbeatTask>(
+  SECTION("ClientConnect LocalAllocLoadTask") {
+    auto orig_task = ipc_manager->NewTask<chimaera::admin::ClientConnectTask>(
         chi::CreateTaskId(), chi::kAdminPoolId, chi::PoolQuery::Local());
 
     if (!orig_task.IsNull()) {
       chi::LocalSaveTaskArchive save_archive(chi::LocalMsgType::kSerializeOut);
       hipc::FullPtr<chi::Task> task_ptr = orig_task.template Cast<chi::Task>();
-      container->LocalSaveTask(chimaera::admin::Method::kHeartbeat, save_archive, task_ptr);
+      container->LocalSaveTask(chimaera::admin::Method::kClientConnect, save_archive, task_ptr);
 
       chi::LocalLoadTaskArchive load_archive(save_archive.GetData());
-      auto loaded = container->LocalAllocLoadTask(chimaera::admin::Method::kHeartbeat, load_archive);
+      auto loaded = container->LocalAllocLoadTask(chimaera::admin::Method::kClientConnect, load_archive);
       if (!loaded.IsNull()) {
-        INFO("Heartbeat LocalAllocLoadTask completed");
+        INFO("ClientConnect LocalAllocLoadTask completed");
         ipc_manager->DelTask(loaded);
       }
       ipc_manager->DelTask(orig_task);
@@ -10174,7 +10168,7 @@ TEST_CASE("Autogen - Admin Default Case Coverage", "[autogen][admin][default]") 
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
 
   if (container == nullptr) {
     INFO("Admin container not available - skipping test");
@@ -10920,7 +10914,7 @@ TEST_CASE("Autogen - Admin Container StopRuntime", "[autogen][admin][container][
 
   auto* ipc_manager = CHI_IPC;
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(chi::kAdminPoolId);
+  auto* container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
   if (!container) {
     INFO("Admin container not available - skipping");
     return;
@@ -11523,14 +11517,14 @@ TEST_CASE("Autogen - SystemInfo SharedMemory", "[autogen][systeminfo][shm]") {
     // Unmap
     hshm::SystemInfo::UnmapMemory(ptr, shm_size);
 
-    // Close
-    hshm::SystemInfo::CloseSharedMemory(fd);
-
-    // Open
+    // Open (re-open while original fd is still open)
     hshm::File fd2;
     bool opened = hshm::SystemInfo::OpenSharedMemory(fd2, shm_name);
     REQUIRE(opened);
     hshm::SystemInfo::CloseSharedMemory(fd2);
+
+    // Close original fd
+    hshm::SystemInfo::CloseSharedMemory(fd);
 
     // Destroy
     hshm::SystemInfo::DestroySharedMemory(shm_name);
@@ -11959,7 +11953,8 @@ TEST_CASE("Autogen - PoolQuery factory methods", "[autogen][poolquery][factory]"
     REQUIRE(!q.IsDynamicMode());
     REQUIRE(q.GetRoutingMode() == chi::RoutingMode::Local);
     REQUIRE(q.GetHash() == 0);
-    REQUIRE(q.GetContainerId() == 0);
+    REQUIRE(q.GetContainerId() == chi::kInvalidContainerId);
+    REQUIRE(!q.HasContainerId());
     REQUIRE(q.GetRangeOffset() == 0);
     REQUIRE(q.GetRangeCount() == 0);
     REQUIRE(q.GetNodeId() == 0);
@@ -12122,9 +12117,9 @@ TEST_CASE("Autogen - IpcManager basic accessors", "[autogen][ipcmanager][basic]"
     INFO("Num hosts: " + std::to_string(num));
   }
 
-  SECTION("GetMainServer") {
-    auto* server = ipc->GetMainServer();
-    INFO("MainServer ptr: " + std::to_string((uintptr_t)server));
+  SECTION("GetMainTransport") {
+    auto* transport = ipc->GetMainTransport();
+    INFO("MainTransport ptr: " + std::to_string((uintptr_t)transport));
   }
 }
 
@@ -12324,7 +12319,7 @@ TEST_CASE("Autogen - CTE Container NewTask/DelTask", "[autogen][cte][container][
   EnsureInitialized();
   auto* pool_manager = CHI_POOL_MANAGER;
 
-  auto* container = pool_manager->GetContainer(wrp_cte::core::kCtePoolId);
+  auto* container = pool_manager->GetStaticContainer(wrp_cte::core::kCtePoolId);
   if (!container) {
     INFO("CTE container not available - skipping");
     return;
@@ -12366,7 +12361,7 @@ TEST_CASE("Autogen - CTE Container NewTask/DelTask", "[autogen][cte][container][
 TEST_CASE("Autogen - CTE Container NewCopyTask dispatch", "[autogen][cte][container][newcopy]") {
   EnsureInitialized();
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(wrp_cte::core::kCtePoolId);
+  auto* container = pool_manager->GetStaticContainer(wrp_cte::core::kCtePoolId);
   if (!container) {
     INFO("CTE container not available - skipping");
     return;
@@ -12505,11 +12500,11 @@ TEST_CASE("Autogen - PoolManager operations", "[autogen][poolmanager][ops]") {
   }
 
   SECTION("GetContainer") {
-    auto* admin_container = pool_manager->GetContainer(chi::kAdminPoolId);
+    auto* admin_container = pool_manager->GetStaticContainer(chi::kAdminPoolId);
     REQUIRE(admin_container != nullptr);
     // Non-existent container
     chi::PoolId fake_id(9999, 9999);
-    auto* fake_container = pool_manager->GetContainer(fake_id);
+    auto* fake_container = pool_manager->GetStaticContainer(fake_id);
     REQUIRE(fake_container == nullptr);
     INFO("GetContainer tests completed");
   }
@@ -12587,15 +12582,12 @@ TEST_CASE("Autogen - PoolManager operations", "[autogen][poolmanager][ops]") {
     INFO("Container node ID for fake pool: " + std::to_string(fake_node));
   }
 
-  SECTION("CreateAddressTable") {
+  SECTION("InitAddressMap") {
+    // InitAddressMap requires pool to exist in metadata
+    // Just verify the method doesn't crash on non-existent pool
     chi::PoolId test_id(100, 200);
-    auto addr_table = pool_manager->CreateAddressTable(test_id, 2);
-    // Verify the table has mappings
-    chi::Address global(test_id, chi::Group::kGlobal, 0);
-    chi::Address physical;
-    bool found = addr_table.GlobalToPhysical(global, physical);
-    REQUIRE(found == true);
-    INFO("CreateAddressTable completed");
+    pool_manager->InitAddressMap(test_id, 2);
+    INFO("InitAddressMap completed");
   }
 }
 
@@ -12722,14 +12714,6 @@ compression:
     REQUIRE(!val.empty());
     val = config.GetParameterString("poll_period_ms");
     REQUIRE(!val.empty());
-    val = config.GetParameterString("monitor_interval_ms");
-    REQUIRE(!val.empty());
-    val = config.GetParameterString("dnn_model_weights_path");
-    // Can be empty string but should not crash
-    val = config.GetParameterString("dnn_samples_before_reinforce");
-    REQUIRE(!val.empty());
-    val = config.GetParameterString("trace_folder_path");
-    // Can be empty string
     val = config.GetParameterString("nonexistent_param");
     REQUIRE(val.empty());
     INFO("GetParameterString tests completed");
@@ -12745,10 +12729,6 @@ compression:
     REQUIRE(config.SetParameterFromString("neighborhood", "8") == true);
     REQUIRE(config.SetParameterFromString("default_target_timeout_ms", "60000") == true);
     REQUIRE(config.SetParameterFromString("poll_period_ms", "3000") == true);
-    REQUIRE(config.SetParameterFromString("monitor_interval_ms", "20") == true);
-    REQUIRE(config.SetParameterFromString("dnn_model_weights_path", "/tmp/test.json") == true);
-    REQUIRE(config.SetParameterFromString("dnn_samples_before_reinforce", "2000") == true);
-    REQUIRE(config.SetParameterFromString("trace_folder_path", "/tmp/traces") == true);
     REQUIRE(config.SetParameterFromString("nonexistent_param", "123") == false);
     INFO("SetParameterFromString tests completed");
   }
@@ -12806,98 +12786,39 @@ storage:
     INFO("ParseDpeConfig tests completed");
   }
 
-  SECTION("Config ParseCompressionConfig") {
-    wrp_cte::core::Config config;
-    std::string yaml = R"(
-compression:
-  monitor_interval_ms: 10
-  qtable_model_path: /tmp/qtable
-  qtable_learning_rate: 0.5
-  dnn_model_weights_path: /tmp/weights.json
-  dnn_samples_before_reinforce: 500
-  trace_folder_path: /tmp/traces
-)";
-    bool loaded = config.LoadFromString(yaml);
-    REQUIRE(loaded == true);
-    INFO("ParseCompressionConfig completed");
-  }
 }
 
 // ==========================================================================
-// AddressTable tests
+// PoolInfo address_map_ tests (replaces old AddressTable tests)
 // ==========================================================================
-TEST_CASE("Autogen - AddressTable operations", "[autogen][addresstable]") {
+TEST_CASE("Autogen - PoolInfo address_map operations", "[autogen][addressmap]") {
   EnsureInitialized();
 
-  SECTION("Basic address table operations") {
-    chi::AddressTable table;
-    chi::PoolId pid(100, 200);
+  SECTION("Basic address map operations") {
+    chi::PoolInfo info;
+    info.address_map_[0] = 10;
+    info.address_map_[1] = 20;
 
-    // Add mappings
-    chi::Address local(pid, chi::Group::kLocal, 0);
-    chi::Address global(pid, chi::Group::kGlobal, 0);
-    chi::Address physical(pid, chi::Group::kPhysical, 0);
-
-    table.AddLocalToGlobalMapping(local, global);
-    table.AddGlobalToPhysicalMapping(global, physical);
-
-    // Lookup
-    chi::Address result;
-    REQUIRE(table.LocalToGlobal(local, result) == true);
-    REQUIRE(table.GlobalToPhysical(global, result) == true);
+    REQUIRE(info.address_map_.find(0) != info.address_map_.end());
+    REQUIRE(info.address_map_[0] == 10);
+    REQUIRE(info.address_map_[1] == 20);
 
     // Not found
-    chi::Address bad(pid, chi::Group::kLocal, 99);
-    REQUIRE(table.LocalToGlobal(bad, result) == false);
-    REQUIRE(table.GlobalToPhysical(bad, result) == false);
-    INFO("Basic address table operations completed");
+    REQUIRE(info.address_map_.find(99) == info.address_map_.end());
+    INFO("Basic address map operations completed");
   }
 
-  SECTION("Remove mappings") {
-    chi::AddressTable table;
-    chi::PoolId pid(10, 20);
-    chi::Address local(pid, chi::Group::kLocal, 0);
-    chi::Address global(pid, chi::Group::kGlobal, 0);
-    chi::Address physical(pid, chi::Group::kPhysical, 0);
+  SECTION("Remove and clear") {
+    chi::PoolInfo info;
+    info.address_map_[0] = 10;
+    info.address_map_[1] = 20;
 
-    table.AddLocalToGlobalMapping(local, global);
-    table.AddGlobalToPhysicalMapping(global, physical);
+    info.address_map_.erase(0);
+    REQUIRE(info.address_map_.find(0) == info.address_map_.end());
 
-    table.RemoveLocalToGlobalMapping(local);
-    table.RemoveGlobalToPhysicalMapping(global);
-
-    chi::Address result;
-    REQUIRE(table.LocalToGlobal(local, result) == false);
-    REQUIRE(table.GlobalToPhysical(global, result) == false);
-    INFO("Remove mappings completed");
-  }
-
-  SECTION("Clear") {
-    chi::AddressTable table;
-    chi::PoolId pid(10, 20);
-    chi::Address local(pid, chi::Group::kLocal, 0);
-    chi::Address global(pid, chi::Group::kGlobal, 0);
-    table.AddLocalToGlobalMapping(local, global);
-    table.Clear();
-    chi::Address result;
-    REQUIRE(table.LocalToGlobal(local, result) == false);
-    INFO("Clear completed");
-  }
-
-  SECTION("GetGlobalAddress and GetPhysicalNodes") {
-    chi::AddressTable table;
-    chi::PoolId pid(10, 20);
-    chi::Address global(pid, chi::Group::kGlobal, 0);
-    chi::Address physical(pid, chi::Group::kPhysical, 5);
-    table.AddGlobalToPhysicalMapping(global, physical);
-
-    chi::Address ga = table.GetGlobalAddress(0);
-    INFO("GetGlobalAddress: pool=" + std::to_string(ga.pool_id_.major_));
-
-    auto nodes = table.GetPhysicalNodes(global);
-    REQUIRE(!nodes.empty());
-    REQUIRE(nodes[0] == 5);
-    INFO("GetPhysicalNodes completed");
+    info.address_map_.clear();
+    REQUIRE(info.address_map_.empty());
+    INFO("Remove and clear completed");
   }
 }
 
@@ -12930,7 +12851,7 @@ TEST_CASE("Autogen - PoolInfo struct", "[autogen][poolinfo]") {
 TEST_CASE("Autogen - CTE Container LocalSave/Load dispatch extended", "[autogen][cte][container][localdispatch]") {
   EnsureInitialized();
   auto* pool_manager = CHI_POOL_MANAGER;
-  auto* container = pool_manager->GetContainer(wrp_cte::core::kCtePoolId);
+  auto* container = pool_manager->GetStaticContainer(wrp_cte::core::kCtePoolId);
   if (!container) {
     INFO("CTE container not available - skipping");
     return;
@@ -13145,16 +13066,6 @@ TEST_CASE("Autogen - CTE TargetConfig struct", "[autogen][cte][targetconfig]") {
     REQUIRE(tc.default_target_timeout_ms_ == 30000);
     REQUIRE(tc.poll_period_ms_ == 5000);
     INFO("TargetConfig defaults verified");
-  }
-}
-
-TEST_CASE("Autogen - CTE CompressionConfig struct", "[autogen][cte][compressconfig]") {
-  SECTION("Default values") {
-    wrp_cte::core::CompressionConfig cc;
-    REQUIRE(cc.monitor_interval_ms_ == 5);
-    REQUIRE(cc.dnn_samples_before_reinforce_ == 1000);
-    REQUIRE(cc.qtable_learning_rate_ > 0.0f);
-    INFO("CompressionConfig defaults verified");
   }
 }
 
@@ -13595,11 +13506,12 @@ TEST_CASE("Autogen - Worker extended accessors", "[autogen][worker][extended]") 
     }
   }
 
-  SECTION("Worker GetEpollFd") {
+  SECTION("Worker GetEventManager") {
     auto* worker = work_orch->GetWorker(0);
     if (worker) {
-      int fd = worker->GetEpollFd();
-      INFO("Worker 0 epoll fd: " + std::to_string(fd));
+      auto &em = worker->GetEventManager();
+      int fd = em.GetEpollFd();
+      INFO("Worker 0 EventManager epoll fd: " + std::to_string(fd));
     }
   }
 
@@ -13865,7 +13777,7 @@ TEST_CASE("Autogen - DefaultScheduler AdjustPolling", "[autogen][scheduler][adju
   SECTION("RuntimeMapTask with null worker") {
     chi::DefaultScheduler sched;
     chi::Future<chi::Task> f;
-    chi::u32 result = sched.RuntimeMapTask(nullptr, f);
+    chi::u32 result = sched.RuntimeMapTask(nullptr, f, nullptr);
     REQUIRE(result == 0);
     INFO("RuntimeMapTask(nullptr) returned 0");
   }
@@ -14020,18 +13932,6 @@ TEST_CASE("Autogen - RunContext struct", "[autogen][types][runcontext]") {
   }
 }
 
-// ==========================================================================
-// ExecMode enum tests
-// ==========================================================================
-TEST_CASE("Autogen - ExecMode enum", "[autogen][types][execmode]") {
-  SECTION("Enum values") {
-    chi::RunContext rctx;
-    rctx.exec_mode_ = chi::ExecMode::kExec;
-    REQUIRE(rctx.exec_mode_ == chi::ExecMode::kExec);
-    rctx.exec_mode_ = chi::ExecMode::kDynamicSchedule;
-    REQUIRE(rctx.exec_mode_ == chi::ExecMode::kDynamicSchedule);
-  }
-}
 
 // ==========================================================================
 // IpcManager accessor tests (safe, non-network methods)

@@ -39,9 +39,26 @@
 #include <chimaera/chimaera.h>
 #include <chimaera/container.h>
 #include <chimaera/pool_manager.h>
-#include <chimaera/unordered_map_ll.h>
+#include <hermes_shm/data_structures/priv/unordered_map_ll.h>
+
+#include <deque>
+#include <random>
+#include <unordered_set>
 
 namespace chimaera::admin {
+
+/** Return code set on tasks that fail due to network timeout */
+static constexpr int kNetworkTimeoutRC = -1000;
+
+/** How long (seconds) to keep a task in retry queue before failing it */
+static constexpr float kRetryTimeoutSec = 30.0f;
+
+/** Entry in a retry queue for tasks that couldn't be sent */
+struct RetryEntry {
+  hipc::FullPtr<chi::Task> task;
+  chi::u64 target_node_id;
+  std::chrono::steady_clock::time_point enqueued_at;
+};
 
 // Admin local queue indices
 enum AdminQueueIndex {
@@ -84,8 +101,8 @@ private:
   // Using lock-free unordered_map_ll with 1024 buckets for high concurrency
   // Thread safety: All Send/Recv tasks are routed to a single dedicated net worker
   static constexpr size_t kNumMapBuckets = 1024;
-  chi::unordered_map_ll<size_t, hipc::FullPtr<chi::Task>> send_map_{kNumMapBuckets};  // Tasks sent to remote nodes
-  chi::unordered_map_ll<size_t, hipc::FullPtr<chi::Task>> recv_map_{kNumMapBuckets};  // Tasks received from remote nodes
+  hshm::priv::unordered_map_ll<size_t, hipc::FullPtr<chi::Task>> send_map_{kNumMapBuckets};  // Tasks sent to remote nodes
+  hshm::priv::unordered_map_ll<size_t, hipc::FullPtr<chi::Task>> recv_map_{kNumMapBuckets};  // Tasks received from remote nodes
 
 public:
   /**
@@ -103,6 +120,11 @@ public:
    */
   void Init(const chi::PoolId &pool_id, const std::string &pool_name,
             chi::u32 container_id = 0) override;
+
+  /**
+   * Schedule a task by resolving Dynamic pool queries.
+   */
+  chi::PoolQuery ScheduleTask(const hipc::FullPtr<chi::Task> &task) override;
 
   /**
    * Execute a method on a task
@@ -185,11 +207,22 @@ public:
   chi::TaskResume Recv(hipc::FullPtr<RecvTask> task, chi::RunContext &rctx);
 
   /**
-   * Handle Heartbeat - Respond to heartbeat request
+   * Handle ClientConnect - Respond to client connection request
    * Sets response to 0 to indicate runtime is healthy
-   * Returns TaskResume for consistency with other methods called from Run
    */
-  chi::TaskResume Heartbeat(hipc::FullPtr<HeartbeatTask> task, chi::RunContext &rctx);
+  chi::TaskResume ClientConnect(hipc::FullPtr<ClientConnectTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle ClientRecv - Receive tasks from ZMQ clients (TCP/IPC)
+   * Polls ZMQ ROUTER sockets for incoming task submissions
+   */
+  chi::TaskResume ClientRecv(hipc::FullPtr<ClientRecvTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle ClientSend - Send completed task outputs to ZMQ clients
+   * Polls net_queue_ kClientSendTcp/kClientSendIpc priorities
+   */
+  chi::TaskResume ClientSend(hipc::FullPtr<ClientSendTask> task, chi::RunContext &rctx);
 
   /**
    * Handle WreapDeadIpcs - Periodic task to reap shared memory from dead processes
@@ -199,11 +232,30 @@ public:
   chi::TaskResume WreapDeadIpcs(hipc::FullPtr<WreapDeadIpcsTask> task, chi::RunContext &rctx);
 
   /**
-   * Handle Monitor - Collect and return worker statistics
-   * Iterates through all workers and collects their current statistics
-   * Returns serialized statistics in JSON format
+   * Handle Monitor - Unified monitor query for admin chimod
+   * Supported queries:
+   *   "worker_stats" - collect worker statistics (msgpack-encoded)
    */
   chi::TaskResume Monitor(hipc::FullPtr<MonitorTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle RegisterMemory - Register client shared memory with runtime
+   * Called by SHM-mode clients after IncreaseMemory() to tell the runtime
+   * to attach to the new shared memory segment
+   */
+  chi::TaskResume RegisterMemory(hipc::FullPtr<RegisterMemoryTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle RestartContainers - Re-create pools from saved restart configs
+   * Reads conf_dir/restart/ directory and re-creates pools from saved YAML
+   */
+  chi::TaskResume RestartContainers(hipc::FullPtr<RestartContainersTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle AddNode - Register a new node with this runtime
+   * Updates IpcManager's hostfile and calls Expand on all containers
+   */
+  chi::TaskResume AddNode(hipc::FullPtr<AddNodeTask> task, chi::RunContext &rctx);
 
   /**
    * Handle SubmitBatch - Submit a batch of tasks in a single RPC
@@ -215,14 +267,49 @@ public:
   chi::TaskResume SubmitBatch(hipc::FullPtr<SubmitBatchTask> task, chi::RunContext &rctx);
 
   /**
+   * Handle ChangeAddressTable - Update ContainerId->NodeId mapping
+   * Writes WAL entry and updates pool manager's address table
+   */
+  chi::TaskResume ChangeAddressTable(hipc::FullPtr<ChangeAddressTableTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle MigrateContainers - Orchestrate container migration
+   * Processes each MigrateInfo entry and broadcasts address table changes
+   */
+  chi::TaskResume MigrateContainers(hipc::FullPtr<MigrateContainersTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle Heartbeat - Liveness probe, just returns success
+   */
+  chi::TaskResume Heartbeat(hipc::FullPtr<HeartbeatTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle HeartbeatProbe - Periodic SWIM failure detector
+   * Sends direct probes, escalates to indirect probes, manages suspicion
+   */
+  chi::TaskResume HeartbeatProbe(hipc::FullPtr<HeartbeatProbeTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle ProbeRequest - Indirect probe on behalf of another node
+   * Probes target node and returns result to requester
+   */
+  chi::TaskResume ProbeRequest(hipc::FullPtr<ProbeRequestTask> task, chi::RunContext &rctx);
+
+  /**
+   * Handle RecoverContainers - Recreate containers from dead nodes
+   * All nodes update address_map_, only dest node creates the container
+   */
+  chi::TaskResume RecoverContainers(hipc::FullPtr<RecoverContainersTask> task, chi::RunContext &rctx);
+
+  /**
    * Helper: Receive task inputs from remote node
    */
-  void RecvIn(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Server* lbm_server);
+  void RecvIn(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Transport* lbm_transport);
 
   /**
    * Helper: Receive task outputs from remote node
    */
-  void RecvOut(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Server* lbm_server);
+  void RecvOut(hipc::FullPtr<RecvTask> task, chi::LoadTaskArchive& archive, hshm::lbm::Transport* lbm_transport);
 
   /**
    * Get remaining work count for this admin container
@@ -286,11 +373,71 @@ public:
                  hipc::FullPtr<chi::Task> origin_task_ptr,
                  hipc::FullPtr<chi::Task> replica_task_ptr) override;
 
+  /**
+   * Attempt to send a retried task to the given node
+   * @param entry The retry entry containing the task
+   * @param node_id The node to send to
+   * @return true if send succeeded
+   */
+  bool RetrySendToNode(RetryEntry &entry, chi::u64 node_id);
+
+  /**
+   * Re-resolve target node for a retried task whose original target is dead.
+   * Uses the task's pool_query_ to look up the current container-to-node
+   * mapping from the address_map_, which may have been updated by recovery.
+   * @param entry The retry entry to re-resolve
+   * @return New node ID, or 0 if re-resolution failed
+   */
+  chi::u64 RerouteRetryEntry(RetryEntry &entry);
+
+  /**
+   * Process retry queues: retry sends to revived nodes, re-route via
+   * recovery address map updates, timeout stale entries
+   */
+  void ProcessRetryQueues();
+
+  /**
+   * Scan send_map_ for tasks waiting on dead nodes and time them out
+   */
+  void ScanSendMapTimeouts();
+
 private:
   /**
    * Initiate runtime shutdown sequence
    */
   void InitiateShutdown(chi::u32 grace_period_ms);
+
+  // Retry queues for tasks that failed to send due to dead nodes
+  std::deque<RetryEntry> send_in_retry_;
+  std::deque<RetryEntry> send_out_retry_;
+
+  // SWIM failure detection state
+  struct PendingProbe {
+    chi::Future<HeartbeatTask> future;
+    chi::u64 target_node_id;
+    std::chrono::steady_clock::time_point sent_at;
+  };
+  struct PendingIndirectProbe {
+    chi::Future<ProbeRequestTask> future;
+    chi::u64 target_node_id;   // suspected node
+    chi::u64 helper_node_id;   // node doing the probe
+    std::chrono::steady_clock::time_point sent_at;
+  };
+
+  size_t probe_round_robin_idx_ = 0;
+  std::vector<PendingProbe> pending_direct_probes_;
+  std::vector<PendingIndirectProbe> pending_indirect_probes_;
+  std::mt19937 probe_rng_{std::random_device{}()};
+
+  static constexpr float kDirectProbeTimeoutSec = 5.0f;
+  static constexpr float kIndirectProbeTimeoutSec = 3.0f;
+  static constexpr size_t kIndirectProbeHelpers = 3;
+  static constexpr float kSuspicionTimeoutSec = 10.0f;
+
+  // Recovery state
+  std::vector<chi::RecoveryAssignment> ComputeRecoveryPlan(chi::u64 dead_node_id);
+  void TriggerRecovery(chi::u64 dead_node_id);
+  std::unordered_set<chi::u64> recovery_initiated_;
 };
 
 } // namespace chimaera::admin

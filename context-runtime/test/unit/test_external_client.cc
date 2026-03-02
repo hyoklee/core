@@ -41,9 +41,11 @@
 
 #include "../simple_test.h"
 
-#include <sys/mman.h>
+#ifndef _WIN32
+#include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <chrono>
 #include <cstdlib>
@@ -64,11 +66,11 @@ pid_t StartServerProcess() {
   if (server_pid == 0) {
     // Redirect child's stdout/stderr to /dev/null to prevent massive
     // worker log output from flooding shared pipes and blocking parent
-    freopen("/dev/null", "w", stdout);
-    freopen("/dev/null", "w", stderr);
+    (void)freopen("/dev/null", "w", stdout);
+    (void)freopen("/dev/null", "w", stderr);
 
     // Child process: Start runtime server
-    setenv("CHIMAERA_WITH_RUNTIME", "1", 1);
+    setenv("CHI_WITH_RUNTIME", "1", 1);
     bool success = CHIMAERA_INIT(ChimaeraMode::kServer, true);
     if (!success) {
       _exit(1);
@@ -88,13 +90,15 @@ pid_t StartServerProcess() {
 bool WaitForServer(int max_attempts = 50) {
   // The main shared memory segment name is "chi_main_segment_${USER}"
   const char *user = std::getenv("USER");
-  std::string shm_name = std::string("/chi_main_segment_") + (user ? user : "");
+  std::string memfd_path = std::string("/tmp/chimaera_") +
+                           (user ? user : "unknown") +
+                           "/chi_main_segment_" + (user ? user : "");
 
   for (int i = 0; i < max_attempts; ++i) {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
 
-    // Check if shared memory exists (indicates server is ready)
-    int fd = shm_open(shm_name.c_str(), O_RDONLY, 0666);
+    // Check if memfd symlink exists (indicates server is ready)
+    int fd = open(memfd_path.c_str(), O_RDONLY);
     if (fd >= 0) {
       close(fd);
       // Give it a bit more time to fully initialize
@@ -109,10 +113,12 @@ bool WaitForServer(int max_attempts = 50) {
  * Helper to cleanup server process
  */
 void CleanupSharedMemory() {
-  // Clean up leftover shared memory segments
+  // Clean up leftover memfd symlinks
   const char *user = std::getenv("USER");
-  std::string main_seg = std::string("/chi_main_segment_") + (user ? user : "");
-  shm_unlink(main_seg.c_str());
+  std::string memfd_path = std::string("/tmp/chimaera_") +
+                           (user ? user : "unknown") +
+                           "/chi_main_segment_" + (user ? user : "");
+  unlink(memfd_path.c_str());
 }
 
 void CleanupServer(pid_t server_pid) {
@@ -140,7 +146,7 @@ TEST_CASE("ExternalClient - Basic Connection", "[external_client][ipc]") {
   REQUIRE(server_ready);
 
   // Now connect as EXTERNAL CLIENT (not integrated server+client)
-  setenv("CHIMAERA_WITH_RUNTIME", "0", 1);  // Force client-only mode
+  setenv("CHI_WITH_RUNTIME", "0", 1);  // Force client-only mode
   bool success = CHIMAERA_INIT(ChimaeraMode::kClient, false);
   REQUIRE(success);
 
@@ -154,9 +160,14 @@ TEST_CASE("ExternalClient - Basic Connection", "[external_client][ipc]") {
   u64 node_id = ipc->GetNodeId();
   (void)node_id;
 
-  // Test that we can get the task queue
+  // In TCP mode (default), the client does not attach to shared memory
+  // so GetTaskQueue() returns nullptr and that is correct behavior
   auto *queue = ipc->GetTaskQueue();
-  REQUIRE(queue != nullptr);
+  if (ipc->GetIpcMode() == IpcMode::kShm) {
+    REQUIRE(queue != nullptr);
+  } else {
+    REQUIRE(queue == nullptr);
+  }
 
   // Cleanup
   CleanupServer(server_pid);
@@ -179,11 +190,11 @@ TEST_CASE("ExternalClient - Multiple Clients", "[external_client][ipc]") {
     client_pids[i] = fork();
     if (client_pids[i] == 0) {
       // Suppress child output to prevent log flood
-      freopen("/dev/null", "w", stdout);
-      freopen("/dev/null", "w", stderr);
+      (void)freopen("/dev/null", "w", stdout);
+      (void)freopen("/dev/null", "w", stderr);
 
       // Child process: Connect as client
-      setenv("CHIMAERA_WITH_RUNTIME", "0", 1);
+      setenv("CHI_WITH_RUNTIME", "0", 1);
       bool success = CHIMAERA_INIT(ChimaeraMode::kClient, false);
       if (!success) {
         _exit(1);
@@ -227,7 +238,7 @@ TEST_CASE("ExternalClient - Connection Without Server",
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
   // Try to connect as client when NO server exists
-  setenv("CHIMAERA_WITH_RUNTIME", "0", 1);
+  setenv("CHI_WITH_RUNTIME", "0", 1);
 
   // This should fail gracefully (not crash)
   // Note: May succeed if a stale server from another test is still running
@@ -245,16 +256,19 @@ TEST_CASE("ExternalClient - Client Operations", "[external_client][ipc]") {
   REQUIRE(server_ready);
 
   // Connect as client
-  setenv("CHIMAERA_WITH_RUNTIME", "0", 1);
+  setenv("CHI_WITH_RUNTIME", "0", 1);
   bool success = CHIMAERA_INIT(ChimaeraMode::kClient, false);
   REQUIRE(success);
 
   auto *ipc = CHI_IPC;
   REQUIRE(ipc != nullptr);
 
-  // Test GetNumSchedQueues
+  // In TCP mode (default), shared_header_ is not available so
+  // GetNumSchedQueues returns 0. In SHM mode it would be > 0.
   u32 num_queues = ipc->GetNumSchedQueues();
-  REQUIRE(num_queues > 0);
+  if (ipc->GetIpcMode() == IpcMode::kShm) {
+    REQUIRE(num_queues > 0);
+  }
 
   // Note: GetNumHosts, GetHost, and GetAllHosts are server-only operations.
   // The hostfile_map_ is populated during ServerInit and is NOT shared via

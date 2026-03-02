@@ -20,7 +20,7 @@ add_compile_definitions(_CRT_SECURE_NO_DEPRECATE)
 # All HSHM_ENABLE_* options are now set by root CMakeLists.txt from WRP_CORE_* parameters
 # CMAKE_EXPORT_COMPILE_COMMANDS is set by root CMakeLists.txt
 # BUILD_SHARED_LIBS is set by root CMakeLists.txt
-# HSHM_ENABLE_TESTS is set by root CMakeLists.txt
+# WRP_CORE_ENABLE_TESTS is set by root CMakeLists.txt
 # Benchmarks are controlled by WRP_CORE_ENABLE_BENCHMARKS
 # HSHM_ENABLE_WINDOWS_THREADS, HSHM_ENABLE_PTHREADS, HSHM_DEBUG_LOCK, and HSHM_NO_COMPILE are set by root CMakeLists.txt
 
@@ -97,6 +97,7 @@ elseif(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     endif()
 
     set(HSHM_COMPILER_MSVC "ON")
+    set(REAL_TIME_FLAGS "ws2_32")
 else()
     message(FATAL_ERROR "Unsupported compiler ${CMAKE_CXX_COMPILER_ID}")
 endif()
@@ -128,11 +129,9 @@ add_library(configure INTERFACE)
 target_link_libraries(configure INTERFACE ${YAML_CPP_LIBS})
 add_library(hshm::configure ALIAS configure)
 
-# hshm::serialize - Serialization (cereal)
+# hshm::serialize - Serialization (cereal + msgpack)
 add_library(serialize INTERFACE)
-if(WRP_CORE_ENABLE_CEREAL)
-    target_link_libraries(serialize INTERFACE ${SERIALIZATION_LIBS})
-endif()
+target_link_libraries(serialize INTERFACE ${SERIALIZATION_LIBS})
 target_compile_definitions(serialize INTERFACE
     HSHM_ENABLE_CEREAL=$<BOOL:${WRP_CORE_ENABLE_CEREAL}>
 )
@@ -165,7 +164,11 @@ endif()
 if(WRP_CORE_ENABLE_THALLIUM)
     # Thallium dependencies would go here
 endif()
+if(WIN32)
+    target_link_libraries(lightbeam INTERFACE ws2_32)
+endif()
 target_compile_definitions(lightbeam INTERFACE
+    HSHM_ENABLE_LIGHTBEAM=1
     HSHM_ENABLE_ZMQ=$<BOOL:${WRP_CORE_ENABLE_ZMQ}>
     HSHM_ENABLE_LIBFABRIC=$<BOOL:${WRP_CORE_ENABLE_LIBFABRIC}>
     HSHM_ENABLE_THALLIUM=$<BOOL:${WRP_CORE_ENABLE_THALLIUM}>
@@ -223,16 +226,12 @@ function(hshm_target_compile_definitions target)
         HSHM_LOG_LEVEL=${HSHM_LOG_LEVEL}
     )
 
-    # Add CUDA/ROCM definitions for all targets
-    # Host targets get 0, GPU targets get 1 (set explicitly in their target definitions)
-    if(target STREQUAL "hermes_shm_host" OR target STREQUAL "cxx")
-        # Host-only targets: explicitly disable GPU support
-        list(APPEND common_definitions
-            HSHM_ENABLE_CUDA=0
-            HSHM_ENABLE_ROCM=0
-        )
-    else()
-        # GPU and other targets: use CMake variable values
+    # Add CUDA/ROCM definitions for GPU targets only.
+    # Host targets (hermes_shm_host, cxx) do NOT propagate HSHM_ENABLE_CUDA
+    # to avoid conflicts when a consumer links both host and GPU libraries.
+    # Undefined HSHM_ENABLE_CUDA evaluates to 0 in #if directives, which is
+    # the correct behavior for host-only consumers.
+    if(NOT (target STREQUAL "hermes_shm_host" OR target STREQUAL "cxx"))
         list(APPEND common_definitions
             HSHM_ENABLE_CUDA=$<BOOL:${WRP_CORE_ENABLE_CUDA}>
             HSHM_ENABLE_ROCM=$<BOOL:${WRP_CORE_ENABLE_ROCM}>
@@ -295,6 +294,44 @@ target_compile_definitions(compress INTERFACE
 )
 add_library(hshm::compress ALIAS compress)
 
+# hshm::aio - Async I/O support
+add_library(aio INTERFACE)
+set(HSHM_ENABLE_LIBAIO OFF)
+if(HSHM_ENABLE_IO_URING)
+    # Verify liburing is actually available before enabling
+    find_path(URING_INCLUDE_DIR NAMES liburing.h)
+    find_library(URING_LIBRARY NAMES uring)
+    if(URING_INCLUDE_DIR AND URING_LIBRARY)
+        if(WRP_CORE_STATIC_DEPS)
+            find_library(URING_STATIC_LIB NAMES liburing.a REQUIRED)
+            message(STATUS "Static liburing: ${URING_STATIC_LIB}")
+            target_link_libraries(aio INTERFACE ${URING_STATIC_LIB})
+        else()
+            target_link_libraries(aio INTERFACE ${URING_LIBRARY})
+        endif()
+    else()
+        message(WARNING "io_uring requested but liburing not found, disabling io_uring")
+        set(HSHM_ENABLE_IO_URING OFF)
+    endif()
+endif()
+if(NOT WIN32)
+    if(NOT HSHM_ENABLE_IO_URING)
+        find_path(LIBAIO_INCLUDE_DIR NAMES libaio.h)
+        find_library(LIBAIO_LIBRARY NAMES aio libaio)
+        if(LIBAIO_LIBRARY AND LIBAIO_INCLUDE_DIR)
+            target_include_directories(aio INTERFACE ${LIBAIO_INCLUDE_DIR})
+            target_link_libraries(aio INTERFACE ${LIBAIO_LIBRARY})
+            set(HSHM_ENABLE_LIBAIO ON)
+        endif()
+    endif()
+    target_link_libraries(aio INTERFACE rt)
+endif()
+target_compile_definitions(aio INTERFACE
+    HSHM_ENABLE_IO_URING=$<BOOL:${HSHM_ENABLE_IO_URING}>
+    HSHM_ENABLE_LIBAIO=$<BOOL:${HSHM_ENABLE_LIBAIO}>
+)
+add_library(hshm::aio ALIAS aio)
+
 # hshm::encrypt - Encryption support
 add_library(encrypt INTERFACE)
 if(WRP_CORE_ENABLE_ENCRYPT)
@@ -317,6 +354,7 @@ target_link_libraries(host_deps INTERFACE
     thread_all
     mpi
     compress
+    aio
     encrypt
     ${REAL_TIME_FLAGS}
 )
@@ -330,6 +368,7 @@ install(TARGETS
     thread_all
     mpi
     compress
+    aio
     encrypt
     host_deps
     EXPORT
@@ -363,7 +402,7 @@ endif()
 set(TEST_MAIN ${HSHM_ROOT}/test/unit)
 # enable_testing() is handled by root CMakeLists.txt
 
-if(HSHM_ENABLE_TESTS)
+if(WRP_CORE_ENABLE_TESTS)
     message("Building HSHM unit tests")
     add_subdirectory(test)
 endif()

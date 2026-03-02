@@ -46,6 +46,8 @@
 
 namespace wrp_cae::core {
 
+using MonitorTask = chimaera::admin::MonitorTask;
+
 /**
  * CreateParams for core chimod
  * Contains configuration parameters for core container creation
@@ -57,11 +59,8 @@ struct CreateParams {
   // Default constructor
   CreateParams() {}
 
-  // Constructor with allocator
-  CreateParams(CHI_MAIN_ALLOC_T *alloc) {}
-
-  // Copy constructor with allocator (for BaseCreateTask)
-  CreateParams(CHI_MAIN_ALLOC_T *alloc, const CreateParams &other) {}
+  // Copy constructor (for BaseCreateTask)
+  CreateParams(const CreateParams &other) {}
 
   // Serialization support for cereal
   template <class Archive>

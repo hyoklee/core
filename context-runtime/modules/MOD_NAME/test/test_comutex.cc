@@ -83,9 +83,9 @@ chi::PoolId generateTestPoolId() {
 }
 
 // Test parameters
-constexpr chi::u32 kShortHoldMs = 100;  // Short hold duration
-constexpr chi::u32 kMediumHoldMs = 500; // Medium hold duration
-constexpr chi::u32 kLongHoldMs = 1000;  // Long hold duration
+constexpr chi::u32 kShortHoldMs = 10;  // Short hold duration
+constexpr chi::u32 kMediumHoldMs = 50; // Medium hold duration
+constexpr chi::u32 kLongHoldMs = 100;  // Long hold duration
 
 // Global test state
 bool g_initialized = false;
@@ -108,7 +108,8 @@ public:
       bool success = chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
       if (success) {
         g_initialized = true;
-        std::this_thread::sleep_for(500ms);
+        SimpleTest::g_test_finalize = chi::CHIMAERA_FINALIZE;
+        std::this_thread::sleep_for(100ms);
 
         // Verify core managers are available
         REQUIRE(CHI_CHIMAERA_MANAGER != nullptr);
@@ -1028,9 +1029,10 @@ TEST_CASE("CoRwLock Performance", "[corwlock][performance]") {
     INFO("Writer execution time: " << writer_duration.count()
                                    << " microseconds");
 
-    // Both should be reasonable
-    REQUIRE(reader_duration.count() < (kShortHoldMs * 1000 * 10));
-    REQUIRE(writer_duration.count() < (kShortHoldMs * 1000 * 10));
+    // Both should be reasonable (20x hold duration to account for
+    // task dispatch, worker scheduling, and lock acquisition overhead)
+    REQUIRE(reader_duration.count() < (kShortHoldMs * 1000 * 20));
+    REQUIRE(writer_duration.count() < (kShortHoldMs * 1000 * 20));
   }
 }
 

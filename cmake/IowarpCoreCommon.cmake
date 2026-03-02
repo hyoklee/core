@@ -46,6 +46,7 @@ macro(wrp_core_enable_cuda CXX_STANDARD)
 
     message(STATUS "USING CUDA ARCH: ${CMAKE_CUDA_ARCHITECTURES}")
     set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} --forward-unknown-to-host-compiler -diag-suppress=177,20014,20011,20012")
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Xcompiler=-Wno-format,-Wno-pedantic,-Wno-sign-compare,-Wno-unused-but-set-variable")
     enable_language(CUDA)
 
     set(CMAKE_CUDA_USE_RESPONSE_FILE_FOR_INCLUDES 0)
@@ -260,7 +261,11 @@ endfunction()
 
 # FIND PYTHON
 macro(find_first_path_python)
-    if(DEFINED ENV{PATH})
+    # If scikit-build-core or the caller has already set Python3_EXECUTABLE
+    # (e.g. pointing at the target interpreter with dev headers), respect it
+    # and skip the PATH scan so we don't accidentally pick up a build-env
+    # interpreter that lacks development headers.
+    if(NOT Python3_EXECUTABLE AND DEFINED ENV{PATH})
         string(REPLACE ":" ";" PATH_LIST $ENV{PATH})
 
         foreach(PATH_ENTRY ${PATH_LIST})
@@ -280,7 +285,7 @@ macro(find_first_path_python)
     endif()
 
     set(Python_FIND_STRATEGY LOCATION)
-    find_package(Python3 COMPONENTS Interpreter Development)
+    find_package(Python3 COMPONENTS Interpreter Development.Module)
 
     if(Python3_FOUND)
         message(STATUS "Found Python3: ${Python3_EXECUTABLE}")
@@ -405,7 +410,7 @@ function(add_chimod_client)
   add_library(${TARGET_NAME} SHARED ${ARG_SOURCES})
 
   # Set C++ standard
-  set(CHIMAERA_CXX_STANDARD 17)
+  set(CHIMAERA_CXX_STANDARD 20)
   target_compile_features(${TARGET_NAME} PUBLIC cxx_std_${CHIMAERA_CXX_STANDARD})
 
   # Common compile definitions
@@ -502,6 +507,12 @@ function(add_chimod_client)
     )
   endif()
 
+  # Precompiled headers for faster builds
+  target_precompile_headers(${TARGET_NAME} PRIVATE
+      <string> <vector> <memory> <unordered_map>
+      <functional> <algorithm> <cstdint> <cstring> <iostream>
+  )
+
   # Export module info to parent scope
   set(CHIMAERA_MODULE_CLIENT_TARGET ${TARGET_NAME} PARENT_SCOPE)
   set(CHIMAERA_MODULE_NAME ${CHIMAERA_MODULE_NAME} PARENT_SCOPE)
@@ -547,7 +558,7 @@ function(add_chimod_runtime)
   add_library(${TARGET_NAME} SHARED ${ARG_SOURCES})
 
   # Set C++ standard
-  set(CHIMAERA_CXX_STANDARD 17)
+  set(CHIMAERA_CXX_STANDARD 20)
   target_compile_features(${TARGET_NAME} PUBLIC cxx_std_${CHIMAERA_CXX_STANDARD})
 
   # Common compile definitions
@@ -734,6 +745,12 @@ check_required_components(${MODULE_PACKAGE_NAME})
     message(STATUS "  Targets: ${INSTALLED_TARGETS}")
     message(STATUS "  Aliases: ${CHIMAERA_NAMESPACE}::${CHIMAERA_MODULE_NAME}_client, ${CHIMAERA_NAMESPACE}::${CHIMAERA_MODULE_NAME}_runtime")
   endif()
+
+  # Precompiled headers for faster builds
+  target_precompile_headers(${TARGET_NAME} PRIVATE
+      <string> <vector> <memory> <unordered_map>
+      <functional> <algorithm> <cstdint> <cstring> <iostream>
+  )
 
   # Export module info to parent scope
   set(CHIMAERA_MODULE_RUNTIME_TARGET ${TARGET_NAME} PARENT_SCOPE)

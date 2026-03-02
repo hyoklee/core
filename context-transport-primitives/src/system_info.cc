@@ -36,12 +36,24 @@
 
 #include "hermes_shm/introspect/system_info.h"
 
-#include <dlfcn.h>
-
 #include <cstdlib>
+#include <filesystem>
 
 #include "hermes_shm/constants/macros.h"
+// MSan: inform sanitizer that mmap-backed memory is initialized by the kernel
+#if defined(__has_feature)
+#if __has_feature(memory_sanitizer)
+#include <sanitizer/msan_interface.h>
+#define HSHM_MSAN_UNPOISON(ptr, size) __msan_unpoison((ptr), (size))
+#else
+#define HSHM_MSAN_UNPOISON(ptr, size) ((void)0)
+#endif
+#else
+#define HSHM_MSAN_UNPOISON(ptr, size) ((void)0)
+#endif
 #if HSHM_ENABLE_PROCFS_SYSINFO
+#include <dlfcn.h>
+#include <signal.h>
 // LINUX
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -54,6 +66,9 @@
 #endif
 #include <sys/types.h>
 #include <unistd.h>
+#if __linux__
+#include <linux/memfd.h>
+#endif
 // WINDOWS
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
 #include <windows.h>
@@ -75,11 +90,13 @@ void SystemInfo::RefreshCpuFreqKhz() {
 size_t SystemInfo::GetCpuFreqKhz(int cpu) {
 #if HSHM_IS_HOST
 #if HSHM_ENABLE_PROCFS_SYSINFO
-  // Read /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq
-  std::string cpu_str = hshm::Formatter::format(
-      "/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_cur_freq", cpu);
-  std::ifstream cpu_file(cpu_str);
-  size_t freq_khz;
+  // Read /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_cur_freq
+  // Use snprintf to build the path so MSan can track the buffer as initialized
+  char cpu_path[256];
+  snprintf(cpu_path, sizeof(cpu_path),
+           "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_cur_freq", cpu);
+  std::ifstream cpu_file(cpu_path);
+  size_t freq_khz = 0;
   cpu_file >> freq_khz;
   return freq_khz;
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
@@ -93,11 +110,12 @@ size_t SystemInfo::GetCpuFreqKhz(int cpu) {
 size_t SystemInfo::GetCpuMaxFreqKhz(int cpu) {
 #if HSHM_IS_HOST
 #if HSHM_ENABLE_PROCFS_SYSINFO
-  // Read /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq
-  std::string cpu_str = hshm::Formatter::format(
-      "/sys/devices/system/cpu/cpu{}/cpufreq/cpuinfo_max_freq", cpu);
-  std::ifstream cpu_file(cpu_str);
-  size_t freq_khz;
+  // Read /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_max_freq
+  char cpu_path[256];
+  snprintf(cpu_path, sizeof(cpu_path),
+           "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", cpu);
+  std::ifstream cpu_file(cpu_path);
+  size_t freq_khz = 0;
   cpu_file >> freq_khz;
   return freq_khz;
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
@@ -296,8 +314,8 @@ void SystemInfo::YieldThread() {
 
 bool SystemInfo::CreateTls(ThreadLocalKey &key, void *data) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
-  key.pthread_key_ = pthread_key_create(&key.pthread_key_, nullptr);
-  return key.pthread_key_ == 0;
+  int ret = pthread_key_create(&key.pthread_key_, nullptr);
+  return ret == 0;
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
   key.windows_key_ = TlsAlloc();
   if (key.windows_key_ == TLS_OUT_OF_INDEXES) {
@@ -323,9 +341,52 @@ void *SystemInfo::GetTls(const ThreadLocalKey &key) {
 #endif
 }
 
+std::string SystemInfo::GetMemfdDir() {
+  const char *user = getenv("USER");
+  if (!user) user = "unknown";
+  return std::string("/tmp/chimaera_") + user;
+}
+
+std::string SystemInfo::GetMemfdPath(const std::string &name) {
+  // Strip leading '/' from name if present
+  const char *base = name.c_str();
+  if (base[0] == '/') {
+    base++;
+  }
+  return GetMemfdDir() + "/" + base;
+}
+
+void SystemInfo::EnsureMemfdDir() {
+  std::string dir = GetMemfdDir();
+#if HSHM_ENABLE_PROCFS_SYSINFO && __linux__
+  mkdir(dir.c_str(), 0700);
+#endif
+}
+
 bool SystemInfo::CreateNewSharedMemory(File &fd, const std::string &name,
                                        size_t size) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
+#if __linux__
+  fd.posix_fd_ = memfd_create(name.c_str(), 0);
+  if (fd.posix_fd_ < 0) {
+    return false;
+  }
+  int ret = ftruncate(fd.posix_fd_, size);
+  if (ret < 0) {
+    close(fd.posix_fd_);
+    return false;
+  }
+  EnsureMemfdDir();
+  std::string memfd_path = GetMemfdPath(name);
+  unlink(memfd_path.c_str());
+  std::string proc_path =
+      "/proc/" + std::to_string(getpid()) + "/fd/" + std::to_string(fd.posix_fd_);
+  if (symlink(proc_path.c_str(), memfd_path.c_str()) < 0) {
+    close(fd.posix_fd_);
+    return false;
+  }
+  return true;
+#else
   fd.posix_fd_ = shm_open(name.c_str(), O_CREAT | O_RDWR, 0666);
   if (fd.posix_fd_ < 0) {
     return false;
@@ -336,6 +397,7 @@ bool SystemInfo::CreateNewSharedMemory(File &fd, const std::string &name,
     return false;
   }
   return true;
+#endif
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
   fd.windows_fd_ =
       CreateFileMapping(INVALID_HANDLE_VALUE,  // use paging file
@@ -350,8 +412,14 @@ bool SystemInfo::CreateNewSharedMemory(File &fd, const std::string &name,
 
 bool SystemInfo::OpenSharedMemory(File &fd, const std::string &name) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
+#if __linux__
+  std::string memfd_path = GetMemfdPath(name);
+  fd.posix_fd_ = open(memfd_path.c_str(), O_RDWR);
+  return fd.posix_fd_ >= 0;
+#else
   fd.posix_fd_ = shm_open(name.c_str(), O_RDWR, 0666);
   return fd.posix_fd_ >= 0;
+#endif
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
   fd.windows_fd_ = OpenFileMapping(FILE_MAP_ALL_ACCESS, FALSE, name.c_str());
   return fd.windows_fd_ != nullptr;
@@ -368,7 +436,12 @@ void SystemInfo::CloseSharedMemory(File &file) {
 
 void SystemInfo::DestroySharedMemory(const std::string &name) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
+#if __linux__
+  std::string memfd_path = GetMemfdPath(name);
+  unlink(memfd_path.c_str());
+#else
   shm_unlink(name.c_str());
+#endif
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
 #endif
 }
@@ -376,14 +449,22 @@ void SystemInfo::DestroySharedMemory(const std::string &name) {
 void *SystemInfo::MapPrivateMemory(size_t size) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
 #if __APPLE__ || __OpenBSD__
-  return mmap(nullptr, size, PROT_READ | PROT_WRITE,
-              MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void *ptr = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 #else
-  return mmap64(nullptr, size, PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  void *ptr = mmap64(nullptr, size, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 #endif
+  if (ptr != MAP_FAILED && ptr != nullptr) {
+    HSHM_MSAN_UNPOISON(ptr, size);
+  }
+  return ptr;
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
-  return VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_READWRITE);
+  void *ptr = VirtualAlloc(nullptr, size, MEM_COMMIT, PAGE_READWRITE);
+  if (ptr) {
+    HSHM_MSAN_UNPOISON(ptr, size);
+  }
+  return ptr;
 #endif
 }
 
@@ -395,6 +476,7 @@ void *SystemInfo::MapSharedMemory(const File &fd, size_t size, i64 off) {
     perror("mmap");
     return nullptr;
   }
+  HSHM_MSAN_UNPOISON(ptr, size);
   return ptr;
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
   // Convert i64 to low and high dwords
@@ -433,6 +515,7 @@ void *SystemInfo::MapMixedMemory(const File &fd, size_t private_size,
     perror("MapMixedMemory: initial mmap failed");
     return nullptr;
   }
+  HSHM_MSAN_UNPOISON(ptr, total_size);
 
   // Step 2: Remap the shared portion using MAP_FIXED
   // This replaces the shared portion with actual shared memory from the fd
@@ -456,6 +539,7 @@ void *SystemInfo::MapMixedMemory(const File &fd, size_t private_size,
     munmap(ptr, total_size);
     return nullptr;
   }
+  HSHM_MSAN_UNPOISON(shared_ptr, shared_size);
 
   // Success: we now have [private_size bytes private | shared_size bytes shared]
   return ptr;
@@ -485,6 +569,67 @@ void *SystemInfo::AlignedAlloc(size_t alignment, size_t size) {
 #endif
 }
 
+bool SystemInfo::IsProcessAlive(int pid) {
+#if HSHM_ENABLE_PROCFS_SYSINFO
+  return kill(pid, 0) != -1 || errno != ESRCH;
+#elif HSHM_ENABLE_WINDOWS_SYSINFO
+  HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                         static_cast<DWORD>(pid));
+  if (h == NULL) return false;
+  CloseHandle(h);
+  return true;
+#endif
+}
+
+std::string SystemInfo::GetModuleDirectory() {
+#if HSHM_ENABLE_PROCFS_SYSINFO
+  Dl_info dl_info;
+  void *addr = reinterpret_cast<void *>(&SystemInfo::GetModuleDirectory);
+  if (dladdr(addr, &dl_info) == 0) return "";
+  char resolved[PATH_MAX];
+  if (realpath(dl_info.dli_fname, resolved) == nullptr) return "";
+  return std::filesystem::path(resolved).parent_path().string();
+#elif HSHM_ENABLE_WINDOWS_SYSINFO
+  HMODULE hModule = nullptr;
+  if (!GetModuleHandleExA(
+          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCSTR>(&SystemInfo::GetModuleDirectory),
+          &hModule)) {
+    return "";
+  }
+  char path[MAX_PATH];
+  if (GetModuleFileNameA(hModule, path, MAX_PATH) == 0) return "";
+  return std::filesystem::path(path).parent_path().string();
+#endif
+}
+
+std::string SystemInfo::GetLibrarySearchPathVar() {
+#if HSHM_ENABLE_PROCFS_SYSINFO
+  return "LD_LIBRARY_PATH";
+#elif HSHM_ENABLE_WINDOWS_SYSINFO
+  return "PATH";
+#endif
+}
+
+char SystemInfo::GetPathListSeparator() {
+#if HSHM_ENABLE_PROCFS_SYSINFO
+  return ':';
+#elif HSHM_ENABLE_WINDOWS_SYSINFO
+  return ';';
+#endif
+}
+
+std::string SystemInfo::GetSharedLibExtension() {
+#if HSHM_ENABLE_WINDOWS_SYSINFO
+  return ".dll";
+#elif __APPLE__
+  return ".dylib";
+#else
+  return ".so";
+#endif
+}
+
 std::string SystemInfo::Getenv(const char *name, size_t max_size) {
 #if HSHM_ENABLE_PROCFS_SYSINFO
   char *var = getenv(name);
@@ -495,7 +640,12 @@ std::string SystemInfo::Getenv(const char *name, size_t max_size) {
 #elif HSHM_ENABLE_WINDOWS_SYSINFO
   std::string var;
   var.resize(max_size);
-  GetEnvironmentVariable(name, var.data(), var.size());
+  DWORD len = GetEnvironmentVariable(name, var.data(),
+                                     static_cast<DWORD>(var.size()));
+  if (len == 0) {
+    return "";
+  }
+  var.resize(len);
   return var;
 #endif
   std::cout << "undefined" << std::endl;

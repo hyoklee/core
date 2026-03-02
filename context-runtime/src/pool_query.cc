@@ -41,48 +41,11 @@
 
 namespace chi {
 
-PoolQuery::PoolQuery()
-    : routing_mode_(RoutingMode::Local), hash_value_(0), container_id_(0),
-      range_offset_(0), range_count_(0), node_id_(0), ret_node_(0) {}
-
-PoolQuery::PoolQuery(const PoolQuery& other)
-    : routing_mode_(other.routing_mode_),
-      hash_value_(other.hash_value_),
-      container_id_(other.container_id_),
-      range_offset_(other.range_offset_),
-      range_count_(other.range_count_),
-      node_id_(other.node_id_),
-      ret_node_(other.ret_node_) {}
-
-PoolQuery& PoolQuery::operator=(const PoolQuery& other) {
-  if (this != &other) {
-    routing_mode_ = other.routing_mode_;
-    hash_value_ = other.hash_value_;
-    container_id_ = other.container_id_;
-    range_offset_ = other.range_offset_;
-    range_count_ = other.range_count_;
-    node_id_ = other.node_id_;
-    ret_node_ = other.ret_node_;
-  }
-  return *this;
-}
-
-PoolQuery::~PoolQuery() {
-  // Stub destructor
-}
+// Constructor, copy constructor, assignment operator, and destructor
+// are now inline in pool_query.h for GPU compatibility
 
 // Static factory methods
-
-PoolQuery PoolQuery::Local() {
-  PoolQuery query;
-  query.routing_mode_ = RoutingMode::Local;
-  query.hash_value_ = 0;
-  query.container_id_ = 0;
-  query.range_offset_ = 0;
-  query.range_count_ = 0;
-  query.node_id_ = 0;
-  return query;
-}
+// Note: PoolQuery::Local() is now inline in pool_query.h for GPU compatibility
 
 PoolQuery PoolQuery::DirectId(ContainerId container_id) {
   PoolQuery query;
@@ -158,61 +121,56 @@ PoolQuery PoolQuery::FromString(const std::string& str) {
 
   if (lower_str == "local") {
     return PoolQuery::Local();
+  } else if (lower_str == "broadcast") {
+    return PoolQuery::Broadcast();
   } else if (lower_str == "dynamic") {
     return PoolQuery::Dynamic();
+  } else if (lower_str.rfind("direct_id:", 0) == 0) {
+    u32 id = std::stoul(lower_str.substr(10));
+    return PoolQuery::DirectId(id);
+  } else if (lower_str.rfind("direct_hash:", 0) == 0) {
+    u32 hash = std::stoul(lower_str.substr(12));
+    return PoolQuery::DirectHash(hash);
+  } else if (lower_str.rfind("range:", 0) == 0) {
+    // Format: range:<offset>:<count>
+    size_t first_colon = 5;  // after "range"
+    size_t second_colon = lower_str.find(':', first_colon + 1);
+    if (second_colon == std::string::npos) {
+      throw std::invalid_argument("Invalid range format, expected 'range:<offset>:<count>'");
+    }
+    u32 offset = std::stoul(lower_str.substr(first_colon + 1, second_colon - first_colon - 1));
+    u32 count = std::stoul(lower_str.substr(second_colon + 1));
+    return PoolQuery::Range(offset, count);
+  } else if (lower_str.rfind("physical:", 0) == 0) {
+    u32 node_id = std::stoul(lower_str.substr(9));
+    return PoolQuery::Physical(node_id);
   } else {
-    throw std::invalid_argument("Invalid PoolQuery string, expected 'local' or 'dynamic'");
+    throw std::invalid_argument(
+        "Invalid PoolQuery string: '" + str + "'");
   }
 }
 
-// Getter methods
-
-u32 PoolQuery::GetHash() const { return hash_value_; }
-
-ContainerId PoolQuery::GetContainerId() const { return container_id_; }
-
-u32 PoolQuery::GetRangeOffset() const { return range_offset_; }
-
-u32 PoolQuery::GetRangeCount() const { return range_count_; }
-
-u32 PoolQuery::GetNodeId() const { return node_id_; }
-
-RoutingMode PoolQuery::GetRoutingMode() const { return routing_mode_; }
-
-bool PoolQuery::IsLocalMode() const {
-  return routing_mode_ == RoutingMode::Local;
+std::string PoolQuery::ToString() const {
+  switch (routing_mode_) {
+    case RoutingMode::Local:
+      return "local";
+    case RoutingMode::Broadcast:
+      return "broadcast";
+    case RoutingMode::Dynamic:
+      return "dynamic";
+    case RoutingMode::DirectId:
+      return "direct_id:" + std::to_string(container_id_);
+    case RoutingMode::DirectHash:
+      return "direct_hash:" + std::to_string(hash_value_);
+    case RoutingMode::Range:
+      return "range:" + std::to_string(range_offset_) + ":" + std::to_string(range_count_);
+    case RoutingMode::Physical:
+      return "physical:" + std::to_string(node_id_);
+    default:
+      return "unknown";
+  }
 }
 
-bool PoolQuery::IsDirectIdMode() const {
-  return routing_mode_ == RoutingMode::DirectId;
-}
-
-bool PoolQuery::IsDirectHashMode() const {
-  return routing_mode_ == RoutingMode::DirectHash;
-}
-
-bool PoolQuery::IsRangeMode() const {
-  return routing_mode_ == RoutingMode::Range;
-}
-
-bool PoolQuery::IsBroadcastMode() const {
-  return routing_mode_ == RoutingMode::Broadcast;
-}
-
-bool PoolQuery::IsPhysicalMode() const {
-  return routing_mode_ == RoutingMode::Physical;
-}
-
-bool PoolQuery::IsDynamicMode() const {
-  return routing_mode_ == RoutingMode::Dynamic;
-}
-
-void PoolQuery::SetReturnNode(u32 ret_node) {
-  ret_node_ = ret_node;
-}
-
-u32 PoolQuery::GetReturnNode() const {
-  return ret_node_;
-}
+// Getter methods are now inline in pool_query.h for GPU compatibility
 
 }  // namespace chi

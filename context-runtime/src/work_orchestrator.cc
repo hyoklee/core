@@ -42,6 +42,7 @@
 #include <iostream>
 
 #include "chimaera/container.h"
+#include "chimaera/pool_manager.h"
 #include "chimaera/singletons.h"
 #include "chimaera/ipc_manager.h"
 
@@ -157,10 +158,19 @@ void WorkOrchestrator::StopWorkers() {
 
   HLOG(kDebug, "Stopping {} worker threads...", all_workers_.size());
 
-  // Stop all workers
+  // Stop all workers and wake them from epoll_wait
+  pid_t runtime_pid = getpid();
   for (auto *worker : all_workers_) {
     if (worker) {
       worker->Stop();
+      // Wake worker from epoll_wait so it can observe is_running_ == false
+      TaskLane *lane = worker->GetLane();
+      if (lane) {
+        pid_t tid = lane->GetTid();
+        if (tid > 0) {
+          hshm::lbm::EventManager::Signal(runtime_pid, tid);
+        }
+      }
     }
   }
 
@@ -256,6 +266,32 @@ bool WorkOrchestrator::SpawnWorkerThreads() {
     }
   }
 
+#if HSHM_ENABLE_CUDA || HSHM_ENABLE_ROCM
+  // Assign GPU lanes only to the designated GPU worker
+  size_t num_gpus = ipc->GetGpuQueueCount();
+  if (num_gpus > 0 && scheduler_) {
+    Worker *gpu_worker = scheduler_->GetGpuWorker();
+    if (gpu_worker) {
+      std::vector<TaskLane *> gpu_lanes;
+      gpu_lanes.reserve(num_gpus);
+      for (size_t gpu_id = 0; gpu_id < num_gpus; ++gpu_id) {
+        TaskQueue *gpu_queue = ipc->GetGpuQueue(gpu_id);
+        if (gpu_queue) {
+          TaskLane *gpu_lane = &gpu_queue->GetLane(0, 0);
+          gpu_lanes.push_back(gpu_lane);
+          gpu_lane->SetAssignedWorkerId(gpu_worker->GetId());
+        }
+      }
+      gpu_worker->SetGpuLanes(gpu_lanes);
+      HLOG(kInfo, "WorkOrchestrator: Assigned {} GPU lane(s) to GPU worker {}",
+           gpu_lanes.size(), gpu_worker->GetId());
+    } else {
+      HLOG(kWarning, "WorkOrchestrator: {} GPU queue(s) available but no GPU worker designated",
+           num_gpus);
+    }
+  }
+#endif
+
   // Use HSHM thread model to spawn worker threads
   auto thread_model = HSHM_THREAD_MODEL;
   worker_threads_.reserve(all_workers_.size());
@@ -329,14 +365,16 @@ bool WorkOrchestrator::HasWorkRemaining(u64 &total_work_remaining) const {
     return false; // No pool manager means no work
   }
 
-  // Get all container pool IDs from the pool manager
+  // Get all pool IDs from the pool manager
   std::vector<PoolId> all_pool_ids = pool_manager->GetAllPoolIds();
 
   for (const auto &pool_id : all_pool_ids) {
-    // Get container for each pool
-    Container *container = pool_manager->GetContainer(pool_id);
-    if (container) {
-      total_work_remaining += container->GetWorkRemaining();
+    const PoolInfo *info = pool_manager->GetPoolInfo(pool_id);
+    if (!info) continue;
+    for (const auto &pair : info->containers_) {
+      if (pair.second) {
+        total_work_remaining += pair.second->GetWorkRemaining();
+      }
     }
   }
 

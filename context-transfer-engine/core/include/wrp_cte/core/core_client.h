@@ -75,6 +75,17 @@ class Client : public chi::ContainerClient {
   }
 
   /**
+   * Monitor container state - asynchronous
+   */
+  chi::Future<MonitorTask> AsyncMonitor(const chi::PoolQuery &pool_query,
+                                        const std::string &query) {
+    auto *ipc_manager = CHI_IPC;
+    auto task = ipc_manager->NewTask<MonitorTask>(
+        chi::CreateTaskId(), pool_id_, pool_query, query);
+    return ipc_manager->Send(task);
+  }
+
+  /**
    * Asynchronous target registration - returns immediately
    * @param target_name Name of the target to register
    * @param bdev_type Block device type
@@ -452,6 +463,49 @@ class Client : public chi::ContainerClient {
     auto task = ipc_manager->NewTask<BlobQueryTask>(
         chi::CreateTaskId(), pool_id_, pool_query, tag_regex, blob_regex,
         max_blobs);
+
+    return ipc_manager->Send(task);
+  }
+  /**
+   * Asynchronous flush metadata - returns immediately
+   * @param pool_query Pool query for task routing (default: Local)
+   * @param period_us Period in microseconds (0 = one-shot)
+   */
+  chi::Future<FlushMetadataTask> AsyncFlushMetadata(
+      const chi::PoolQuery &pool_query = chi::PoolQuery::Local(),
+      double period_us = 0) {
+    auto *ipc_manager = CHI_IPC;
+
+    auto task = ipc_manager->NewTask<FlushMetadataTask>(
+        chi::CreateTaskId(), pool_id_, pool_query);
+
+    if (period_us > 0) {
+      task->SetPeriod(period_us, chi::kMicro);
+      task->SetFlags(TASK_PERIODIC);
+    }
+
+    return ipc_manager->Send(task);
+  }
+
+  /**
+   * Asynchronous flush data - returns immediately
+   * @param pool_query Pool query for task routing (default: Local)
+   * @param target_persistence_level Minimum persistence level for flush target
+   * @param period_us Period in microseconds (0 = one-shot)
+   */
+  chi::Future<FlushDataTask> AsyncFlushData(
+      const chi::PoolQuery &pool_query = chi::PoolQuery::Local(),
+      int target_persistence_level = 1,
+      double period_us = 0) {
+    auto *ipc_manager = CHI_IPC;
+
+    auto task = ipc_manager->NewTask<FlushDataTask>(
+        chi::CreateTaskId(), pool_id_, pool_query, target_persistence_level);
+
+    if (period_us > 0) {
+      task->SetPeriod(period_us, chi::kMicro);
+      task->SetFlags(TASK_PERIODIC);
+    }
 
     return ipc_manager->Send(task);
   }

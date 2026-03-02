@@ -59,6 +59,10 @@ start_docker_cluster() {
     log_info "Starting Docker cluster with $NUM_NODES nodes..."
     cd "$SCRIPT_DIR"
 
+    # Pass host UID/GID so container processes match host file ownership
+    export HOST_UID=$(id -u)
+    export HOST_GID=$(id -g)
+
     # Start containers in detached mode
     docker compose up -d
 
@@ -83,7 +87,33 @@ stop_docker_cluster() {
 
 
 
+# Check if a test name matches the filter
+matches_filter() {
+    local name="$1"
+    local filter="$2"
+    if [ -z "$filter" ]; then
+        return 0
+    fi
+    case "$name" in
+        *"$filter"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Run a single test case inside the Docker cluster
+# $1: test filter name
+run_single_test() {
+    local filter="$1"
+    local ipc_mode="${2:-}"
+    docker exec iowarp-distributed-node1 bash -c "
+        export CHI_WITH_RUNTIME=0
+        ${ipc_mode:+export CHI_IPC_MODE=$ipc_mode}
+        chimaera_bdev_chimod_tests '$filter'
+    "
+}
+
 # Run test directly in Docker
+# Each IPC mode runs as a separate process to ensure clean initialization.
 run_test_docker_direct() {
     log_info "Running distributed test with filter: $TEST_FILTER"
     cd "$SCRIPT_DIR"
@@ -92,13 +122,17 @@ run_test_docker_direct() {
     log_info "Waiting for runtimes to initialize across all nodes..."
     sleep 5
 
-    # Execute test on node1 using installed binary
-    docker exec iowarp-distributed-node1 bash -c "
-        export CHIMAERA_WITH_RUNTIME=0
-        chimaera_bdev_chimod_tests $TEST_FILTER
-    "
+    # Execute each IPC mode variant as a separate process invocation
+    for mode in shm tcp ipc; do
+        local test_name="bdev_file_explicit_backend_${mode}"
+        if matches_filter "$test_name" "$TEST_FILTER"; then
+            log_info "Running $test_name (CHI_IPC_MODE=${mode^^})..."
+            run_single_test "$test_name" "${mode^^}"
+            log_success "$test_name passed"
+        fi
+    done
 
-    log_success "Test completed"
+    log_success "All tests completed"
 }
 
 
@@ -193,9 +227,15 @@ case $COMMAND in
         ;;
 
     all)
+        EXIT_CODE=0
         start_docker_cluster
-        run_test_docker_direct
-        log_success "All operations completed successfully"
+        run_test_docker_direct || EXIT_CODE=$?
+        stop_docker_cluster
+        if [ $EXIT_CODE -ne 0 ]; then
+            log_error "Distributed test FAILED"
+            exit $EXIT_CODE
+        fi
+        log_success "Distributed test PASSED"
         ;;
 
     *)

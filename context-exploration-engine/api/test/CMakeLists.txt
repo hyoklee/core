@@ -81,7 +81,7 @@ set_tests_properties(
   CEE_Destroy_Multi CEE_Destroy_Partial CEE_Splice_Stub CEE_Integration
   PROPERTIES
     TIMEOUT 180
-    LABELS "cee;comprehensive;coverage"
+    LABELS "cee;comprehensive;coverage;msan_skip"
     ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
 
@@ -156,8 +156,9 @@ if(TARGET wrp_cee)
   )
 
   set_tests_properties(test_context_retrieve_roundtrip_python PROPERTIES
-    LABELS "cee;api;python;retrieve;regression"
+    LABELS "cee;api;python;retrieve;regression;manual"
     TIMEOUT 120
+    DISABLED TRUE  # Requires externally running IOWarp runtime
   )
 
   install(FILES test_context_retrieve_roundtrip.py
@@ -173,6 +174,8 @@ endif()
 #------------------------------------------------------------------------------
 # Test labels for selective execution
 #------------------------------------------------------------------------------
-set_tests_properties(test_context_bundle PROPERTIES LABELS "cee;api;bundle")
-set_tests_properties(test_context_query PROPERTIES LABELS "cee;api;query")
-set_tests_properties(test_context_destroy PROPERTIES LABELS "cee;api;destroy")
+# Skip under MSan: CEE tests use uninstrumented chimaera runtime (ZMQ, shared
+# memory, forked processes) that produce false-positive MSan reports.
+set_tests_properties(test_context_bundle PROPERTIES LABELS "cee;api;bundle;msan_skip")
+set_tests_properties(test_context_query PROPERTIES LABELS "cee;api;query;msan_skip")
+set_tests_properties(test_context_destroy PROPERTIES LABELS "cee;api;destroy;msan_skip")

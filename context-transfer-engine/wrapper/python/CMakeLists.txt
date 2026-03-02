@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-# Find Python for nanobind
-find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
+# Python and nanobind are configured by root CMakeLists.txt via add_subdirectory(external/nanobind)
 
 # Create the Python module
 nanobind_add_module(
@@ -75,7 +74,7 @@ if(BUILD_TESTING)
         PROPERTIES
         LABELS "python;bindings"
         TIMEOUT 120
-        ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1"
+        ENVIRONMENT "CHI_WITH_RUNTIME=1"
     )
 
     # Ensure test depends on the built module
@@ -87,7 +86,7 @@ if(BUILD_TESTING)
 
     # PollTelemetryLog focused test (requires runtime initialization)
     # This test specifically validates telemetry logging functionality
-    # Requires: CHIMAERA_WITH_RUNTIME=1 and WRP_RUNTIME_CONF set
+    # Requires: CHI_WITH_RUNTIME=1 and WRP_RUNTIME_CONF set
     add_test(
         NAME python_telemetry_test
         COMMAND ${Python_EXECUTABLE} -I ${CMAKE_CURRENT_SOURCE_DIR}/test_cte_telemetry.py
@@ -102,7 +101,7 @@ if(BUILD_TESTING)
         PROPERTIES
         LABELS "python;bindings;telemetry"
         TIMEOUT 180
-        ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1;WRP_RUNTIME_CONF=${CMAKE_SOURCE_DIR}/context-transfer-engine/test/unit/adapters/adios2/cte_config.yaml;LD_LIBRARY_PATH=/home/iowarp/miniconda3/lib"
+        ENVIRONMENT "CHI_WITH_RUNTIME=1;WRP_RUNTIME_CONF=${CMAKE_SOURCE_DIR}/context-transfer-engine/test/unit/adapters/adios2/cte_config.yaml;LD_LIBRARY_PATH=/home/iowarp/miniconda3/lib"
     )
 
     # Ensure test depends on the built module

@@ -79,7 +79,7 @@ function(add_cae_unit_test TEST_NAME TEST_SOURCE)
 
   # Set test environment variables
   set_tests_properties(${TEST_NAME} PROPERTIES
-    ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1;CHI_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/wrp_config.yaml;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    ENVIRONMENT "CHI_WITH_RUNTIME=1;CHI_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/wrp_config.yaml;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300  # 5 minute timeout
   )
 endfunction()
@@ -117,7 +117,7 @@ add_cae_unit_test(cae_range_assim
 
 # Set smaller file size for range test to speed up CI
 set_tests_properties(cae_range_assim PROPERTIES
-  ENVIRONMENT "CHIMAERA_WITH_RUNTIME=1;CHI_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/wrp_config.yaml;TEST_FILE_SIZE=10;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"  # 10MB instead of default
+  ENVIRONMENT "CHI_WITH_RUNTIME=1;CHI_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/wrp_config.yaml;TEST_FILE_SIZE=10;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"  # 10MB instead of default
 )
 
 #------------------------------------------------------------------------------
@@ -197,7 +197,7 @@ set_tests_properties(
   CAE_HDF5Format CAE_UnknownFormat
   PROPERTIES
     TIMEOUT 120
-    LABELS "coverage;comprehensive"
+    LABELS "coverage;comprehensive;msan_skip"
     ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
 )
 
@@ -219,7 +219,7 @@ if(HDF5_ENABLED)
   )
 
   # Set test labels
-  set_tests_properties(cae_hdf5_assim PROPERTIES LABELS "format;hdf5")
+  set_tests_properties(cae_hdf5_assim PROPERTIES LABELS "format;hdf5;msan_skip")
 endif()
 
 #------------------------------------------------------------------------------
@@ -235,9 +235,11 @@ endif()
 #------------------------------------------------------------------------------
 
 # Create test labels for selective execution
-set_tests_properties(cae_binary_assim PROPERTIES LABELS "core;basic")
-set_tests_properties(cae_range_assim PROPERTIES LABELS "core;advanced")
-set_tests_properties(cae_error_handling PROPERTIES LABELS "core;validation")
+# Skip under MSan: CAE tests use uninstrumented HDF5/yaml-cpp/ZMQ deps and
+# the chimaera runtime which involves shared memory and forked processes.
+set_tests_properties(cae_binary_assim PROPERTIES LABELS "core;basic;msan_skip")
+set_tests_properties(cae_range_assim PROPERTIES LABELS "core;advanced;msan_skip")
+set_tests_properties(cae_error_handling PROPERTIES LABELS "core;validation;msan_skip")
 
 #------------------------------------------------------------------------------
 # Test Summary Target

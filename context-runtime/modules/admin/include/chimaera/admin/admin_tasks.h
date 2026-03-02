@@ -38,6 +38,10 @@
 #include <chimaera/config_manager.h>
 #include <hermes_shm/memory/allocator/malloc_allocator.h>
 #include <yaml-cpp/yaml.h>
+#include <cereal/types/unordered_map.hpp>
+#include <cereal/types/string.hpp>
+
+#include <unordered_map>
 
 #include "autogen/admin_methods.h"
 
@@ -192,12 +196,12 @@ struct BaseCreateTask : public chi::Task {
    * Does nothing if do_compose_ is true (compose mode)
    */
   template <typename... Args>
-  void SetParams(AllocT *alloc, Args &&...args) {
+  void SetParams(Args &&...args) {
     if (do_compose_) {
       return;  // Skip SetParams in compose mode
     }
     CreateParamsT params(std::forward<Args>(args)...);
-    chi::Task::Serialize(alloc, chimod_params_, params);
+    chi::Task::Serialize(HSHM_MALLOC, chimod_params_, params);
   }
 
   /**
@@ -570,6 +574,7 @@ struct SendTask : public chi::Task {
     task_flags_.Clear();
     pool_query_ = pool_query;
     stat_.io_size_ = 1024 * 1024;  // 1MB
+    task_group_ = chi::TaskGroup(0);  // Network tasks in affinity group 0
   }
 
   /**
@@ -639,6 +644,7 @@ struct RecvTask : public chi::Task {
     task_flags_.Clear();
     pool_query_ = pool_query;
     stat_.io_size_ = 1024 * 1024;  // 1MB
+    task_group_ = chi::TaskGroup(0);  // Network tasks in affinity group 0
   }
 
   /**
@@ -679,64 +685,140 @@ struct RecvTask : public chi::Task {
 };
 
 /**
- * HeartbeatTask - Runtime health check
- * Used to verify runtime is alive and responding
+ * ClientConnectTask - Client connection handshake
+ * Received via lightbeam transport and responds with success
  * Returns 0 on success to indicate runtime is healthy
  */
-struct HeartbeatTask : public chi::Task {
-  // Heartbeat response
+struct ClientConnectTask : public chi::Task {
+  // Connect response
   OUT int32_t response_;  ///< 0 = success, non-zero = error
+  OUT chi::u64 server_generation_;  ///< Server's generation counter for restart detection
 
   /** SHM default constructor */
-  HeartbeatTask() : chi::Task(), response_(-1) {}
+  ClientConnectTask() : chi::Task(), response_(-1), server_generation_(0) {}
 
   /** Emplace constructor */
-  explicit HeartbeatTask(const chi::TaskId &task_node,
-                         const chi::PoolId &pool_id,
-                         const chi::PoolQuery &pool_query)
-      : chi::Task(task_node, pool_id, pool_query, Method::kHeartbeat),
-        response_(-1) {
-    // Initialize task
+  explicit ClientConnectTask(const chi::TaskId &task_node,
+                             const chi::PoolId &pool_id,
+                             const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kClientConnect),
+        response_(-1),
+        server_generation_(0) {
     task_id_ = task_node;
     pool_id_ = pool_id;
-    method_ = Method::kHeartbeat;
+    method_ = Method::kClientConnect;
     task_flags_.Clear();
     pool_query_ = pool_query;
   }
 
-  /**
-   * Serialize IN and INOUT parameters for network transfer
-   * No additional parameters for HeartbeatTask
-   */
   template <typename Archive>
   void SerializeIn(Archive &ar) {
     Task::SerializeIn(ar);
-    // No additional parameters to serialize for heartbeat
   }
 
-  /**
-   * Serialize OUT and INOUT parameters for network transfer
-   * This includes: response_
-   */
   template <typename Archive>
   void SerializeOut(Archive &ar) {
     Task::SerializeOut(ar);
-    ar(response_);
+    ar(response_, server_generation_);
   }
 
-  /**
-   * Copy from another HeartbeatTask (assumes this task is already constructed)
-   * @param other Pointer to the source task to copy from
-   */
-  void Copy(const hipc::FullPtr<HeartbeatTask> &other) {
-    // Copy base Task fields
+  void Copy(const hipc::FullPtr<ClientConnectTask> &other) {
     Task::Copy(other.template Cast<Task>());
-    // Copy HeartbeatTask-specific fields
     response_ = other->response_;
+    server_generation_ = other->server_generation_;
   }
 
-  /** Aggregate replica results into this task */
-  void Aggregate(const hipc::FullPtr<HeartbeatTask> &other) {
+  void Aggregate(const hipc::FullPtr<ClientConnectTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * ClientRecvTask - Receive tasks from ZMQ clients (TCP/IPC)
+ * Periodic task that polls ZMQ ROUTER sockets for client task submissions
+ */
+struct ClientRecvTask : public chi::Task {
+  OUT chi::u32 tasks_received_;
+
+  /** SHM default constructor */
+  ClientRecvTask() : chi::Task(), tasks_received_(0) {}
+
+  /** Emplace constructor */
+  explicit ClientRecvTask(const chi::TaskId &task_node,
+                          const chi::PoolId &pool_id,
+                          const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kClientRecv),
+        tasks_received_(0) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kClientRecv;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(tasks_received_);
+  }
+
+  void Copy(const hipc::FullPtr<ClientRecvTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    tasks_received_ = other->tasks_received_;
+  }
+
+  void Aggregate(const hipc::FullPtr<ClientRecvTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * ClientSendTask - Send completed task outputs to ZMQ clients
+ * Periodic task that polls net_queue_ kClientSendTcp/kClientSendIpc priorities
+ */
+struct ClientSendTask : public chi::Task {
+  OUT chi::u32 tasks_sent_;
+
+  /** SHM default constructor */
+  ClientSendTask() : chi::Task(), tasks_sent_(0) {}
+
+  /** Emplace constructor */
+  explicit ClientSendTask(const chi::TaskId &task_node,
+                          const chi::PoolId &pool_id,
+                          const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kClientSend),
+        tasks_sent_(0) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kClientSend;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(tasks_sent_);
+  }
+
+  void Copy(const hipc::FullPtr<ClientSendTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    tasks_sent_ = other->tasks_sent_;
+  }
+
+  void Aggregate(const hipc::FullPtr<ClientSendTask> &other) {
     Task::Aggregate(other.template Cast<Task>());
     Copy(other);
   }
@@ -810,74 +892,52 @@ struct WreapDeadIpcsTask : public chi::Task {
 };
 
 /**
- * MonitorTask - Monitor runtime and worker statistics
- *
- * This task collects statistics from all workers in the runtime including:
- * - Number of queued, blocked, and periodic tasks
- * - Worker idle status and suspend periods
- * - Overall system load and utilization
+ * Unified MonitorTask - Query any chimod for runtime state
+ * All chimods implement kMonitor:9 with this task type.
+ * Query is a free-form string; response values are msgpack-encoded.
  */
 struct MonitorTask : public chi::Task {
-  /** Output: Vector of worker statistics */
-  OUT std::vector<chi::WorkerStats> info_;
+  IN std::string query_;
+  OUT std::unordered_map<chi::ContainerId, std::string> results_;
 
-  /**
-   * SHM default constructor
-   */
-  MonitorTask() : chi::Task(), info_() {}
+  MonitorTask() : chi::Task() {}
 
-  /**
-   * Emplace constructor - create new MonitorTask
-   * @param task_node Unique task identifier
-   * @param pool_id Pool this task belongs to
-   * @param pool_query Query for routing this task
-   */
-  explicit MonitorTask(const chi::TaskId &task_node, const chi::PoolId &pool_id,
-                       const chi::PoolQuery &pool_query)
-      : chi::Task(task_node, pool_id, pool_query, Method::kMonitor), info_() {
-    // Initialize task
-    task_id_ = task_node;
+  explicit MonitorTask(const chi::TaskId &task_id,
+                       const chi::PoolId &pool_id,
+                       const chi::PoolQuery &pool_query,
+                       const std::string &query)
+      : chi::Task(task_id, pool_id, pool_query, Method::kMonitor),
+        query_(query) {
+    task_id_ = task_id;
     pool_id_ = pool_id;
     method_ = Method::kMonitor;
     task_flags_.Clear();
     pool_query_ = pool_query;
   }
 
-  /**
-   * Serialize IN and INOUT parameters for network transfer
-   * No additional parameters for MonitorTask
-   */
   template <typename Archive>
   void SerializeIn(Archive &ar) {
     Task::SerializeIn(ar);
-    // No additional parameters to serialize
+    ar(query_);
   }
 
-  /**
-   * Serialize OUT and INOUT parameters for network transfer
-   * This includes: info_ (vector of WorkerStats)
-   */
   template <typename Archive>
   void SerializeOut(Archive &ar) {
     Task::SerializeOut(ar);
-    ar(info_);
+    ar(results_);
   }
 
-  /**
-   * Copy from another MonitorTask (assumes this task is already constructed)
-   * @param other Pointer to the source task to copy from
-   */
   void Copy(const hipc::FullPtr<MonitorTask> &other) {
-    // Copy base Task fields
     Task::Copy(other.template Cast<Task>());
-    // Copy MonitorTask-specific fields
-    info_ = other->info_;
+    query_ = other->query_;
+    results_ = other->results_;
   }
 
-  /** Aggregate replica results into this task */
   void Aggregate(const hipc::FullPtr<MonitorTask> &other) {
     Task::Aggregate(other.template Cast<Task>());
-    Copy(other);
+    for (auto &[k, v] : other->results_) {
+      results_[k] = std::move(v);
+    }
   }
 };
 
@@ -1057,6 +1117,574 @@ struct SubmitBatchTask : public chi::Task {
    * Aggregate replica results into this task
    */
   void Aggregate(const hipc::FullPtr<SubmitBatchTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * RegisterAcceleratorMemoryTask - Register GPU accelerator memory with runtime
+ *
+ * This task is called from GPU kernels to register a GPU memory backend
+ * with the Chimaera runtime. The runtime can then use this memory for
+ * allocations within GPU kernels.
+ */
+// TODO: RegisterAcceleratorMemoryTask - incomplete, needs Method::kRegisterAcceleratorMemory defined
+// struct RegisterAcceleratorMemoryTask : public chi::Task {
+//   // Backend information for GPU memory
+//   IN chi::u64 backend_id_;           ///< Backend ID
+//   IN chi::u64 data_capacity_;        ///< GPU memory capacity in bytes
+//   IN chi::u32 gpu_id_;               ///< GPU device ID
+//
+//   // Results
+//   OUT chi::priv::string error_message_;  ///< Error description if registration failed
+//
+//   /** SHM default constructor */
+//   RegisterAcceleratorMemoryTask()
+//       : chi::Task(),
+//         backend_id_(0),
+//         data_capacity_(0),
+//         gpu_id_(0),
+//         error_message_(HSHM_MALLOC) {}
+//
+//   /** Emplace constructor */
+//   explicit RegisterAcceleratorMemoryTask(const chi::TaskId &task_node,
+//                                          const chi::PoolId &pool_id,
+//                                          const chi::PoolQuery &pool_query,
+//                                          chi::u64 backend_id,
+//                                          chi::u64 data_capacity,
+//                                          chi::u32 gpu_id)
+//       : chi::Task(task_node, pool_id, pool_query, Method::kRegisterAcceleratorMemory),
+//         backend_id_(backend_id),
+//         data_capacity_(data_capacity),
+//         gpu_id_(gpu_id),
+//         error_message_(HSHM_MALLOC) {
+//     // Initialize task
+//     task_id_ = task_node;
+//     pool_id_ = pool_id;
+//     method_ = Method::kRegisterAcceleratorMemory;
+//     task_flags_.Clear();
+//     pool_query_ = pool_query;
+//   }
+//
+//   /**
+//    * Serialize IN and INOUT parameters for network transfer
+//    * This includes: backend_id_, data_capacity_, gpu_id_
+//    */
+//   template <typename Archive>
+//   void SerializeIn(Archive &ar) {
+//     Task::SerializeIn(ar);
+//     ar(backend_id_, data_capacity_, gpu_id_);
+//   }
+//
+//   /**
+//    * Serialize OUT and INOUT parameters for network transfer
+//    * This includes: error_message_
+//    */
+//   template <typename Archive>
+//   void SerializeOut(Archive &ar) {
+//     Task::SerializeOut(ar);
+//     ar(error_message_);
+//   }
+//
+//   /**
+//    * Copy from another RegisterAcceleratorMemoryTask
+//    * @param other Pointer to the source task to copy from
+//    */
+//   void Copy(const hipc::FullPtr<RegisterAcceleratorMemoryTask> &other) {
+//     // Copy base Task fields
+//     Task::Copy(other.template Cast<Task>());
+//     // Copy RegisterAcceleratorMemoryTask-specific fields
+//     backend_id_ = other->backend_id_;
+//     data_capacity_ = other->data_capacity_;
+//     gpu_id_ = other->gpu_id_;
+//     error_message_ = other->error_message_;
+//   }
+//
+//   /** Aggregate replica results into this task */
+//   void Aggregate(const hipc::FullPtr<RegisterAcceleratorMemoryTask> &other) {
+//     Task::Aggregate(other.template Cast<Task>());
+//     Copy(other);
+//   }
+// };
+
+/**
+ * RegisterMemoryTask - Register client shared memory with runtime
+ *
+ * When a SHM-mode client creates a new shared memory segment via
+ * IncreaseMemory(), it sends this task over TCP to tell the runtime
+ * server to attach to the new segment.
+ */
+struct RegisterMemoryTask : public chi::Task {
+  IN chi::u32 alloc_major_;  ///< AllocatorId major (pid)
+  IN chi::u32 alloc_minor_;  ///< AllocatorId minor (index)
+  OUT bool success_;
+
+  /** SHM default constructor */
+  RegisterMemoryTask()
+      : chi::Task(), alloc_major_(0), alloc_minor_(0), success_(false) {}
+
+  /** Emplace constructor */
+  explicit RegisterMemoryTask(const chi::TaskId &task_node,
+                              const chi::PoolId &pool_id,
+                              const chi::PoolQuery &pool_query,
+                              const hipc::AllocatorId &alloc_id)
+      : chi::Task(task_node, pool_id, pool_query, Method::kRegisterMemory),
+        alloc_major_(alloc_id.major_),
+        alloc_minor_(alloc_id.minor_),
+        success_(false) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kRegisterMemory;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(alloc_major_, alloc_minor_);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(success_);
+  }
+
+  void Copy(const hipc::FullPtr<RegisterMemoryTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    alloc_major_ = other->alloc_major_;
+    alloc_minor_ = other->alloc_minor_;
+    success_ = other->success_;
+  }
+
+  void Aggregate(const hipc::FullPtr<RegisterMemoryTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * RestartContainersTask - Restart containers from saved compose configs
+ * Reads conf_dir/restart/ directory and re-creates pools from saved YAML files
+ */
+struct RestartContainersTask : public chi::Task {
+  OUT chi::u32 containers_restarted_;
+  OUT chi::priv::string error_message_;
+
+  /** SHM default constructor */
+  RestartContainersTask()
+      : chi::Task(),
+        containers_restarted_(0),
+        error_message_(HSHM_MALLOC) {}
+
+  /** Emplace constructor */
+  explicit RestartContainersTask(const chi::TaskId &task_node,
+                                 const chi::PoolId &pool_id,
+                                 const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kRestartContainers),
+        containers_restarted_(0),
+        error_message_(HSHM_MALLOC) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kRestartContainers;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(containers_restarted_, error_message_);
+  }
+
+  void Copy(const hipc::FullPtr<RestartContainersTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    containers_restarted_ = other->containers_restarted_;
+    error_message_ = other->error_message_;
+  }
+
+  void Aggregate(const hipc::FullPtr<RestartContainersTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * AddNodeTask - Register a new node with all existing nodes in the cluster
+ * Broadcasts to all nodes to update their internal hostfile
+ */
+struct AddNodeTask : public chi::Task {
+  IN chi::priv::string new_node_ip_;
+  IN chi::u32 new_node_port_;
+  OUT chi::u64 new_node_id_;
+  OUT chi::priv::string error_message_;
+
+  /** SHM default constructor */
+  AddNodeTask()
+      : chi::Task(),
+        new_node_ip_(HSHM_MALLOC),
+        new_node_port_(0),
+        new_node_id_(0),
+        error_message_(HSHM_MALLOC) {}
+
+  /** Emplace constructor */
+  explicit AddNodeTask(const chi::TaskId &task_node,
+                       const chi::PoolId &pool_id,
+                       const chi::PoolQuery &pool_query,
+                       const std::string &new_node_ip,
+                       chi::u32 new_node_port)
+      : chi::Task(task_node, pool_id, pool_query, Method::kAddNode),
+        new_node_ip_(HSHM_MALLOC, new_node_ip),
+        new_node_port_(new_node_port),
+        new_node_id_(0),
+        error_message_(HSHM_MALLOC) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kAddNode;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(new_node_ip_, new_node_port_);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(new_node_id_, error_message_);
+  }
+
+  void Copy(const hipc::FullPtr<AddNodeTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    new_node_ip_ = other->new_node_ip_;
+    new_node_port_ = other->new_node_port_;
+    new_node_id_ = other->new_node_id_;
+    error_message_ = other->error_message_;
+  }
+
+  void Aggregate(const hipc::FullPtr<AddNodeTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * ChangeAddressTableTask - Update ContainerId->NodeId mapping on a node
+ * Broadcasts to all nodes to update their address table for a pool
+ */
+struct ChangeAddressTableTask : public chi::Task {
+  IN chi::PoolId target_pool_id_;
+  IN chi::ContainerId container_id_;
+  IN chi::u32 new_node_id_;
+  OUT chi::priv::string error_message_;
+
+  /** SHM default constructor */
+  ChangeAddressTableTask()
+      : chi::Task(),
+        target_pool_id_(),
+        container_id_(0),
+        new_node_id_(0),
+        error_message_(HSHM_MALLOC) {}
+
+  /** Emplace constructor */
+  explicit ChangeAddressTableTask(const chi::TaskId &task_node,
+                                   const chi::PoolId &pool_id,
+                                   const chi::PoolQuery &pool_query,
+                                   const chi::PoolId &target_pool_id,
+                                   chi::ContainerId container_id,
+                                   chi::u32 new_node_id)
+      : chi::Task(task_node, pool_id, pool_query, Method::kChangeAddressTable),
+        target_pool_id_(target_pool_id),
+        container_id_(container_id),
+        new_node_id_(new_node_id),
+        error_message_(HSHM_MALLOC) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kChangeAddressTable;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(target_pool_id_, container_id_, new_node_id_);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(error_message_);
+  }
+
+  void Copy(const hipc::FullPtr<ChangeAddressTableTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    target_pool_id_ = other->target_pool_id_;
+    container_id_ = other->container_id_;
+    new_node_id_ = other->new_node_id_;
+    error_message_ = other->error_message_;
+  }
+
+  void Aggregate(const hipc::FullPtr<ChangeAddressTableTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * MigrateContainersTask - Orchestrate container migration
+ * Processes a list of MigrateInfo entries to move containers between nodes
+ */
+struct MigrateContainersTask : public chi::Task {
+  IN chi::priv::string migrations_json_;
+  OUT chi::u32 num_migrated_;
+  OUT chi::priv::string error_message_;
+
+  /** SHM default constructor */
+  MigrateContainersTask()
+      : chi::Task(),
+        migrations_json_(HSHM_MALLOC),
+        num_migrated_(0),
+        error_message_(HSHM_MALLOC) {}
+
+  /** Emplace constructor */
+  explicit MigrateContainersTask(const chi::TaskId &task_node,
+                                  const chi::PoolId &pool_id,
+                                  const chi::PoolQuery &pool_query,
+                                  const std::string &migrations_json)
+      : chi::Task(task_node, pool_id, pool_query, Method::kMigrateContainers),
+        migrations_json_(HSHM_MALLOC, migrations_json),
+        num_migrated_(0),
+        error_message_(HSHM_MALLOC) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kMigrateContainers;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(migrations_json_);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(num_migrated_, error_message_);
+  }
+
+  void Copy(const hipc::FullPtr<MigrateContainersTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    migrations_json_ = other->migrations_json_;
+    num_migrated_ = other->num_migrated_;
+    error_message_ = other->error_message_;
+  }
+
+  void Aggregate(const hipc::FullPtr<MigrateContainersTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * HeartbeatTask - Liveness probe that just returns success
+ * No input or output fields beyond base Task
+ */
+struct HeartbeatTask : public chi::Task {
+  /** SHM default constructor */
+  HeartbeatTask() : chi::Task() {}
+
+  /** Emplace constructor */
+  explicit HeartbeatTask(const chi::TaskId &task_node,
+                         const chi::PoolId &pool_id,
+                         const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kHeartbeat) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kHeartbeat;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+  }
+
+  void Copy(const hipc::FullPtr<HeartbeatTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+  }
+
+  void Aggregate(const hipc::FullPtr<HeartbeatTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * HeartbeatProbeTask - Periodic SWIM failure detector
+ * Local periodic task, no extra fields needed
+ */
+struct HeartbeatProbeTask : public chi::Task {
+  /** SHM default constructor */
+  HeartbeatProbeTask() : chi::Task() {}
+
+  /** Emplace constructor */
+  explicit HeartbeatProbeTask(const chi::TaskId &task_node,
+                              const chi::PoolId &pool_id,
+                              const chi::PoolQuery &pool_query)
+      : chi::Task(task_node, pool_id, pool_query, Method::kHeartbeatProbe) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kHeartbeatProbe;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+  }
+
+  void Copy(const hipc::FullPtr<HeartbeatProbeTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+  }
+
+  void Aggregate(const hipc::FullPtr<HeartbeatProbeTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * ProbeRequestTask - Indirect probe request to helper node
+ * Remote task: asks a helper node to probe a target on our behalf
+ */
+struct ProbeRequestTask : public chi::Task {
+  IN chi::u64 target_node_id_;   // node to probe on behalf of requester
+  OUT int32_t probe_result_;     // 0 = alive, -1 = unreachable
+
+  /** SHM default constructor */
+  ProbeRequestTask() : chi::Task(), target_node_id_(0), probe_result_(-1) {}
+
+  /** Emplace constructor */
+  explicit ProbeRequestTask(const chi::TaskId &task_node,
+                            const chi::PoolId &pool_id,
+                            const chi::PoolQuery &pool_query,
+                            chi::u64 target_node_id)
+      : chi::Task(task_node, pool_id, pool_query, Method::kProbeRequest),
+        target_node_id_(target_node_id),
+        probe_result_(-1) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kProbeRequest;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(target_node_id_);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(probe_result_);
+  }
+
+  void Copy(const hipc::FullPtr<ProbeRequestTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    target_node_id_ = other->target_node_id_;
+    probe_result_ = other->probe_result_;
+  }
+
+  void Aggregate(const hipc::FullPtr<ProbeRequestTask> &other) {
+    Task::Aggregate(other.template Cast<Task>());
+    Copy(other);
+  }
+};
+
+/**
+ * RecoverContainersTask - Leader broadcasts recovery plan to surviving nodes
+ * Each node updates address_map_, only dest node creates the container
+ */
+struct RecoverContainersTask : public chi::Task {
+  IN chi::priv::string assignments_data_;  // Serialized vector<RecoveryAssignment>
+  IN chi::u64 dead_node_id_;
+  OUT chi::u32 num_recovered_;
+  OUT chi::priv::string error_message_;
+
+  /** SHM default constructor */
+  RecoverContainersTask()
+      : chi::Task(),
+        assignments_data_(HSHM_MALLOC),
+        dead_node_id_(0),
+        num_recovered_(0),
+        error_message_(HSHM_MALLOC) {}
+
+  /** Emplace constructor */
+  explicit RecoverContainersTask(const chi::TaskId &task_node,
+                                  const chi::PoolId &pool_id,
+                                  const chi::PoolQuery &pool_query,
+                                  const std::string &assignments_data,
+                                  chi::u64 dead_node_id)
+      : chi::Task(task_node, pool_id, pool_query, Method::kRecoverContainers),
+        assignments_data_(HSHM_MALLOC, assignments_data),
+        dead_node_id_(dead_node_id),
+        num_recovered_(0),
+        error_message_(HSHM_MALLOC) {
+    task_id_ = task_node;
+    pool_id_ = pool_id;
+    method_ = Method::kRecoverContainers;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  template <typename Archive>
+  void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(assignments_data_, dead_node_id_);
+  }
+
+  template <typename Archive>
+  void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(num_recovered_, error_message_);
+  }
+
+  void Copy(const hipc::FullPtr<RecoverContainersTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    assignments_data_ = other->assignments_data_;
+    dead_node_id_ = other->dead_node_id_;
+    num_recovered_ = other->num_recovered_;
+    error_message_ = other->error_message_;
+  }
+
+  void Aggregate(const hipc::FullPtr<RecoverContainersTask> &other) {
     Task::Aggregate(other.template Cast<Task>());
     Copy(other);
   }

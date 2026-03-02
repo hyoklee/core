@@ -4,6 +4,16 @@ project(chimaera VERSION 1.0.0)
 # Set root directory for this component
 set(CHIMAERA_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
+# Enable CUDA if requested
+if(WRP_CORE_ENABLE_CUDA)
+    wrp_core_enable_cuda(17)
+endif()
+
+# Enable ROCm if requested
+if(WRP_CORE_ENABLE_ROCM)
+    wrp_core_enable_rocm(HIP 17)
+endif()
+
 # Read namespace from chimaera_repo.yaml in project root (function defined in ChimaeraCommon.cmake)
 # This will be called after the utilities are included below
 
@@ -46,7 +56,7 @@ read_repo_namespace(CHIMAERA_NAMESPACE "${CHIMAERA_ROOT}")
 set(CHIMAERA_NAMESPACE "${CHIMAERA_NAMESPACE}" CACHE STRING "Project namespace for chimod targets")
 message(STATUS "Chimaera namespace: ${CHIMAERA_NAMESPACE}")
 
-# Add utilities subdirectory FIRST so chi_refresh_repo builds before everything else
+# Add utilities subdirectory FIRST so chimaera repo refresh builds before everything else
 add_subdirectory(util)
 
 # Add source subdirectory to build main library
@@ -63,11 +73,21 @@ if(WRP_CORE_ENABLE_BENCHMARKS)
 endif()
 
 # Add test subdirectory if testing is enabled
-# CHIMAERA_ENABLE_TESTS is set by root CMakeLists.txt
-if(CHIMAERA_ENABLE_TESTS)
+# WRP_CORE_ENABLE_TESTS is set by root CMakeLists.txt
+if(WRP_CORE_ENABLE_TESTS)
   # enable_testing() is handled by root CMakeLists.txt
   add_subdirectory(test)
   message(STATUS "Unit tests enabled - added test subdirectory")
+endif()
+
+# Add Python bindings if enabled
+if(WRP_CORE_ENABLE_PYTHON)
+  if(COMMAND nanobind_add_module)
+    add_subdirectory(wrapper/python)
+    message(STATUS "Chimaera runtime Python bindings enabled")
+  else()
+    message(WARNING "WRP_CORE_ENABLE_PYTHON is ON but nanobind_add_module not found.")
+  endif()
 endif()
 
 #------------------------------------------------------------------------------
@@ -112,6 +132,41 @@ install(DIRECTORY config/
   DESTINATION etc/chimaera
   FILES_MATCHING PATTERN "*"
 )
+
+# Seed ~/.chimaera/chimaera.yaml for the real user (handles sudo)
+# Only creates the file if it doesn't already exist
+install(CODE "
+  # Determine real user's home directory
+  set(_HOME \"\")
+  if(DEFINED ENV{SUDO_USER})
+    set(_SUDO_USER \"\$ENV{SUDO_USER}\")
+    execute_process(
+      COMMAND bash -c \"eval echo ~\${_SUDO_USER}\"
+      OUTPUT_VARIABLE _HOME
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+  endif()
+  if(_HOME STREQUAL \"\")
+    set(_HOME \"\$ENV{HOME}\")
+  endif()
+
+  set(_DEST \"\${_HOME}/.chimaera\")
+  set(_FILE \"\${_DEST}/chimaera.yaml\")
+  if(NOT EXISTS \"\${_FILE}\")
+    file(MAKE_DIRECTORY \"\${_DEST}\")
+    file(COPY_FILE
+      \"\${CMAKE_INSTALL_PREFIX}/etc/chimaera/chimaera_default.yaml\"
+      \"\${_FILE}\"
+    )
+    message(STATUS \"Seeded default config: \${_FILE}\")
+    # Fix ownership when running under sudo
+    if(DEFINED ENV{SUDO_USER})
+      execute_process(COMMAND chown -R \"\$ENV{SUDO_USER}:\$ENV{SUDO_USER}\" \"\${_DEST}\")
+    endif()
+  else()
+    message(STATUS \"User config already exists: \${_FILE} (not overwriting)\")
+  endif()
+")
 
 # Export targets file for main library
 install(EXPORT ${MAIN_EXPORT_NAME}

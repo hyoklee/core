@@ -13,6 +13,7 @@ namespace Method {
 // Inherited methods
 GLOBAL_CONST chi::u32 kCreate = 0;
 GLOBAL_CONST chi::u32 kDestroy = 1;
+GLOBAL_CONST chi::u32 kMonitor = 9;
 
 // core-specific methods
 GLOBAL_CONST chi::u32 kRegisterTarget = 10;
@@ -34,6 +35,8 @@ GLOBAL_CONST chi::u32 kGetBlobInfo = 25;
 GLOBAL_CONST chi::u32 kTagQuery = 30;
 GLOBAL_CONST chi::u32 kBlobQuery = 31;
 GLOBAL_CONST chi::u32 kGetTargetInfo = 32;
+GLOBAL_CONST chi::u32 kFlushMetadata = 33;
+GLOBAL_CONST chi::u32 kFlushData = 34;
 }  // namespace Method
 
 }  // namespace wrp_cte::core

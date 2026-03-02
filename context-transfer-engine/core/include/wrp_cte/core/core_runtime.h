@@ -38,12 +38,13 @@
 #include <chimaera/chimaera.h>
 #include <chimaera/comutex.h>
 #include <chimaera/corwlock.h>
-#include <chimaera/unordered_map_ll.h>
+#include <hermes_shm/data_structures/priv/unordered_map_ll.h>
 #include <hermes_shm/data_structures/ipc/ring_buffer.h>
 #include <hermes_shm/memory/allocator/malloc_allocator.h>
 #include <wrp_cte/core/core_client.h>
 #include <wrp_cte/core/core_config.h>
 #include <wrp_cte/core/core_tasks.h>
+#include <wrp_cte/core/transaction_log.h>
 
 // Forward declarations to avoid circular dependency
 namespace wrp_cte::core {
@@ -70,6 +71,11 @@ public:
    * Returns TaskResume for coroutine-based async operations
    */
   chi::TaskResume Create(hipc::FullPtr<CreateTask> task, chi::RunContext &ctx);
+
+  /**
+   * Monitor container state (Method::kMonitor)
+   */
+  chi::TaskResume Monitor(hipc::FullPtr<MonitorTask> task, chi::RunContext &rctx);
 
   /**
    * Destroy the container (Method::kDestroy)
@@ -148,9 +154,16 @@ public:
    */
   chi::TaskResume GetTagSize(hipc::FullPtr<GetTagSizeTask> task, chi::RunContext &ctx);
 
+  /**
+   * Schedule a task by resolving Dynamic pool queries.
+   */
+  chi::PoolQuery ScheduleTask(const hipc::FullPtr<chi::Task> &task) override;
+
   // Pure virtual methods - implementations are in autogen/core_lib_exec.cc
   void Init(const chi::PoolId &pool_id, const std::string &pool_name,
             chi::u32 container_id = 0) override;
+  void Restart(const chi::PoolId &pool_id, const std::string &pool_name,
+               chi::u32 container_id = 0) override;
   chi::TaskResume Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
                       chi::RunContext &rctx) override;
   chi::u64 GetWorkRemaining() const override;
@@ -184,23 +197,27 @@ private:
   // Client for this ChiMod
   Client client_;
 
-  // Target management data structures (using chi::unordered_map_ll for
+  // Target management data structures (using hshm::priv::unordered_map_ll for
   // thread-safe concurrent access)
-  chi::unordered_map_ll<chi::PoolId, TargetInfo> registered_targets_;
-  chi::unordered_map_ll<std::string, chi::PoolId>
+  hshm::priv::unordered_map_ll<chi::PoolId, TargetInfo> registered_targets_;
+  hshm::priv::unordered_map_ll<std::string, chi::PoolId>
       target_name_to_id_; // reverse lookup: target_name -> target_id
 
-  // Tag management data structures (using chi::unordered_map_ll for thread-safe
+  // Tag management data structures (using hshm::priv::unordered_map_ll for thread-safe
   // concurrent access)
-  chi::unordered_map_ll<std::string, TagId>
+  hshm::priv::unordered_map_ll<std::string, TagId>
       tag_name_to_id_;                                   // tag_name -> tag_id
-  chi::unordered_map_ll<TagId, TagInfo> tag_id_to_info_; // tag_id -> TagInfo
-  chi::unordered_map_ll<std::string, BlobInfo>
+  hshm::priv::unordered_map_ll<TagId, TagInfo> tag_id_to_info_; // tag_id -> TagInfo
+  hshm::priv::unordered_map_ll<std::string, BlobInfo>
       tag_blob_name_to_info_; // "tag_id.blob_name" -> BlobInfo
 
   // Atomic counters for thread-safe ID generation
   std::atomic<chi::u32>
       next_tag_id_minor_; // Minor counter for TagId UniqueId generation
+
+  // Map sizes for data structures (must be large enough for expected entries)
+  static const size_t kBlobMapSize = 1000000;  // 1M blobs
+  static const size_t kTagMapSize = 100000;    // 100K tags
 
   // Synchronization primitives for thread-safe access to data structures
   // Use a set of locks based on maximum number of lanes for better concurrency
@@ -217,11 +234,18 @@ private:
   // CTE configuration (replaces ConfigManager singleton)
   Config config_;
 
+  // Restart flag: set by Restart() before calling Init()/Create()
+  bool is_restart_ = false;
+
   // Telemetry ring buffer for performance monitoring
   static inline constexpr size_t kTelemetryRingSize = 1024; // Ring buffer size
   std::unique_ptr<hipc::circular_mpsc_ring_buffer<CteTelemetry, hipc::MallocAllocator>> telemetry_log_;
   std::atomic<std::uint64_t>
       telemetry_counter_; // Atomic counter for logical time
+
+  // Write-Ahead Transaction Logs (per-worker)
+  std::vector<std::unique_ptr<TransactionLog>> blob_txn_logs_;
+  std::vector<std::unique_ptr<TransactionLog>> tag_txn_logs_;
 
   /**
    * Get access to configuration manager
@@ -241,6 +265,12 @@ private:
    * automatic)
    */
   float GetManualScoreForTarget(const std::string &target_name);
+
+  /**
+   * Get the persistence level for a target from its storage device config
+   */
+  chimaera::bdev::PersistenceLevel GetPersistenceLevelForTarget(
+      const std::string &target_name);
 
   /**
    * Helper function to get or assign a tag ID
@@ -307,16 +337,31 @@ private:
                           float blob_score);
 
   /**
-   * Allocate new data blocks for blob expansion
-   * @param blob_info Blob to extend with new data blocks
-   * @param offset Offset where data starts (for determining required size)
-   * @param size Size of data to accommodate
-   * @param blob_score Score for target selection
-   * @param error_code Output: 0 for success, 1 for failure
-   * Returns TaskResume for coroutine-based async operations
+   * Clear all blocks from a blob if this is a full replacement.
+   * Conditions: score in [0,1], offset == 0, size >= current blob size.
+   * @param blob_info Blob to potentially clear
+   * @param blob_score Score of the incoming put
+   * @param offset Write offset
+   * @param size Write size
+   * @param cleared Output: true if blocks were cleared
    */
-  chi::TaskResume AllocateNewData(BlobInfo &blob_info, chi::u64 offset, chi::u64 size,
-                                  float blob_score, chi::u32 &error_code);
+  chi::TaskResume ClearBlob(BlobInfo &blob_info, float blob_score,
+                            chi::u64 offset, chi::u64 size, bool &cleared);
+
+  /**
+   * Extend blob by allocating new data blocks if offset + size > current size.
+   * If offset + size <= current size, returns immediately (no-op).
+   * Runs DPE to select targets, then allocates from bdev.
+   * @param blob_info Blob to extend
+   * @param offset Offset where data starts
+   * @param size Size of data to write
+   * @param blob_score Score for target selection
+   * @param error_code Output: 0 for success, non-zero for failure
+   * @param min_persistence_level Minimum persistence level for target filtering
+   */
+  chi::TaskResume ExtendBlob(BlobInfo &blob_info, chi::u64 offset, chi::u64 size,
+                             float blob_score, chi::u32 &error_code,
+                             int min_persistence_level = 0);
 
   /**
    * Write data to existing blob blocks
@@ -367,6 +412,16 @@ private:
    * @return Capacity in bytes
    */
   chi::u64 ParseCapacityToBytes(const std::string &capacity_str);
+
+  /**
+   * Restore metadata from persistent log during restart
+   */
+  void RestoreMetadataFromLog();
+
+  /**
+   * Replay transaction logs on top of restored snapshot during restart
+   */
+  void ReplayTransactionLogs();
 
   /**
    * Retrieve telemetry entries for analysis (non-destructive peek)
@@ -428,6 +483,16 @@ private:
    * @param ctx Runtime context for task execution
    */
   chi::TaskResume GetBlobInfo(hipc::FullPtr<GetBlobInfoTask> task, chi::RunContext &ctx);
+
+  /**
+   * Flush metadata to durable storage (Method::kFlushMetadata)
+   */
+  chi::TaskResume FlushMetadata(hipc::FullPtr<FlushMetadataTask> task, chi::RunContext &ctx);
+
+  /**
+   * Flush data from volatile to non-volatile targets (Method::kFlushData)
+   */
+  chi::TaskResume FlushData(hipc::FullPtr<FlushDataTask> task, chi::RunContext &ctx);
 
 private:
   /**

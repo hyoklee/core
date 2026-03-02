@@ -39,10 +39,10 @@
 
 #include "hermes_shm/constants/macros.h"
 #include "numbers.h"
-#if HSHM_ENABLE_CUDA
+#if HSHM_IS_CUDA_COMPILER
 #include <cuda/atomic>
 #endif
-#if HSHM_ENABLE_ROCM
+#if HSHM_IS_ROCM_COMPILER
 #include <hip/hip_runtime.h>
 #endif
 
@@ -55,7 +55,7 @@ struct nonatomic {
 
   /** Serialization */
   template <typename Ar>
-  void serialize(Ar &ar) {
+  HSHM_CROSS_FUN void serialize(Ar &ar) {
     ar(x);
   }
 
@@ -121,6 +121,13 @@ struct nonatomic {
     (void)order;
     x = (T)val;
   }
+
+  /** System-scope store (same as store for nonatomic) */
+  template <typename U>
+  HSHM_INLINE_CROSS_FUN void store_system(U val) { x = (T)val; }
+
+  /** System-scope load (same as load for nonatomic) */
+  HSHM_INLINE_CROSS_FUN T load_system() const { return x; }
 
   /** Get reference to x */
   HSHM_INLINE_CROSS_FUN T &ref() { return x; }
@@ -275,6 +282,13 @@ struct nonatomic {
     return *this;
   }
 
+  /** System-scope bitwise or assign (same as |= for nonatomic) */
+  template <typename U>
+  HSHM_INLINE_CROSS_FUN nonatomic &or_system(U other) {
+    x |= other;
+    return *this;
+  }
+
   /** Bitwise xor assign */
   template <typename U>
   HSHM_INLINE_CROSS_FUN nonatomic &operator^=(U other) {
@@ -357,7 +371,38 @@ struct rocm_atomic {
   template <typename U>
   HSHM_INLINE_CROSS_FUN T
   exchange(U count, std::memory_order order = std::memory_order_seq_cst) {
-    return atomicExch(&x, count);
+    if constexpr (sizeof(T) == 8) {
+      return atomicExch(reinterpret_cast<unsigned long long*>(&x), static_cast<unsigned long long>(count));
+    } else {
+      return atomicExch(&x, count);
+    }
+  }
+
+  /** System-scope atomic store (visible to CPU from GPU) */
+  template <typename U>
+  HSHM_INLINE_CROSS_FUN void store_system(U count) {
+#if HSHM_IS_GPU
+    if constexpr (sizeof(T) == 8) {
+      atomicExch_system(reinterpret_cast<unsigned long long*>(&x),
+                        static_cast<unsigned long long>(count));
+    } else {
+      atomicExch_system(reinterpret_cast<unsigned int*>(&x),
+                        static_cast<unsigned int>(count));
+    }
+#else
+    exchange(count);
+#endif
+  }
+
+  /** System-scope atomic load (visible across GPU/CPU boundary).
+   * Uses volatile read since HostNativeAtomicSupported=0 on many GPUs
+   * means atomicAdd_system(ptr,0) won't see CPU-side writes. */
+  HSHM_INLINE_CROSS_FUN T load_system() const {
+#if HSHM_IS_GPU
+    return *reinterpret_cast<const volatile T*>(&x);
+#else
+    return x;
+#endif
   }
 
   /** Atomic compare exchange weak wrapper */
@@ -484,6 +529,18 @@ struct rocm_atomic {
     return *this;
   }
 
+  /** System-scope bitwise or assign (visible to CPU from GPU) */
+  template <typename U>
+  HSHM_INLINE_CROSS_FUN rocm_atomic &or_system(U other) {
+#if HSHM_IS_GPU
+    atomicOr_system(reinterpret_cast<unsigned int*>(&x),
+                    static_cast<unsigned int>(other));
+#else
+    atomicOr(&x, other);
+#endif
+    return *this;
+  }
+
   /** Bitwise xor assign */
   template <typename U>
   HSHM_INLINE_CROSS_FUN rocm_atomic &operator^=(U other) {
@@ -493,7 +550,7 @@ struct rocm_atomic {
 
   /** Serialization */
   template <typename Ar>
-  void serialize(Ar &ar) {
+  HSHM_CROSS_FUN void serialize(Ar &ar) {
     ar(x);
   }
 };
@@ -572,6 +629,17 @@ struct std_atomic {
   HSHM_INLINE void store(U count,
                          std::memory_order order = std::memory_order_seq_cst) {
     x.store(count, order);
+  }
+
+  /** System-scope store (same as store for std_atomic) */
+  template <typename U>
+  HSHM_INLINE void store_system(U count) {
+    x.store(count, std::memory_order_seq_cst);
+  }
+
+  /** System-scope load (same as load for std_atomic) */
+  HSHM_INLINE T load_system() const {
+    return x.load(std::memory_order_seq_cst);
   }
 
   /** Atomic exchange wrapper */
@@ -702,6 +770,13 @@ struct std_atomic {
     return *this;
   }
 
+  /** System-scope bitwise or assign (same as |= for std_atomic) */
+  template <typename U>
+  HSHM_INLINE std_atomic &or_system(U other) {
+    x |= other;
+    return *this;
+  }
+
   /** Bitwise xor assign */
   template <typename U>
   HSHM_INLINE std_atomic &operator^=(U other) {
@@ -723,6 +798,24 @@ using atomic = rocm_atomic<T>;
 template <typename T, bool is_atomic>
 using opt_atomic =
     typename std::conditional<is_atomic, atomic<T>, nonatomic<T>>::type;
+
+/** Device-scope memory fence */
+HSHM_INLINE_CROSS_FUN static void threadfence() {
+#if HSHM_IS_GPU
+  __threadfence();
+#else
+  std::atomic_thread_fence(std::memory_order_release);
+#endif
+}
+
+/** System-scope memory fence (ensures GPU writes are visible to CPU) */
+HSHM_INLINE_CROSS_FUN static void threadfence_system() {
+#if HSHM_IS_GPU
+  __threadfence_system();
+#else
+  std::atomic_thread_fence(std::memory_order_seq_cst);
+#endif
+}
 
 }  // namespace hshm::ipc
 

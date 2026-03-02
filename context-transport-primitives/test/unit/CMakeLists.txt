@@ -29,11 +29,10 @@ if(WRP_CORE_ENABLE_ENCRYPT)
     add_subdirectory(encrypt)
 endif()
 
+add_subdirectory(io)
+
 if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
     add_subdirectory(gpu)
 endif()
 
-# Lightbeam tests disabled - depend on deleted code
-# if(WRP_CORE_ENABLE_ZMQ)
-#     add_subdirectory(lightbeam)
-# endif()
+add_subdirectory(lightbeam)

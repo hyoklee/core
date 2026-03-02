@@ -41,6 +41,12 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
       co_await Destroy(typed_task, rctx);
       break;
     }
+    case Method::kMonitor: {
+      // Cast task FullPtr to specific type
+      hipc::FullPtr<MonitorTask> typed_task = task_ptr.template Cast<MonitorTask>();
+      co_await Monitor(typed_task, rctx);
+      break;
+    }
     case Method::kCustom: {
       // Cast task FullPtr to specific type
       hipc::FullPtr<CustomTask> typed_task = task_ptr.template Cast<CustomTask>();
@@ -71,6 +77,12 @@ chi::TaskResume Runtime::Run(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr,
       co_await TestLargeOutput(typed_task, rctx);
       break;
     }
+    case Method::kGpuSubmit: {
+      // Cast task FullPtr to specific type
+      hipc::FullPtr<GpuSubmitTask> typed_task = task_ptr.template Cast<GpuSubmitTask>();
+      co_await GpuSubmit(typed_task, rctx);
+      break;
+    }
     default: {
       // Unknown method - do nothing
       break;
@@ -93,6 +105,10 @@ void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
       ipc_manager->DelTask(task_ptr.template Cast<DestroyTask>());
       break;
     }
+    case Method::kMonitor: {
+      ipc_manager->DelTask(task_ptr.template Cast<MonitorTask>());
+      break;
+    }
     case Method::kCustom: {
       ipc_manager->DelTask(task_ptr.template Cast<CustomTask>());
       break;
@@ -111,6 +127,10 @@ void Runtime::DelTask(chi::u32 method, hipc::FullPtr<chi::Task> task_ptr) {
     }
     case Method::kTestLargeOutput: {
       ipc_manager->DelTask(task_ptr.template Cast<TestLargeOutputTask>());
+      break;
+    }
+    case Method::kGpuSubmit: {
+      ipc_manager->DelTask(task_ptr.template Cast<GpuSubmitTask>());
       break;
     }
     default: {
@@ -134,6 +154,11 @@ void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
       archive << *typed_task.ptr_;
       break;
     }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      archive << *typed_task.ptr_;
+      break;
+    }
     case Method::kCustom: {
       auto typed_task = task_ptr.template Cast<CustomTask>();
       archive << *typed_task.ptr_;
@@ -156,6 +181,11 @@ void Runtime::SaveTask(chi::u32 method, chi::SaveTaskArchive& archive,
     }
     case Method::kTestLargeOutput: {
       auto typed_task = task_ptr.template Cast<TestLargeOutputTask>();
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kGpuSubmit: {
+      auto typed_task = task_ptr.template Cast<GpuSubmitTask>();
       archive << *typed_task.ptr_;
       break;
     }
@@ -179,6 +209,11 @@ void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
       archive >> *typed_task.ptr_;
       break;
     }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      archive >> *typed_task.ptr_;
+      break;
+    }
     case Method::kCustom: {
       auto typed_task = task_ptr.template Cast<CustomTask>();
       archive >> *typed_task.ptr_;
@@ -201,6 +236,11 @@ void Runtime::LoadTask(chi::u32 method, chi::LoadTaskArchive& archive,
     }
     case Method::kTestLargeOutput: {
       auto typed_task = task_ptr.template Cast<TestLargeOutputTask>();
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kGpuSubmit: {
+      auto typed_task = task_ptr.template Cast<GpuSubmitTask>();
       archive >> *typed_task.ptr_;
       break;
     }
@@ -224,44 +264,56 @@ void Runtime::LocalLoadTask(chi::u32 method, chi::LocalLoadTaskArchive& archive,
   switch (method) {
     case Method::kCreate: {
       auto typed_task = task_ptr.template Cast<CreateTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kDestroy: {
       auto typed_task = task_ptr.template Cast<DestroyTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kCustom: {
       auto typed_task = task_ptr.template Cast<CustomTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kCoMutexTest: {
       auto typed_task = task_ptr.template Cast<CoMutexTestTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kCoRwLockTest: {
       auto typed_task = task_ptr.template Cast<CoRwLockTestTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kWaitTest: {
       auto typed_task = task_ptr.template Cast<WaitTestTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     case Method::kTestLargeOutput: {
       auto typed_task = task_ptr.template Cast<TestLargeOutputTask>();
-      // Call SerializeIn - task will call Task::SerializeIn for base fields
-      typed_task.ptr_->SerializeIn(archive);
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
+      break;
+    }
+    case Method::kGpuSubmit: {
+      auto typed_task = task_ptr.template Cast<GpuSubmitTask>();
+      // Use archive operator which respects msg_type
+      archive >> *typed_task.ptr_;
       break;
     }
     default: {
@@ -284,44 +336,56 @@ void Runtime::LocalSaveTask(chi::u32 method, chi::LocalSaveTaskArchive& archive,
   switch (method) {
     case Method::kCreate: {
       auto typed_task = task_ptr.template Cast<CreateTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kDestroy: {
       auto typed_task = task_ptr.template Cast<DestroyTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kMonitor: {
+      auto typed_task = task_ptr.template Cast<MonitorTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kCustom: {
       auto typed_task = task_ptr.template Cast<CustomTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kCoMutexTest: {
       auto typed_task = task_ptr.template Cast<CoMutexTestTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kCoRwLockTest: {
       auto typed_task = task_ptr.template Cast<CoRwLockTestTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kWaitTest: {
       auto typed_task = task_ptr.template Cast<WaitTestTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     case Method::kTestLargeOutput: {
       auto typed_task = task_ptr.template Cast<TestLargeOutputTask>();
-      // Call SerializeOut - task will call Task::SerializeOut for base fields
-      typed_task.ptr_->SerializeOut(archive);
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
+      break;
+    }
+    case Method::kGpuSubmit: {
+      auto typed_task = task_ptr.template Cast<GpuSubmitTask>();
+      // Use archive operator which respects msg_type
+      archive << *typed_task.ptr_;
       break;
     }
     default: {
@@ -355,6 +419,17 @@ hipc::FullPtr<chi::Task> Runtime::NewCopyTask(chi::u32 method, hipc::FullPtr<chi
       if (!new_task_ptr.IsNull()) {
         // Copy task fields (includes base Task fields)
         auto task_typed = orig_task_ptr.template Cast<DestroyTask>();
+        new_task_ptr->Copy(task_typed);
+        return new_task_ptr.template Cast<chi::Task>();
+      }
+      break;
+    }
+    case Method::kMonitor: {
+      // Allocate new task
+      auto new_task_ptr = ipc_manager->NewTask<MonitorTask>();
+      if (!new_task_ptr.IsNull()) {
+        // Copy task fields (includes base Task fields)
+        auto task_typed = orig_task_ptr.template Cast<MonitorTask>();
         new_task_ptr->Copy(task_typed);
         return new_task_ptr.template Cast<chi::Task>();
       }
@@ -415,6 +490,17 @@ hipc::FullPtr<chi::Task> Runtime::NewCopyTask(chi::u32 method, hipc::FullPtr<chi
       }
       break;
     }
+    case Method::kGpuSubmit: {
+      // Allocate new task
+      auto new_task_ptr = ipc_manager->NewTask<GpuSubmitTask>();
+      if (!new_task_ptr.IsNull()) {
+        // Copy task fields (includes base Task fields)
+        auto task_typed = orig_task_ptr.template Cast<GpuSubmitTask>();
+        new_task_ptr->Copy(task_typed);
+        return new_task_ptr.template Cast<chi::Task>();
+      }
+      break;
+    }
     default: {
       // For unknown methods, create base Task copy
       auto new_task_ptr = ipc_manager->NewTask<chi::Task>();
@@ -445,6 +531,10 @@ hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 method) {
       auto new_task_ptr = ipc_manager->NewTask<DestroyTask>();
       return new_task_ptr.template Cast<chi::Task>();
     }
+    case Method::kMonitor: {
+      auto new_task_ptr = ipc_manager->NewTask<MonitorTask>();
+      return new_task_ptr.template Cast<chi::Task>();
+    }
     case Method::kCustom: {
       auto new_task_ptr = ipc_manager->NewTask<CustomTask>();
       return new_task_ptr.template Cast<chi::Task>();
@@ -463,6 +553,10 @@ hipc::FullPtr<chi::Task> Runtime::NewTask(chi::u32 method) {
     }
     case Method::kTestLargeOutput: {
       auto new_task_ptr = ipc_manager->NewTask<TestLargeOutputTask>();
+      return new_task_ptr.template Cast<chi::Task>();
+    }
+    case Method::kGpuSubmit: {
+      auto new_task_ptr = ipc_manager->NewTask<GpuSubmitTask>();
       return new_task_ptr.template Cast<chi::Task>();
     }
     default: {
@@ -487,6 +581,14 @@ void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> origin_task_pt
       // Get typed tasks for Aggregate call
       auto typed_origin = origin_task_ptr.template Cast<DestroyTask>();
       auto typed_replica = replica_task_ptr.template Cast<DestroyTask>();
+      // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
+      typed_origin.ptr_->Aggregate(typed_replica);
+      break;
+    }
+    case Method::kMonitor: {
+      // Get typed tasks for Aggregate call
+      auto typed_origin = origin_task_ptr.template Cast<MonitorTask>();
+      auto typed_replica = replica_task_ptr.template Cast<MonitorTask>();
       // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
       typed_origin.ptr_->Aggregate(typed_replica);
       break;
@@ -527,6 +629,14 @@ void Runtime::Aggregate(chi::u32 method, hipc::FullPtr<chi::Task> origin_task_pt
       // Get typed tasks for Aggregate call
       auto typed_origin = origin_task_ptr.template Cast<TestLargeOutputTask>();
       auto typed_replica = replica_task_ptr.template Cast<TestLargeOutputTask>();
+      // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
+      typed_origin.ptr_->Aggregate(typed_replica);
+      break;
+    }
+    case Method::kGpuSubmit: {
+      // Get typed tasks for Aggregate call
+      auto typed_origin = origin_task_ptr.template Cast<GpuSubmitTask>();
+      auto typed_replica = replica_task_ptr.template Cast<GpuSubmitTask>();
       // Call Aggregate (uses task-specific Aggregate if available, otherwise base Task::Aggregate)
       typed_origin.ptr_->Aggregate(typed_replica);
       break;

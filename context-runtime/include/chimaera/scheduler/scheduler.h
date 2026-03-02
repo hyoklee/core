@@ -78,13 +78,17 @@ class Scheduler {
 
   /**
    * Determines which worker to initially map a task to from runtime.
-   * Called in RouteTask.
+   * Called in RouteTask via IpcManager::SendRuntime.
    *
    * @param worker The worker that called this method
    * @param task The task to be scheduled
+   * @param container The resolved execution container for the task (may be
+   *   nullptr when called from IpcManager::Send without a resolved container).
+   *   Used for task-group affinity lookups and updates.
    * @return Worker ID to assign the task to
    */
-  virtual u32 RuntimeMapTask(Worker *worker, const Future<Task> &task) = 0;
+  virtual u32 RuntimeMapTask(Worker *worker, const Future<Task> &task,
+                             Container *container) = 0;
 
   /**
    * Either steal or delegate tasks on a worker to balance load.
@@ -102,6 +106,18 @@ class Scheduler {
    * @param run_ctx Pointer to the RunContext for the periodic task
    */
   virtual void AdjustPolling(RunContext *run_ctx) = 0;
+
+  /**
+   * Get the designated GPU worker (polls GPU queues).
+   * @return Pointer to GPU worker, or nullptr if none assigned
+   */
+  virtual Worker *GetGpuWorker() const { return nullptr; }
+
+  /**
+   * Get the designated network worker (handles Send/Recv/ClientRecv/ClientSend).
+   * @return Pointer to net worker, or nullptr if none assigned
+   */
+  virtual Worker *GetNetWorker() const { return nullptr; }
 };
 
 }  // namespace chi
