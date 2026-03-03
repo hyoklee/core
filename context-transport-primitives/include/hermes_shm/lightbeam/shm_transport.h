@@ -34,6 +34,7 @@
 #pragma once
 
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #if defined(__has_feature)
@@ -41,6 +42,7 @@
 #include <sanitizer/msan_interface.h>
 #endif
 #endif
+#include <csignal>
 
 #include "hermes_shm/data_structures/serialization/local_serialize.h"
 #include "hermes_shm/thread/thread_model_manager.h"
@@ -87,6 +89,14 @@ class ShmTransport
   }
 
   std::string GetAddress() const { return "shm"; }
+
+  /** Check if the server is still alive via PID probe. */
+  bool IsServerAlive(const LbmContext& ctx = LbmContext()) const {
+    if (ctx.server_pid_ > 0) {
+      if (kill(ctx.server_pid_, 0) == -1 && errno == ESRCH) return false;
+    }
+    return true;
+  }
 
   void ClearRecvHandles(LbmMeta<>& meta) {
     for (auto& bulk : meta.recv) {
