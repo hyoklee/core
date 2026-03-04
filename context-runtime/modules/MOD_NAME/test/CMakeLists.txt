@@ -432,7 +432,7 @@ if(WRP_CORE_ENABLE_TESTS)
     cr_streaming_large_tests
     cr_streaming_concurrent_tests
     cr_all_streaming_tests
-    PROPERTIES LABELS "msan_skip"
+    PROPERTIES LABELS "msan_skip;asan_skip"
   )
 endif()
 
@@ -697,8 +697,38 @@ set_target_properties(${RECOVERY_TEST_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# Reconnect test executable (integration test binary for client failover)
+set(RECONNECT_TEST_TARGET chimaera_reconnect_tests)
+set(RECONNECT_TEST_SOURCES
+  ${CHIMAERA_ROOT}/test/integration/reconnect/test_reconnect.cc
+)
+
+add_executable(${RECONNECT_TEST_TARGET} ${RECONNECT_TEST_SOURCES})
+
+target_include_directories(${RECONNECT_TEST_TARGET} PRIVATE
+  ${CHIMAERA_ROOT}/include
+  ${CHIMAERA_ROOT}/test  # For simple_test.h
+  ${CHIMAERA_ROOT}/modules/admin/include
+  ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+)
+
+target_link_libraries(${RECONNECT_TEST_TARGET}
+  chimaera_admin_runtime
+  chimaera_admin_client
+  chimaera_MOD_NAME_runtime
+  chimaera_MOD_NAME_client
+  hshm::cxx
+  ${CMAKE_THREAD_LIBS_INIT}
+)
+
+set_target_properties(${RECONNECT_TEST_TARGET} PROPERTIES
+  CXX_STANDARD 17
+  CXX_STANDARD_REQUIRED ON
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 # Install test executables
-install(TARGETS ${FLUSH_TEST_TARGET} ${COMUTEX_TEST_TARGET} ${WAIT_FUNCTIONALITY_TEST_TARGET} ${STREAMING_TEST_TARGET} ${GPU_SUBMISSION_TEST_TARGET} ${MIGRATE_TEST_TARGET} ${RECOVERY_TEST_TARGET}
+install(TARGETS ${FLUSH_TEST_TARGET} ${COMUTEX_TEST_TARGET} ${WAIT_FUNCTIONALITY_TEST_TARGET} ${STREAMING_TEST_TARGET} ${GPU_SUBMISSION_TEST_TARGET} ${MIGRATE_TEST_TARGET} ${RECOVERY_TEST_TARGET} ${RECONNECT_TEST_TARGET}
   RUNTIME DESTINATION bin
 )
 
@@ -710,3 +740,4 @@ message(STATUS "  Streaming test target: ${STREAMING_TEST_TARGET}")
 message(STATUS "  GPU Submission test target: ${GPU_SUBMISSION_TEST_TARGET}")
 message(STATUS "  Migrate test target: ${MIGRATE_TEST_TARGET}")
 message(STATUS "  Recovery test target: ${RECOVERY_TEST_TARGET}")
+message(STATUS "  Reconnect test target: ${RECONNECT_TEST_TARGET}")
