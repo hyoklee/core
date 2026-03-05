@@ -34,6 +34,7 @@ jobs:
           shell: bash
           run: |
             sudo pkg_add cmake
+            sudo pkg_add yaml-cpp
             mkdir build
             cd build
             cmake \

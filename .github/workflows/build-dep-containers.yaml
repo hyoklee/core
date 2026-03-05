@@ -6,7 +6,7 @@ on:
   # Trigger on changes to dependency Dockerfiles
   push:
     branches:
-      - main
+      - main-
     paths:
       - 'docker/deps-cpu.Dockerfile'
       - 'docker/deps-nvidia.Dockerfile'

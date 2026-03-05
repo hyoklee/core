@@ -6,7 +6,7 @@ on:
   # Trigger on changes to source code or build Dockerfiles
   push:
     branches:
-      - main
+      - main-
     paths:
       - 'docker/deploy-cpu.Dockerfile'
       - 'CMakeLists.txt'
