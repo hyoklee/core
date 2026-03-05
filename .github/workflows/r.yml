@@ -23,23 +23,19 @@ jobs:
 
       - name: ${{ matrix.os.name }}
         uses: cross-platform-actions/action@master
-        env:
-          FOO: A
-          BAR: B
         with:
-          environment_variables: FOO BAR
           operating_system: ${{ matrix.os.name }}
           architecture: ${{ matrix.os.architecture }}
           version: '${{ matrix.os.version }}'
           shell: bash
           run: |
+            export HSHM_ENABLE_PROCFS_SYSINFO=0 \
             sudo pkg_add catch2 cmake cereal hdf5 msgpack yaml-cpp zeromq
             mkdir build
             cd build
             cmake \
             -DBUILDNAME='r' \
             -DCMAKE_BUILD_TYPE=Release \
-            -DHSHM_ENABLE_PROCFS_SYSINFO=OFF \
             -DWRP_CORE_ENABLE_TESTS=ON \
             -DSITE=obsd \
             ..
