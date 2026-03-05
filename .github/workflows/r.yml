@@ -33,7 +33,7 @@ jobs:
           version: '${{ matrix.os.version }}'
           shell: bash
           run: |
-            sudo pkg_add cmake cereal hdf5 msgpack yaml-cpp zeromq
+            sudo pkg_add catch2 cmake cereal hdf5 msgpack yaml-cpp zeromq
             mkdir build
             cd build
             cmake \
