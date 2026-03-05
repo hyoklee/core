@@ -39,6 +39,7 @@ jobs:
             cmake \
             -DBUILDNAME='r' \
             -DCMAKE_BUILD_TYPE=Release \
+            -DHSHM_ENABLE_PROCFS_SYSINFO=OFF \
             -DWRP_CORE_ENABLE_TESTS=ON \
             -DSITE=obsd \
             ..
