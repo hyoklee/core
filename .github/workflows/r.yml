@@ -33,7 +33,7 @@ jobs:
           version: '${{ matrix.os.version }}'
           shell: bash
           run: |
-            sudo pkg_add cmake cereal yaml-cpp
+            sudo pkg_add cmake cereal msgpack yaml-cpp
             mkdir build
             cd build
             cmake \

@@ -16,7 +16,7 @@ on:
           - mpi
           - full
   push:
-    branches: main
+    branches: main-
     tags: ['v*']
 
 jobs:
