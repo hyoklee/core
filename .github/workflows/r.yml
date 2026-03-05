@@ -29,7 +29,7 @@ jobs:
           version: '${{ matrix.os.version }}'
           shell: bash
           run: |
-            export HSHM_ENABLE_PROCFS_SYSINFO=0 \
+            export HSHM_ENABLE_PROCFS_SYSINFO=0
             sudo pkg_add catch2 cmake cereal hdf5 msgpack yaml-cpp zeromq
             mkdir build
             cd build
