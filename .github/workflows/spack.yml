@@ -17,11 +17,12 @@ jobs:
           fetch-depth: 0
 
       - name: Checkout spack
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
         with:
           repository: spack/spack
+          ref: v1.1.1
           path: ./spack
-	  ref: v1.1.1
+
 
       - name: Install iowarp
         run: |
