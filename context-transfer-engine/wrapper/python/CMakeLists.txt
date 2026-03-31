@@ -99,7 +99,7 @@ if(BUILD_TESTING)
         PROPERTIES
         LABELS "python;bindings;telemetry"
         TIMEOUT 180
-        ENVIRONMENT "CHI_WITH_RUNTIME=1;WRP_RUNTIME_CONF=${CMAKE_SOURCE_DIR}/context-transfer-engine/test/unit/adapters/adios2/cte_config.yaml;LD_LIBRARY_PATH=/home/iowarp/miniconda3/lib"
+        ENVIRONMENT "CHI_WITH_RUNTIME=1;WRP_RUNTIME_CONF=${CMAKE_SOURCE_DIR}/context-transfer-engine/test/unit/adapters/adios2/cte_config.yaml"
     )
 
     # Ensure test depends on the built module
