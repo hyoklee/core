@@ -29,7 +29,8 @@ target_link_libraries(socket_transport_test hermes_shm_host hshm::lightbeam hshm
 add_test(NAME ctp_socket_transport COMMAND socket_transport_test)
 set_tests_properties(ctp_socket_transport PROPERTIES
     LABELS "msan_skip"
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}")
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK "socket_port_8193")
 install(TARGETS socket_transport_test
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
@@ -98,7 +99,8 @@ target_link_libraries(socket_transport_full_test hermes_shm_host hshm::lightbeam
 add_test(NAME ctp_socket_transport_full COMMAND socket_transport_full_test)
 set_tests_properties(ctp_socket_transport_full PROPERTIES
     LABELS "msan_skip"
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}")
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK "socket_port_8193")
 install(TARGETS socket_transport_full_test
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}

@@ -66,7 +66,7 @@
 #ifdef HSHM_ENABLE_COMPRESS
 #include "hermes_shm/compress/compress_factory.h"
 #include "hermes_shm/compress/lossless_modes.h"
-#ifdef HSHM_ENABLE_LIBPRESSIO
+#if HSHM_ENABLE_LIBPRESSIO
 #include "hermes_shm/compress/libpressio.h"
 #include "hermes_shm/compress/libpressio_modes.h"
 #endif
@@ -694,7 +694,7 @@ std::vector<CompressorConfig> InitializeCompressors() {
   configs.push_back({"blosc2", "default", std::make_unique<hshm::Blosc>(),
                      std::make_unique<std::mutex>()});
 
-#ifdef HSHM_ENABLE_LIBPRESSIO
+#if HSHM_ENABLE_LIBPRESSIO
   // ZFP: 3 modes (fast, balanced, best)
   configs.push_back({"zfp", "fast",
                      std::make_unique<hshm::LibPressioWithModes>("zfp", hshm::CompressionMode::FAST)});

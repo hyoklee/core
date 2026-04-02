@@ -237,7 +237,8 @@ set_target_properties(${PER_PROCESS_SHM_TEST_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
-# Create Autogen Coverage test executable
+# Create Autogen Coverage test executable (requires CAE)
+if(WRP_CORE_ENABLE_CAE)
 add_executable(${AUTOGEN_COVERAGE_TEST_TARGET} ${AUTOGEN_COVERAGE_TEST_SOURCES})
 
 target_include_directories(${AUTOGEN_COVERAGE_TEST_TARGET} PRIVATE
@@ -272,6 +273,7 @@ set_target_properties(${AUTOGEN_COVERAGE_TEST_TARGET} PROPERTIES
 set_target_properties(${AUTOGEN_COVERAGE_TEST_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
+endif() # WRP_CORE_ENABLE_CAE
 
 # Create Streaming test executable
 add_executable(${STREAMING_TEST_TARGET} ${STREAMING_TEST_SOURCES})
@@ -677,7 +679,8 @@ if(WRP_CORE_ENABLE_TESTS)
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
   )
 
-  # Autogen Coverage Tests
+  # Autogen Coverage Tests (requires CAE)
+  if(WRP_CORE_ENABLE_CAE)
   add_test(
     NAME cr_autogen_coverage_tests
     COMMAND ${AUTOGEN_COVERAGE_TEST_TARGET}
@@ -687,6 +690,7 @@ if(WRP_CORE_ENABLE_TESTS)
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
   )
+  endif() # WRP_CORE_ENABLE_CAE
 
   # Streaming Tests
   add_test(
@@ -955,7 +959,6 @@ if(WRP_CORE_ENABLE_TESTS)
     cr_per_process_shm_tofullptr_tests
     cr_per_process_shm_stress_tests
     cr_per_process_shm_info_tests
-    cr_autogen_coverage_tests
     cr_streaming_small_output_tests
     cr_streaming_large_output_tests
     cr_streaming_bitfield_tests
@@ -1055,7 +1058,6 @@ install(TARGETS
   ${SAVE_LOAD_TASK_TEST_TARGET}
   ${LOCAL_TASK_ARCHIVE_TEST_TARGET}
   ${PER_PROCESS_SHM_TEST_TARGET}
-  ${AUTOGEN_COVERAGE_TEST_TARGET}
   ${STREAMING_TEST_TARGET}
   ${EXTERNAL_CLIENT_TEST_TARGET}
   ${RUNTIME_CLEANUP_TEST_TARGET}
@@ -1138,3 +1140,62 @@ message(STATUS "Module-specific tests are in:")
 message(STATUS "  - modules/admin/test/")
 message(STATUS "  - modules/bdev/test/")
 message(STATUS "  - modules/MOD_NAME/test/")
+
+# Serialize all tests that start the Chimaera runtime (shared memory + port 9413)
+# to prevent parallel execution races.
+if(WRP_CORE_ENABLE_TESTS)
+  set_tests_properties(
+    cr_runtime_initialization_tests
+    cr_client_initialization_tests
+    cr_mod_name_task_tests
+    cr_error_handling_tests
+    cr_concurrent_tests
+    cr_memory_tests
+    cr_performance_tests
+    cr_all_chimaera_tests
+    cr_ipc_allocate_buffer_basic_tests
+    cr_ipc_allocate_buffer_types_tests
+    cr_ipc_allocate_buffer_sizes_tests
+    cr_ipc_allocate_buffer_multiple_tests
+    cr_ipc_allocate_buffer_client_runtime_tests
+    cr_ipc_allocate_buffer_error_tests
+    cr_ipc_allocate_buffer_alignment_tests
+    cr_ipc_allocate_buffer_documentation_tests
+    cr_per_process_shm_increase_memory_tests
+    cr_per_process_shm_medium_alloc_tests
+    cr_per_process_shm_large_alloc_tests
+    cr_per_process_shm_multiple_large_tests
+    cr_per_process_shm_patterns_tests
+    cr_per_process_shm_free_tests
+    cr_per_process_shm_tofullptr_tests
+    cr_per_process_shm_stress_tests
+    cr_per_process_shm_info_tests
+    cr_streaming_small_output_tests
+    cr_streaming_large_output_tests
+    cr_streaming_bitfield_tests
+    cr_all_streaming_tests
+    cr_external_client_basic_connection
+    cr_external_client_multiple_clients
+    cr_external_client_without_server
+    cr_external_client_operations
+    cr_runtime_cleanup_tests
+    cr_ipc_errors_tests
+    cr_ipc_transport_shm
+    cr_ipc_transport_tcp
+    cr_ipc_transport_ipc
+    cr_ipc_transport_default
+    cr_client_retry_server_restart_tcp
+    cr_client_retry_server_restart_ipc
+    cr_client_retry_server_restart_shm
+    cr_client_retry_client_death_tcp
+    cr_client_retry_client_death_ipc
+    cr_client_retry_client_death_shm
+    cr_unordered_map_ll_tests
+    PROPERTIES RESOURCE_LOCK "chimaera_runtime"
+  )
+  if(WRP_CORE_ENABLE_CAE)
+    set_tests_properties(cr_autogen_coverage_tests
+      PROPERTIES RESOURCE_LOCK "chimaera_runtime"
+    )
+  endif()
+endif()
