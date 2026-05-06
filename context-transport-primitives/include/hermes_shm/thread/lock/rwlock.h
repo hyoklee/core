@@ -122,7 +122,9 @@ struct RwLock {
           return;
         }
       }
+#if !HSHM_IS_DEVICE_PASS
       HSHM_THREAD_MODEL->Yield();
+#endif
     } while (true);
   }
 
@@ -145,15 +147,19 @@ struct RwLock {
       UpdateMode(mode);
       if (mode == RwLockMode::kNone) {
         mode_.compare_exchange_weak(mode, RwLockMode::kWrite);
-        mode = mode_.load();
+        // Use load_device() for cross-SM L2 visibility on GPU.
+        mode = mode_.load_device();
       }
       if (mode == RwLockMode::kWrite) {
-        cur_writer = cur_writer_.load();
+        // Use load_device() for cross-SM L2 visibility on GPU.
+        cur_writer = cur_writer_.load_device();
         if (cur_writer == tkt) {
           return;
         }
       }
+#if !HSHM_IS_DEVICE_PASS
       HSHM_THREAD_MODEL->Yield();
+#endif
     } while (true);
   }
 
@@ -170,9 +176,10 @@ struct RwLock {
   void UpdateMode(RwLockMode::Type &mode) {
     // When # readers is 0, there is a lag to when the mode is updated
     // When # writers is 0, there is a lag to when the mode is updated
-    mode = mode_.load();
-    if ((readers_.load() == 0 && mode == RwLockMode::kRead) ||
-        (writers_.load() == 0 && mode == RwLockMode::kWrite)) {
+    // Use load_device() for cross-SM L2 visibility on GPU.
+    mode = mode_.load_device();
+    if ((readers_.load_device() == 0 && mode == RwLockMode::kRead) ||
+        (writers_.load_device() == 0 && mode == RwLockMode::kWrite)) {
       mode_.compare_exchange_weak(mode, RwLockMode::kNone);
     }
   }

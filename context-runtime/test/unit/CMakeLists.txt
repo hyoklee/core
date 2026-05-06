@@ -92,7 +92,7 @@ set(CLIENT_RETRY_TEST_SOURCES
 # GPU IPC AllocateBuffer test executable (only if CUDA or HIP is enabled)
 set(IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET test_ipc_allocate_buffer_gpu)
 set(IPC_ALLOCATE_BUFFER_GPU_TEST_SOURCES
-  test_ipc_allocate_buffer_gpu.cc
+  gpu/test_ipc_allocate_buffer_gpu.cc
 )
 
 # Create core test executable
@@ -241,39 +241,39 @@ set_target_properties(${PER_PROCESS_SHM_TEST_TARGET} PROPERTIES
 if(WRP_CORE_ENABLE_CAE)
 add_executable(${AUTOGEN_COVERAGE_TEST_TARGET} ${AUTOGEN_COVERAGE_TEST_SOURCES})
 
-target_include_directories(${AUTOGEN_COVERAGE_TEST_TARGET} PRIVATE
-  ${CHIMAERA_ROOT}/include
-  ${CHIMAERA_ROOT}/test  # For simple_test.h
-  ${CHIMAERA_ROOT}/modules/admin/include
-  ${CHIMAERA_ROOT}/modules/bdev/include
-  ${CHIMAERA_ROOT}/modules/MOD_NAME/include
-)
+  target_include_directories(${AUTOGEN_COVERAGE_TEST_TARGET} PRIVATE
+    ${CHIMAERA_ROOT}/include
+    ${CHIMAERA_ROOT}/test  # For simple_test.h
+    ${CHIMAERA_ROOT}/modules/admin/include
+    ${CHIMAERA_ROOT}/modules/bdev/include
+    ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+  )
 
-target_link_libraries(${AUTOGEN_COVERAGE_TEST_TARGET}
-  chimaera_MOD_NAME_runtime
-  chimaera_MOD_NAME_client
-  wrp_cte_core_runtime
-  wrp_cae_core_runtime
-  wrp_cae_core_client
-  chimaera_bdev_runtime
-  chimaera_admin_runtime
-  wrp_cte_core_client
-  chimaera_bdev_client
-  chimaera_admin_client
-  chimaera_cxx
-  hshm::cxx
-  ${CMAKE_THREAD_LIBS_INIT}
-)
+  target_link_libraries(${AUTOGEN_COVERAGE_TEST_TARGET}
+    chimaera_MOD_NAME_runtime
+    chimaera_MOD_NAME_client
+    wrp_cte_core_runtime
+    wrp_cae_core_runtime
+    wrp_cae_core_client
+    chimaera_bdev_runtime
+    chimaera_admin_runtime
+    wrp_cte_core_client
+    chimaera_bdev_client
+    chimaera_admin_client
+    chimaera_cxx
+    hshm::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+  )
 
-set_target_properties(${AUTOGEN_COVERAGE_TEST_TARGET} PROPERTIES
-  CXX_STANDARD 20
-  CXX_STANDARD_REQUIRED ON
-)
+  set_target_properties(${AUTOGEN_COVERAGE_TEST_TARGET} PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+  )
 
 set_target_properties(${AUTOGEN_COVERAGE_TEST_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
-endif() # WRP_CORE_ENABLE_CAE
+endif()  # WRP_CORE_ENABLE_CAE
 
 # Create Streaming test executable
 add_executable(${STREAMING_TEST_TARGET} ${STREAMING_TEST_SOURCES})
@@ -427,7 +427,12 @@ set_target_properties(${CLIENT_RETRY_TEST_TARGET} PROPERTIES
 
 # Create GPU IPC AllocateBuffer test executable (only if CUDA or HIP is enabled)
 if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
-  add_cuda_executable(${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET} TRUE ${IPC_ALLOCATE_BUFFER_GPU_TEST_SOURCES})
+  add_cuda_executable(${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET} TRUE ${IPC_ALLOCATE_BUFFER_GPU_TEST_SOURCES}
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/test
+      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+    LINK_LIBS chimaera_cxx hshm::cuda_cxx
+  )
   target_include_directories(${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET} PRIVATE
     ${CHIMAERA_ROOT}/include
     ${CHIMAERA_ROOT}/test
@@ -442,6 +447,194 @@ if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
   add_test(NAME ${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET} COMMAND ${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET})
+
+  # BuddyAllocator benchmark-mimic GPU test
+  add_cuda_executable(test_buddy_benchmark_gpu TRUE gpu/test_buddy_benchmark_gpu.cc
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/test
+      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+    LINK_LIBS chimaera_cxx hshm::cuda_cxx
+  )
+  target_include_directories(test_buddy_benchmark_gpu PRIVATE
+    ${CHIMAERA_ROOT}/include
+    ${CHIMAERA_ROOT}/test
+    ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+  )
+  target_link_libraries(test_buddy_benchmark_gpu
+    chimaera_cxx
+    hshm::cuda_cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+  )
+  set_target_properties(test_buddy_benchmark_gpu PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME test_buddy_benchmark_gpu COMMAND test_buddy_benchmark_gpu)
+
+  # GPU Runtime test executable (pure host code, compiled by g++)
+  set(GPU_RUNTIME_TEST_TARGET test_chimaera_gpu_runtime)
+  set(GPU_RUNTIME_TEST_SOURCES gpu/test_gpu_runtime.cc)
+  add_executable(${GPU_RUNTIME_TEST_TARGET} ${GPU_RUNTIME_TEST_SOURCES})
+  target_include_directories(${GPU_RUNTIME_TEST_TARGET} PRIVATE
+    ${CHIMAERA_ROOT}/include
+    ${CHIMAERA_ROOT}/test
+  )
+  target_link_libraries(${GPU_RUNTIME_TEST_TARGET}
+    chimaera_cxx
+    hshm::cuda_cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+  )
+  set_target_properties(${GPU_RUNTIME_TEST_TARGET} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME cr_gpu_runtime_tests COMMAND ${GPU_RUNTIME_TEST_TARGET}
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  set_tests_properties(cr_gpu_runtime_tests PROPERTIES
+    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    TIMEOUT 120
+    LABELS "msan_skip"
+  )
+endif()
+
+# SYCL backend smoke test (WorkOrchestrator + GpuApi + HSHM_DEVICE_*
+# intrinsics). Built by add_sycl_executable so it picks up the same
+# -fsycl flags that compile chimaera_cxx_gpu under DPC++/AdaptiveCpp.
+if(WRP_CORE_ENABLE_SYCL)
+  add_sycl_executable(test_sycl_runtime FALSE gpu/test_sycl_runtime.cc
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/include
+      ${CHIMAERA_ROOT}/test
+    LINK_LIBS chimaera_cxx chimaera_cxx_gpu hshm::cxx ${CMAKE_THREAD_LIBS_INIT}
+  )
+  set_target_properties(test_sycl_runtime PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME cr_sycl_runtime_tests COMMAND test_sycl_runtime
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  set_tests_properties(cr_sycl_runtime_tests PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    TIMEOUT 60
+    LABELS "gpu;sycl"
+  )
+
+  # Per-chimod allocation smoke test — exercises the autogen SYCL kernel
+  # for each registered GpuRuntime subclass (admin, bdev, wrp_cte_core).
+  #
+  # The chimod _gpu.cc source files are added directly to the executable
+  # rather than pulled in through chimaera_cxx_gpu.so. DPC++ device-side
+  # linking does NOT propagate SYCL_EXTERNAL symbols across shared-library
+  # boundaries on the nvptx64 backend; the device images live alongside
+  # the host code inside libchimaera_cxx_gpu.so but the SYCL JIT can't
+  # resolve them when JIT-linking a downstream kernel. Including the
+  # source files keeps every HSHM_DEVICE_EXTERN-tagged definition in the
+  # same device-link unit as the autogen kernel that takes their
+  # addresses.
+  add_sycl_executable(test_sycl_chimods FALSE
+    gpu/test_sycl_chimods.cc
+    ${CHIMAERA_ROOT}/src/gpu/work_orchestrator_sycl.cc
+    ${CHIMAERA_ROOT}/modules/MOD_NAME/src/MOD_NAME_runtime_gpu.cc
+    ${CHIMAERA_ROOT}/modules/bdev/src/bdev_runtime_gpu.cc
+    ${CHIMAERA_ROOT}/../context-transfer-engine/core/src/core_runtime_gpu.cc
+    ${CHIMAERA_ROOT}/../context-transfer-engine/compressor/src/compressor_runtime_gpu.cc
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/include
+      ${CHIMAERA_ROOT}/src                      # autogen/gpu_work_orchestrator_modules.h
+      ${CHIMAERA_ROOT}/modules/admin/include    # admin_gpu_runtime.h
+      ${CHIMAERA_ROOT}/modules/bdev/include     # bdev_gpu_runtime.h
+      ${CHIMAERA_ROOT}/modules/MOD_NAME/include # MOD_NAME_gpu_runtime.h
+      ${CHIMAERA_ROOT}/../context-transfer-engine/core/include      # core_gpu_runtime.h
+      ${CHIMAERA_ROOT}/../context-transfer-engine/compressor/include # compressor_gpu_runtime.h
+      ${CHIMAERA_ROOT}/test
+    LINK_LIBS chimaera_cxx hshm::cxx ${CMAKE_THREAD_LIBS_INIT}
+  )
+  set_target_properties(test_sycl_chimods PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME cr_sycl_chimods_tests COMMAND test_sycl_chimods
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  set_tests_properties(cr_sycl_chimods_tests PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    TIMEOUT 60
+    LABELS "gpu;sycl;chimod"
+  )
+endif()
+
+# GPU task trace tests — CPU->GPU, GPU->GPU, GPU->CPU end-to-end traces
+if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
+  add_cuda_executable(test_gpu_task_trace FALSE gpu/test_gpu_task_trace.cc
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/include
+      ${CHIMAERA_ROOT}/test
+      ${CHIMAERA_ROOT}/modules/admin/include
+      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+      ${CMAKE_SOURCE_DIR}/context-transport-primitives/include
+    LINK_LIBS
+      chimaera_admin_runtime
+      chimaera_admin_client
+      chimaera_MOD_NAME_runtime
+      chimaera_MOD_NAME_client
+      hshm::cuda_cxx
+      ${CMAKE_THREAD_LIBS_INIT}
+  )
+  set_target_properties(test_gpu_task_trace PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME cr_gpu_task_trace COMMAND test_gpu_task_trace
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  set_tests_properties(cr_gpu_task_trace PROPERTIES
+    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    TIMEOUT 120
+    LABELS "gpu;msan_skip"
+  )
+endif()
+
+# GPU POD Transfer test — proves CPU↔GPU task transfer via cudaMemcpy
+if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
+  find_package(CUDAToolkit QUIET)
+  add_cuda_executable(test_gpu_pod_transfer FALSE gpu/test_gpu_pod_transfer.cu
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/include
+      ${CHIMAERA_ROOT}/modules/admin/include
+      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+      ${CHIMAERA_ROOT}/modules/bdev/include
+      ${CMAKE_SOURCE_DIR}/context-transport-primitives/include
+      ${CMAKE_SOURCE_DIR}/context-transfer-engine/core/include
+    LINK_LIBS
+      chimaera::cxx
+      hshm::cuda_cxx
+      Catch2::Catch2WithMain
+    DEFS CUDA_FORCE_CDP1_IF_SUPPORTED __CDPRT_SUPPRESS_SYNC_DEPRECATION_WARNING
+  )
+  target_compile_options(test_gpu_pod_transfer PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>)
+  add_test(NAME test_gpu_pod_transfer COMMAND test_gpu_pod_transfer)
+  set_tests_properties(test_gpu_pod_transfer PROPERTIES
+    TIMEOUT 60 LABELS "gpu;transfer")
+endif()
+
+# GPU Coroutine test removed (coroutines removed from GPU path in CDP migration)
+if(FALSE AND (WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM))
+  set(GPU_COROUTINE_TEST_TARGET test_gpu_coroutine)
+  add_cuda_executable(${GPU_COROUTINE_TEST_TARGET} FALSE test_gpu_coroutine.cu
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/compiler/include
+    LINK_LIBS chimaera_cxx_gpu hshm::cuda_cxx
+  )
+  target_link_libraries(${GPU_COROUTINE_TEST_TARGET}
+    chimaera_cxx_gpu
+    hshm::cuda_cxx
+  )
+  set_target_properties(${GPU_COROUTINE_TEST_TARGET} PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME cr_gpu_coroutine_tests COMMAND ${GPU_COROUTINE_TEST_TARGET})
+  set_tests_properties(cr_gpu_coroutine_tests PROPERTIES
+    TIMEOUT 60
+    LABELS "gpu;msan_skip"
+  )
 endif()
 
 # Enable CTest integration if testing is enabled
@@ -690,7 +883,7 @@ if(WRP_CORE_ENABLE_TESTS)
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
   )
-  endif() # WRP_CORE_ENABLE_CAE
+  endif()  # WRP_CORE_ENABLE_CAE
 
   # Streaming Tests
   add_test(
@@ -1051,7 +1244,7 @@ add_custom_target(test_all_unit
 )
 
 # Install test executables
-install(TARGETS
+set(_install_test_targets
   ${TEST_TARGET}
   ${IPC_ALLOCATE_BUFFER_TEST_TARGET}
   ${UNORDERED_MAP_LL_TEST_TARGET}
@@ -1064,8 +1257,11 @@ install(TARGETS
   ${IPC_ERRORS_TEST_TARGET}
   ${IPC_TRANSPORT_MODES_TEST_TARGET}
   ${CLIENT_RETRY_TEST_TARGET}
-  RUNTIME DESTINATION bin
 )
+if(WRP_CORE_ENABLE_CAE)
+  list(APPEND _install_test_targets ${AUTOGEN_COVERAGE_TEST_TARGET})
+endif()
+install(TARGETS ${_install_test_targets} RUNTIME DESTINATION bin)
 
 # Note: Module-specific tests are now in their respective module directories
 # Note: Distributed tests are run via Docker using the chimaera_bdev_chimod_tests binary
@@ -1106,22 +1302,30 @@ if(WRP_CORE_ENABLE_MPI)
     # 4-rank test: server + SHM + TCP + IPC clients
     add_test(
       NAME cr_mpi_bdev_transport_all_modes
-      COMMAND mpirun -n 4 ${CMAKE_BINARY_DIR}/bin/${MPI_BDEV_TRANSPORT_TEST_TARGET}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4
+              ${MPIEXEC_PREFLAGS}
+              ${CMAKE_BINARY_DIR}/bin/${MPI_BDEV_TRANSPORT_TEST_TARGET}
+              ${MPIEXEC_POSTFLAGS}
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
     set_tests_properties(cr_mpi_bdev_transport_all_modes PROPERTIES
       ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+      RESOURCE_LOCK "chimaera_runtime_port"
       TIMEOUT 300
     )
 
     # 2-rank test: server + TCP client (minimal)
     add_test(
       NAME cr_mpi_bdev_transport_minimal
-      COMMAND mpirun -n 2 ${CMAKE_BINARY_DIR}/bin/${MPI_BDEV_TRANSPORT_TEST_TARGET}
+      COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 2
+              ${MPIEXEC_PREFLAGS}
+              ${CMAKE_BINARY_DIR}/bin/${MPI_BDEV_TRANSPORT_TEST_TARGET}
+              ${MPIEXEC_POSTFLAGS}
       WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
     set_tests_properties(cr_mpi_bdev_transport_minimal PROPERTIES
       ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+      RESOURCE_LOCK "chimaera_runtime_port"
       TIMEOUT 180
     )
   endif()

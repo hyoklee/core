@@ -13,3 +13,5 @@ ignore:
   - "**/test/**"
   - "**/tests/**"
   - "**/benchmark/**"
+  - "**/globus_file_assimilator.cc"
+  - "**/local_sched.cc"

@@ -34,11 +34,23 @@ add_dependencies(test_hshm_malloc_exec hermes_shm_host)
 target_link_libraries(test_hshm_malloc_exec
         hermes_shm_host)
 
+add_executable(test_thread_allocator_exec
+        test_thread_allocator.cc)
+add_dependencies(test_thread_allocator_exec hermes_shm_host)
+target_link_libraries(test_thread_allocator_exec
+        hermes_shm_host Catch2::Catch2WithMain)
+
 if(NOT WIN32)
 add_executable(test_mp_allocator_exec
         test_mp_allocator.cc)
 add_dependencies(test_mp_allocator_exec hermes_shm_host)
 target_link_libraries(test_mp_allocator_exec
+        hermes_shm_host Catch2::Catch2WithMain)
+
+add_executable(test_mp_reuse_exec
+        test_mp_reuse.cc)
+add_dependencies(test_mp_reuse_exec hermes_shm_host)
+target_link_libraries(test_mp_reuse_exec
         hermes_shm_host Catch2::Catch2WithMain)
 
 add_executable(test_mp_allocator_multiprocess_exec
@@ -72,6 +84,11 @@ add_test(NAME ctp_buddy_allocator COMMAND
 add_test(NAME ctp_buddy_compaction COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_buddy_compaction_exec)
 
+add_test(NAME ctp_thread_allocator COMMAND
+        ${CMAKE_BINARY_DIR}/bin/test_thread_allocator_exec "~[multithread]")
+add_test(NAME ctp_thread_allocator_multithread COMMAND
+        ${CMAKE_BINARY_DIR}/bin/test_thread_allocator_exec "[multithread]")
+
 add_test(NAME ctp_hshm_malloc COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_hshm_malloc_exec)
 
@@ -89,6 +106,9 @@ add_test(NAME ctp_mp_allocator COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_mp_allocator_exec "~[multithread]")
 add_test(NAME ctp_mp_allocator_multithread COMMAND
         ${CMAKE_BINARY_DIR}/bin/test_mp_allocator_exec "[multithread]")
+
+add_test(NAME ctp_mp_reuse COMMAND
+        ${CMAKE_BINARY_DIR}/bin/test_mp_reuse_exec)
 
 add_test(NAME ctp_mp_allocator_multiprocess
         COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/run_mp_allocator_multiprocess_test.sh
@@ -116,6 +136,7 @@ set_tests_properties(
   ctp_mp_allocator
   ctp_mp_allocator_multithread
   ctp_mp_allocator_multiprocess
+  ctp_mp_reuse
   ctp_buddy_allocator_multiprocess
   PROPERTIES LABELS "msan_skip"
 )
@@ -130,6 +151,7 @@ install(TARGETS
         test_buddy_allocator_exec
         test_buddy_compaction_exec
         test_hshm_malloc_exec
+        test_thread_allocator_exec
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
         RUNTIME DESTINATION bin)
