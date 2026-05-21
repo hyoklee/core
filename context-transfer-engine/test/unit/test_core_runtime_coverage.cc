@@ -49,6 +49,11 @@
 
 using namespace wrp_cte::core;
 
+static std::string chi_test_data_dir() {
+  const char *d = std::getenv("CHI_TEST_DATA_DIR");
+  return (d && *d) ? d : ".";
+}
+
 /**
  * Test fixture for runtime coverage tests
  * Ensures proper CTE initialization following the established pattern
@@ -69,6 +74,8 @@ public:
       if (!success) {
         throw std::runtime_error("CHIMAERA_INIT failed");
       }
+      // Drain ZMQ background threads in main() before static dtors fire.
+      SimpleTest::g_test_finalize = chi::CHIMAERA_FINALIZE;
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
       // Step 2: Initialize CTE client subsystem (CRITICAL!)
@@ -98,7 +105,7 @@ public:
       g_initialized = true;
     }
 
-    test_storage_path_ = std::string(std::getenv("HOME")) + "/cte_runtime_test.dat";
+    test_storage_path_ = chi_test_data_dir() + "/cte_runtime_test.dat";
   }
 
   void SetupTarget() {
@@ -194,7 +201,7 @@ TEST_CASE("Runtime - UnregisterTarget Success", "[runtime][target]") {
   auto *client = WRP_CTE_CLIENT;
 
   // Register a temporary target
-  std::string temp_target = std::string(std::getenv("HOME")) + "/temp_unregister_test.dat";
+  std::string temp_target = chi_test_data_dir() + "/temp_unregister_test.dat";
 
   chi::PoolId temp_bdev_pool_id(901, 0);
   size_t temp_target_size = 5 * 1024 * 1024;

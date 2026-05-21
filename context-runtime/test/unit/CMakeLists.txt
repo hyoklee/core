@@ -425,8 +425,9 @@ set_target_properties(${CLIENT_RETRY_TEST_TARGET} PROPERTIES
 )
 
 
-# Create GPU IPC AllocateBuffer test executable (only if CUDA or HIP is enabled)
-if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
+# GPU runtime tests removed — kernels now submit tasks to the CPU
+# runtime via gpu2cpu_queue (see test/unit/gpu/test_sycl_*.cc).
+if(FALSE)
   add_cuda_executable(${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET} TRUE ${IPC_ALLOCATE_BUFFER_GPU_TEST_SOURCES}
     INCLUDE_DIRS
       ${CHIMAERA_ROOT}/test
@@ -448,269 +449,126 @@ if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
   )
   add_test(NAME ${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET} COMMAND ${IPC_ALLOCATE_BUFFER_GPU_TEST_TARGET})
 
-  # BuddyAllocator benchmark-mimic GPU test
-  add_cuda_executable(test_buddy_benchmark_gpu TRUE gpu/test_buddy_benchmark_gpu.cc
+  # GPU runtime / buddy-benchmark CUDA-only tests removed along with
+  # the GPU runtime concept.
+endif()
+
+# GPU producer-only stress test.
+#
+# Three flavors compile from the same `test_gpu_kernel_stress_common.h`
+# host fixture, one per backend. Each runs the same end-to-end pipeline
+# (allocate registered backend -> place N tasks -> launch a kernel
+# that submits all N concurrently via gpu2cpu_queue -> CPU worker
+# dispatches MOD_NAME::Runtime::GpuSubmit -> verify formula).
+if(WRP_CORE_ENABLE_CUDA)
+  add_cuda_executable(test_gpu_kernel_stress FALSE
+    gpu/test_gpu_kernel_stress_gpu.cc
     INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/include
       ${CHIMAERA_ROOT}/test
       ${CHIMAERA_ROOT}/modules/MOD_NAME/include
-    LINK_LIBS chimaera_cxx hshm::cuda_cxx
-  )
-  target_include_directories(test_buddy_benchmark_gpu PRIVATE
-    ${CHIMAERA_ROOT}/include
-    ${CHIMAERA_ROOT}/test
-    ${CHIMAERA_ROOT}/modules/MOD_NAME/include
-  )
-  target_link_libraries(test_buddy_benchmark_gpu
-    chimaera_cxx
-    hshm::cuda_cxx
-    ${CMAKE_THREAD_LIBS_INIT}
-  )
-  set_target_properties(test_buddy_benchmark_gpu PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  add_test(NAME test_buddy_benchmark_gpu COMMAND test_buddy_benchmark_gpu)
-
-  # GPU Runtime test executable (pure host code, compiled by g++)
-  set(GPU_RUNTIME_TEST_TARGET test_chimaera_gpu_runtime)
-  set(GPU_RUNTIME_TEST_SOURCES gpu/test_gpu_runtime.cc)
-  add_executable(${GPU_RUNTIME_TEST_TARGET} ${GPU_RUNTIME_TEST_SOURCES})
-  target_include_directories(${GPU_RUNTIME_TEST_TARGET} PRIVATE
-    ${CHIMAERA_ROOT}/include
-    ${CHIMAERA_ROOT}/test
-  )
-  target_link_libraries(${GPU_RUNTIME_TEST_TARGET}
-    chimaera_cxx
-    hshm::cuda_cxx
-    ${CMAKE_THREAD_LIBS_INIT}
-  )
-  set_target_properties(${GPU_RUNTIME_TEST_TARGET} PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  add_test(NAME cr_gpu_runtime_tests COMMAND ${GPU_RUNTIME_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_gpu_runtime_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 120
-    LABELS "msan_skip"
-  )
-endif()
-
-# SYCL backend smoke test (WorkOrchestrator + GpuApi + HSHM_DEVICE_*
-# intrinsics). Built by add_sycl_executable so it picks up the same
-# -fsycl flags that compile chimaera_cxx_gpu under DPC++/AdaptiveCpp.
-if(WRP_CORE_ENABLE_SYCL)
-  add_sycl_executable(test_sycl_runtime FALSE gpu/test_sycl_runtime.cc
-    INCLUDE_DIRS
-      ${CHIMAERA_ROOT}/include
-      ${CHIMAERA_ROOT}/test
-    LINK_LIBS chimaera_cxx chimaera_cxx_gpu hshm::cxx ${CMAKE_THREAD_LIBS_INIT}
-  )
-  set_target_properties(test_sycl_runtime PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  add_test(NAME cr_sycl_runtime_tests COMMAND test_sycl_runtime
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_sycl_runtime_tests PROPERTIES
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 60
-    LABELS "gpu;sycl"
-  )
-
-  # Per-chimod allocation smoke test — exercises the autogen SYCL kernel
-  # for each registered GpuRuntime subclass (admin, bdev, wrp_cte_core).
-  #
-  # The chimod _gpu.cc source files are added directly to the executable
-  # rather than pulled in through chimaera_cxx_gpu.so. DPC++ device-side
-  # linking does NOT propagate SYCL_EXTERNAL symbols across shared-library
-  # boundaries on the nvptx64 backend; the device images live alongside
-  # the host code inside libchimaera_cxx_gpu.so but the SYCL JIT can't
-  # resolve them when JIT-linking a downstream kernel. Including the
-  # source files keeps every HSHM_DEVICE_EXTERN-tagged definition in the
-  # same device-link unit as the autogen kernel that takes their
-  # addresses.
-  add_sycl_executable(test_sycl_chimods FALSE
-    gpu/test_sycl_chimods.cc
-    ${CHIMAERA_ROOT}/src/gpu/work_orchestrator_sycl.cc
-    ${CHIMAERA_ROOT}/modules/MOD_NAME/src/MOD_NAME_runtime_gpu.cc
-    ${CHIMAERA_ROOT}/modules/bdev/src/bdev_runtime_gpu.cc
-    ${CHIMAERA_ROOT}/../context-transfer-engine/core/src/core_runtime_gpu.cc
-    ${CHIMAERA_ROOT}/../context-transfer-engine/compressor/src/compressor_runtime_gpu.cc
-    INCLUDE_DIRS
-      ${CHIMAERA_ROOT}/include
-      ${CHIMAERA_ROOT}/src                      # autogen/gpu_work_orchestrator_modules.h
-      ${CHIMAERA_ROOT}/modules/admin/include    # admin_gpu_runtime.h
-      ${CHIMAERA_ROOT}/modules/bdev/include     # bdev_gpu_runtime.h
-      ${CHIMAERA_ROOT}/modules/MOD_NAME/include # MOD_NAME_gpu_runtime.h
-      ${CHIMAERA_ROOT}/../context-transfer-engine/core/include      # core_gpu_runtime.h
-      ${CHIMAERA_ROOT}/../context-transfer-engine/compressor/include # compressor_gpu_runtime.h
-      ${CHIMAERA_ROOT}/test
-    LINK_LIBS chimaera_cxx hshm::cxx ${CMAKE_THREAD_LIBS_INIT}
-  )
-  set_target_properties(test_sycl_chimods PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  add_test(NAME cr_sycl_chimods_tests COMMAND test_sycl_chimods
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_sycl_chimods_tests PROPERTIES
-    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 60
-    LABELS "gpu;sycl;chimod"
-  )
-endif()
-
-# GPU task trace tests — CPU->GPU, GPU->GPU, GPU->CPU end-to-end traces
-if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
-  add_cuda_executable(test_gpu_task_trace FALSE gpu/test_gpu_task_trace.cc
-    INCLUDE_DIRS
-      ${CHIMAERA_ROOT}/include
-      ${CHIMAERA_ROOT}/test
       ${CHIMAERA_ROOT}/modules/admin/include
-      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
-      ${CMAKE_SOURCE_DIR}/context-transport-primitives/include
     LINK_LIBS
-      chimaera_admin_runtime
+      chimaera_cxx
+      chimaera_cxx_gpu
       chimaera_admin_client
-      chimaera_MOD_NAME_runtime
       chimaera_MOD_NAME_client
       hshm::cuda_cxx
       ${CMAKE_THREAD_LIBS_INIT}
   )
-  set_target_properties(test_gpu_task_trace PROPERTIES
+  set_target_properties(test_gpu_kernel_stress PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
-  add_test(NAME cr_gpu_task_trace COMMAND test_gpu_task_trace
+  add_test(NAME cr_gpu_kernel_stress_cuda COMMAND test_gpu_kernel_stress
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
-  set_tests_properties(cr_gpu_task_trace PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+  set_tests_properties(cr_gpu_kernel_stress_cuda PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin"
     TIMEOUT 120
-    LABELS "gpu;msan_skip"
+    LABELS "gpu;cuda;stress"
   )
 endif()
 
-# GPU POD Transfer test — proves CPU↔GPU task transfer via cudaMemcpy
-if(WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM)
-  find_package(CUDAToolkit QUIET)
-  add_cuda_executable(test_gpu_pod_transfer FALSE gpu/test_gpu_pod_transfer.cu
-    INCLUDE_DIRS
-      ${CHIMAERA_ROOT}/include
-      ${CHIMAERA_ROOT}/modules/admin/include
-      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
-      ${CHIMAERA_ROOT}/modules/bdev/include
-      ${CMAKE_SOURCE_DIR}/context-transport-primitives/include
-      ${CMAKE_SOURCE_DIR}/context-transfer-engine/core/include
-    LINK_LIBS
-      chimaera::cxx
-      hshm::cuda_cxx
-      Catch2::Catch2WithMain
-    DEFS CUDA_FORCE_CDP1_IF_SUPPORTED __CDPRT_SUPPRESS_SYNC_DEPRECATION_WARNING
+if(WRP_CORE_ENABLE_ROCM)
+  add_rocm_gpu_executable(test_gpu_kernel_stress FALSE
+    gpu/test_gpu_kernel_stress_gpu.cc
   )
-  target_compile_options(test_gpu_pod_transfer PRIVATE
-    $<$<COMPILE_LANGUAGE:CUDA>:-rdc=true>)
-  add_test(NAME test_gpu_pod_transfer COMMAND test_gpu_pod_transfer)
-  set_tests_properties(test_gpu_pod_transfer PROPERTIES
-    TIMEOUT 60 LABELS "gpu;transfer")
-endif()
-
-# GPU Coroutine test removed (coroutines removed from GPU path in CDP migration)
-if(FALSE AND (WRP_CORE_ENABLE_CUDA OR WRP_CORE_ENABLE_ROCM))
-  set(GPU_COROUTINE_TEST_TARGET test_gpu_coroutine)
-  add_cuda_executable(${GPU_COROUTINE_TEST_TARGET} FALSE test_gpu_coroutine.cu
-    INCLUDE_DIRS
-      ${CHIMAERA_ROOT}/compiler/include
-    LINK_LIBS chimaera_cxx_gpu hshm::cuda_cxx
+  target_include_directories(test_gpu_kernel_stress PUBLIC
+    ${CHIMAERA_ROOT}/include
+    ${CHIMAERA_ROOT}/test
+    ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+    ${CHIMAERA_ROOT}/modules/admin/include
   )
-  target_link_libraries(${GPU_COROUTINE_TEST_TARGET}
+  target_link_libraries(test_gpu_kernel_stress PUBLIC
+    chimaera_cxx
     chimaera_cxx_gpu
-    hshm::cuda_cxx
+    chimaera_admin_client
+    chimaera_MOD_NAME_client
+    hshm::rocm_cxx
+    ${CMAKE_THREAD_LIBS_INIT}
   )
-  set_target_properties(${GPU_COROUTINE_TEST_TARGET} PROPERTIES
+  set_target_properties(test_gpu_kernel_stress PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
-  add_test(NAME cr_gpu_coroutine_tests COMMAND ${GPU_COROUTINE_TEST_TARGET})
-  set_tests_properties(cr_gpu_coroutine_tests PROPERTIES
-    TIMEOUT 60
-    LABELS "gpu;msan_skip"
+  add_test(NAME cr_gpu_kernel_stress_rocm COMMAND test_gpu_kernel_stress
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  set_tests_properties(cr_gpu_kernel_stress_rocm PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin"
+    TIMEOUT 120
+    LABELS "gpu;rocm;stress"
   )
 endif()
+
+if(WRP_CORE_ENABLE_SYCL)
+  add_sycl_executable(test_gpu_kernel_stress FALSE
+    gpu/test_gpu_kernel_stress_sycl.cc
+    INCLUDE_DIRS
+      ${CHIMAERA_ROOT}/include
+      ${CHIMAERA_ROOT}/test
+      ${CHIMAERA_ROOT}/modules/MOD_NAME/include
+      ${CHIMAERA_ROOT}/modules/admin/include
+    LINK_LIBS
+      chimaera_cxx
+      chimaera_cxx_gpu
+      chimaera_admin_client
+      chimaera_MOD_NAME_client
+      hshm::cxx
+      ${CMAKE_THREAD_LIBS_INIT}
+  )
+  set_target_properties(test_gpu_kernel_stress PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  add_test(NAME cr_gpu_kernel_stress_sycl COMMAND test_gpu_kernel_stress
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  set_tests_properties(cr_gpu_kernel_stress_sycl PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin"
+    TIMEOUT 120
+    LABELS "gpu;sycl;stress"
+  )
+endif()
+
+# GPU task-trace, POD-transfer, and runtime tests were removed along
+# with the GPU runtime. Coverage of the kernel→CPU path now lives in
+# the SYCL kernel-side tests (test_sycl_chimod_to_cpu, test_sycl_cte_*).
+
+# GPU coroutine test removed along with the GPU runtime concept.
 
 # Enable CTest integration if testing is enabled
 if(WRP_CORE_ENABLE_TESTS)
   # Core Runtime Tests
+  # Single ctest entry runs the whole binary in one chimaera init/finalize cycle.
+  # Previously 8 redundant entries each invoked the full unfiltered binary, which
+  # serialized via RESOURCE_LOCK but multiplied chimaera shutdown ZMQ-race exposure.
   add_test(
-    NAME cr_runtime_initialization_tests
+    NAME cr_chimaera_unit_tests
     COMMAND ${TEST_TARGET}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
-  set_tests_properties(cr_runtime_initialization_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_client_initialization_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_client_initialization_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_mod_name_task_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_mod_name_task_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_error_handling_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_error_handling_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_concurrent_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_concurrent_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_memory_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_memory_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_performance_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_performance_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  # Comprehensive core test
-  add_test(
-    NAME cr_all_chimaera_tests
-    COMMAND ${TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_all_chimaera_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+  set_tests_properties(cr_chimaera_unit_tests PROPERTIES
+    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;CHIMAERA_TEST_MODE=1;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    TIMEOUT 600
   )
 
   # IPC AllocateBuffer Tests
@@ -787,89 +645,16 @@ if(WRP_CORE_ENABLE_TESTS)
   )
 
   # Per-Process Shared Memory Tests
+  # Single ctest entry runs the binary in one chimaera init/finalize cycle.
+  # Previously 9 redundant entries each invoked the full unfiltered binary.
   add_test(
-    NAME cr_per_process_shm_increase_memory_tests
+    NAME cr_per_process_shm_tests
     COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
-  set_tests_properties(cr_per_process_shm_increase_memory_tests PROPERTIES
+  set_tests_properties(cr_per_process_shm_tests PROPERTIES
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_per_process_shm_medium_alloc_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_medium_alloc_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_per_process_shm_large_alloc_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_large_alloc_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 300  # 5 minute timeout for large allocation test
-  )
-
-  add_test(
-    NAME cr_per_process_shm_multiple_large_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_multiple_large_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 300
-  )
-
-  add_test(
-    NAME cr_per_process_shm_patterns_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_patterns_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 300
-  )
-
-  add_test(
-    NAME cr_per_process_shm_free_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_free_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_per_process_shm_tofullptr_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_tofullptr_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
-  add_test(
-    NAME cr_per_process_shm_stress_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_stress_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 600  # 10 minute timeout for stress test
-  )
-
-  add_test(
-    NAME cr_per_process_shm_info_tests
-    COMMAND ${PER_PROCESS_SHM_TEST_TARGET}
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
-  )
-  set_tests_properties(cr_per_process_shm_info_tests PROPERTIES
-    ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    TIMEOUT 600
   )
 
   # Autogen Coverage Tests (requires CAE)
@@ -882,6 +667,7 @@ if(WRP_CORE_ENABLE_TESTS)
   set_tests_properties(cr_autogen_coverage_tests PROPERTIES
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
+    LABELS "msan_skip"
   )
   endif()  # WRP_CORE_ENABLE_CAE
 
@@ -1099,21 +885,6 @@ if(WRP_CORE_ENABLE_TESTS)
     TIMEOUT 300
   )
 
-  # Set test properties for timeout and environment
-  set_tests_properties(
-    cr_runtime_initialization_tests
-    cr_client_initialization_tests
-    cr_mod_name_task_tests
-    cr_error_handling_tests
-    cr_concurrent_tests
-    cr_memory_tests
-    cr_performance_tests
-    cr_all_chimaera_tests
-    PROPERTIES
-      TIMEOUT 180
-      ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;CHIMAERA_TEST_MODE=1;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-  )
-
   # Unordered Map LL Tests (standalone test with custom main)
   add_test(
     NAME cr_unordered_map_ll_tests
@@ -1127,14 +898,7 @@ if(WRP_CORE_ENABLE_TESTS)
 
   # Mark all CR runtime tests as msan_skip (they use ZMQ which is uninstrumented)
   set_tests_properties(
-    cr_runtime_initialization_tests
-    cr_client_initialization_tests
-    cr_mod_name_task_tests
-    cr_error_handling_tests
-    cr_concurrent_tests
-    cr_memory_tests
-    cr_performance_tests
-    cr_all_chimaera_tests
+    cr_chimaera_unit_tests
     cr_ipc_allocate_buffer_basic_tests
     cr_ipc_allocate_buffer_types_tests
     cr_ipc_allocate_buffer_sizes_tests
@@ -1143,15 +907,7 @@ if(WRP_CORE_ENABLE_TESTS)
     cr_ipc_allocate_buffer_error_tests
     cr_ipc_allocate_buffer_alignment_tests
     cr_ipc_allocate_buffer_documentation_tests
-    cr_per_process_shm_increase_memory_tests
-    cr_per_process_shm_medium_alloc_tests
-    cr_per_process_shm_large_alloc_tests
-    cr_per_process_shm_multiple_large_tests
-    cr_per_process_shm_patterns_tests
-    cr_per_process_shm_free_tests
-    cr_per_process_shm_tofullptr_tests
-    cr_per_process_shm_stress_tests
-    cr_per_process_shm_info_tests
+    cr_per_process_shm_tests
     cr_streaming_small_output_tests
     cr_streaming_large_output_tests
     cr_streaming_bitfield_tests

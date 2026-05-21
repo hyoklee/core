@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(iowarp-core VERSION 1.0.3 LANGUAGES C CXX)
+project(iowarp-core VERSION 1.5.7 LANGUAGES C CXX)
 
 #------------------------------------------------------------------------------
 # Project Options
@@ -88,6 +88,7 @@ option(WRP_CORE_ENABLE_MPI "Enable MPI support" OFF)
 option(WRP_CORE_ENABLE_ZMQ "Enable ZeroMQ transport" ON)
 option(WRP_CORE_ENABLE_LIBFABRIC "Enable Libfabric transport" OFF)
 option(WRP_CORE_ENABLE_THALLIUM "Build tests which depend on thallium" OFF)
+option(WRP_CORE_ENABLE_REDIS "Find hiredis and build the Redis comparison benchmark" OFF)
 
 #------------------------------------------------------------------------------
 # Data and Serialization Features
@@ -315,10 +316,23 @@ if(WRP_CORE_ENABLE_MPI)
     message(STATUS "found mpi.h at ${MPI_CXX_INCLUDE_DIRS}")
 endif()
 
-# ROCm (conditional)
+# ROCm (conditional). Only require the HIP CMake package when HIP-AMD is
+# in use; the HIP-NVCC path goes through CMake's CUDA language and the
+# HIP CMake package isn't shipped by ROCm builds that target NVIDIA.
 if(WRP_CORE_ENABLE_ROCM)
-    find_package(HIP REQUIRED)
-    message(STATUS "found ROCm/HIP support")
+    if(NOT DEFINED WRP_ROCM_HIP_PLATFORM)
+        if(DEFINED ENV{HIP_PLATFORM})
+            set(WRP_ROCM_HIP_PLATFORM "$ENV{HIP_PLATFORM}" CACHE STRING
+                "HIP platform (amd|nvidia)")
+        else()
+            set(WRP_ROCM_HIP_PLATFORM "amd" CACHE STRING
+                "HIP platform (amd|nvidia)")
+        endif()
+    endif()
+    if(NOT WRP_ROCM_HIP_PLATFORM STREQUAL "nvidia")
+        find_package(HIP REQUIRED)
+    endif()
+    message(STATUS "found ROCm/HIP support (HIP_PLATFORM=${WRP_ROCM_HIP_PLATFORM})")
 endif()
 
 # OpenMP (conditional)
@@ -336,6 +350,20 @@ if(WRP_CORE_ENABLE_THALLIUM)
     endif()
     set(SERIALIZATION_LIBS thallium ${SERIALIZATION_LIBS})
     set(WRP_CORE_ENABLE_CEREAL ON)
+endif()
+
+# hiredis (conditional) — Redis comparison benchmark only.
+if(WRP_CORE_ENABLE_REDIS)
+    find_package(hiredis CONFIG QUIET)
+    if(hiredis_FOUND)
+        set(WRP_REDIS_LIBS hiredis::hiredis)
+        message(STATUS "found hiredis (CMake config) at ${hiredis_DIR}")
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(HIREDIS REQUIRED IMPORTED_TARGET hiredis)
+        set(WRP_REDIS_LIBS PkgConfig::HIREDIS)
+        message(STATUS "found hiredis (pkg-config) v${HIREDIS_VERSION}")
+    endif()
 endif()
 
 # Update cereal libraries if enabled
@@ -846,25 +874,42 @@ if(WRP_CORE_ENABLE_TESTS)
     include(CTest)
 
     # -----------------------------------------------------------------------
-    # Pre-test cleanup fixture
+    # Test cleanup fixture (pre + post)
     # Kills any orphaned Chimaera server processes and removes leftover shared
-    # state (IPC socket files, shared memory, memfd) that a previous crashed
-    # test run may have left behind.  Runs once before any other CTest test.
+    # state (IPC socket files, shared memory, memfd) plus build-dir test
+    # artifacts.  The pre-test variant runs once before any other CTest test.
+    # The post-test variant is registered as FIXTURES_CLEANUP and is invoked
+    # after every test that requires the fixture, even if those tests fail
+    # or crash, ensuring temp files do not persist between runs.
     # -----------------------------------------------------------------------
+    set(_chimaera_cleanup_cmd
+        "fuser -k 5555/tcp 5558/tcp 9413/tcp 9414/tcp 9416/tcp 2>/dev/null; \
+         rm -f /tmp/chimaera_*.ipc 2>/dev/null; \
+         rm -f /tmp/chimaera_server_timing.log 2>/dev/null; \
+         rm -rf /tmp/chimaera_memfd 2>/dev/null; \
+         rm -rf /tmp/chimaera_${USER} 2>/dev/null; \
+         rm -f /dev/shm/sm_segment.* 2>/dev/null; \
+         rm -f /dev/shm/test_buddy_bench_* 2>/dev/null; \
+         rm -f \"${CMAKE_BINARY_DIR}\"/cte_*.dat* \"${CMAKE_BINARY_DIR}\"/cte_*.yaml \"${CMAKE_BINARY_DIR}\"/*stress*.bin* \"${CMAKE_BINARY_DIR}\"/*reorganize*.bin* \"${CMAKE_BINARY_DIR}\"/*reorganize*.yaml \"${CMAKE_BINARY_DIR}\"/temp_unregister_test.dat 2>/dev/null; \
+         rm -rf \"${CMAKE_BINARY_DIR}\"/cee_test_data 2>/dev/null; \
+         exit 0")
+
     add_test(
         NAME chimaera_pre_test_cleanup
-        COMMAND bash -c
-            "fuser -k 5555/tcp 5558/tcp 9413/tcp 9414/tcp 9416/tcp 2>/dev/null; \
-             rm -f /tmp/chimaera_*.ipc 2>/dev/null; \
-             rm -f /tmp/chimaera_server_timing.log 2>/dev/null; \
-             rm -rf /tmp/chimaera_memfd 2>/dev/null; \
-             rm -rf /tmp/chimaera_${USER} 2>/dev/null; \
-             rm -f /dev/shm/sm_segment.* 2>/dev/null; \
-             exit 0"
+        COMMAND bash -c "${_chimaera_cleanup_cmd}"
     )
     set_tests_properties(chimaera_pre_test_cleanup PROPERTIES
         TIMEOUT 30
-        FIXTURES_SETUP chimaera_pre_test_cleanup_fixture
+        FIXTURES_SETUP chimaera_test_cleanup_fixture
+    )
+
+    add_test(
+        NAME chimaera_post_test_cleanup
+        COMMAND bash -c "${_chimaera_cleanup_cmd}"
+    )
+    set_tests_properties(chimaera_post_test_cleanup PROPERTIES
+        TIMEOUT 30
+        FIXTURES_CLEANUP chimaera_test_cleanup_fixture
     )
 endif()
 
@@ -872,12 +917,28 @@ endif()
 # Component Subdirectories
 #------------------------------------------------------------------------------
 
-# Catch2 testing framework - find from system or install.sh installation
+# Catch2 testing framework.
+#
+# Prefer the in-tree external/Catch2 source over a system/conda
+# find_package. On this build host the conda env ships
+# libCatch2.so.3.14.0 built with a newer gcc (CXXABI_1.3.15); linking
+# the unit-test executables against it with host gcc 11.4 fails at
+# link time with `undefined reference to __cxa_call_terminate@
+# CXXABI_1.3.15`. Building Catch2 from the bundled source with the
+# same host compiler keeps the CXXABI consistent. Falls back to
+# find_package only when the bundled source is absent.
 if(WRP_CORE_ENABLE_TESTS)
-  message(STATUS "Finding Catch2 testing framework")
-  find_package(Catch2 3 REQUIRED)
-  if(Catch2_FOUND)
-    message(STATUS "found Catch2 at ${Catch2_DIR}")
+  if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/Catch2/CMakeLists.txt")
+    message(STATUS "Using bundled Catch2 (external/Catch2) built with host compiler")
+    set(CATCH_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
+    set(CATCH_INSTALL_EXTRAS OFF CACHE BOOL "" FORCE)
+    add_subdirectory(external/Catch2 EXCLUDE_FROM_ALL)
+  else()
+    message(STATUS "Bundled Catch2 absent; finding system Catch2")
+    find_package(Catch2 3 REQUIRED)
+    if(Catch2_FOUND)
+      message(STATUS "found Catch2 at ${Catch2_DIR}")
+    endif()
   endif()
 endif()
 
@@ -1029,6 +1090,41 @@ if(WRP_CORE_ENABLE_TESTS)
                 "${_lsan_opts}")
         endif()
     endforeach()
+
+    # -----------------------------------------------------------------------
+    # Apply the cleanup fixture to every component test so that the
+    # chimaera_post_test_cleanup hook runs after the whole suite, even when
+    # individual tests fail. Excludes the cleanup fixtures themselves.
+    # -----------------------------------------------------------------------
+    function(_chimaera_require_cleanup_fixture_recursive dir)
+        get_directory_property(_tests DIRECTORY "${dir}" TESTS)
+        foreach(_t ${_tests})
+            if(NOT _t STREQUAL "chimaera_pre_test_cleanup" AND
+               NOT _t STREQUAL "chimaera_post_test_cleanup")
+                set_property(TEST ${_t} DIRECTORY "${dir}" APPEND PROPERTY
+                    FIXTURES_REQUIRED chimaera_test_cleanup_fixture)
+            endif()
+        endforeach()
+        get_directory_property(_subdirs DIRECTORY "${dir}" SUBDIRECTORIES)
+        foreach(_sub ${_subdirs})
+            _chimaera_require_cleanup_fixture_recursive("${_sub}")
+        endforeach()
+    endfunction()
+
+    foreach(_component_dir_pair
+            "context-transport-primitives:WRP_CORE_ENABLE_TESTS"
+            "context-runtime:WRP_CORE_ENABLE_RUNTIME"
+            "context-transfer-engine:WRP_CORE_ENABLE_CTE"
+            "context-assimilation-engine:WRP_CORE_ENABLE_CAE"
+            "context-exploration-engine:WRP_CORE_ENABLE_CEE")
+        string(REPLACE ":" ";" _pair "${_component_dir_pair}")
+        list(GET _pair 0 _component_dir)
+        list(GET _pair 1 _component_flag)
+        if(${_component_flag} AND IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/${_component_dir}")
+            _chimaera_require_cleanup_fixture_recursive(
+                "${CMAKE_CURRENT_SOURCE_DIR}/${_component_dir}")
+        endif()
+    endforeach()
 endif()
 
 # IOWarp KV Cache + Weight Offload libraries (wrp_llm_kvcache, wrp_llm_weights).
@@ -1175,7 +1271,14 @@ message(STATUS "")
 #------------------------------------------------------------------------------
 # Pip Package Component
 #------------------------------------------------------------------------------
-set(PIP_PKG_DIR "iowarp_core")
+# All COMPONENT pip_package installs land under iowarp_core/ inside the wheel
+# via scikit-build-core's wheel.install-dir setting (see installers/pip/
+# pyproject.toml).  That means the DESTINATIONs below are package-relative:
+# "lib" -> iowarp_core/lib, "bin" -> iowarp_core/bin, etc.
+#
+# Exception: the .pth file uses DESTINATION ".." to land at site-packages
+# root (one level above the iowarp_core/ package directory) so Python picks
+# it up at startup.
 
 # Shared libraries -> iowarp_core/lib/
 set(PIP_LIB_TARGETS hermes_shm_host chimaera_cxx)
@@ -1185,11 +1288,16 @@ endif()
 if(TARGET chimaera_bdev_client)
   list(APPEND PIP_LIB_TARGETS chimaera_bdev_client chimaera_bdev_runtime)
 endif()
+# Template chimod (used by wrp_run_thrpt_benchmark's "latency" test case via
+# chimaera::MOD_NAME_client).  Without this the benchmark binary's NEEDED list
+# references libchimaera_MOD_NAME_client.so but the wheel doesn't contain it,
+# and the dynamic linker segfaults at load time on glibc/patchelf combinations
+# instead of failing cleanly.  See #429.
+if(TARGET chimaera_MOD_NAME_client)
+  list(APPEND PIP_LIB_TARGETS chimaera_MOD_NAME_client chimaera_MOD_NAME_runtime)
+endif()
 if(WRP_CORE_ENABLE_CTE AND TARGET wrp_cte_core_client)
   list(APPEND PIP_LIB_TARGETS wrp_cte_core_client wrp_cte_core_runtime)
-  if(TARGET wrp_cte_cae_config)
-    list(APPEND PIP_LIB_TARGETS wrp_cte_cae_config)
-  endif()
 endif()
 if(WRP_CORE_ENABLE_CAE AND TARGET wrp_cae_core_client)
   list(APPEND PIP_LIB_TARGETS wrp_cae_core_client wrp_cae_core_runtime)
@@ -1200,15 +1308,16 @@ endif()
 
 install(TARGETS ${PIP_LIB_TARGETS}
   COMPONENT pip_package
-  LIBRARY DESTINATION ${PIP_PKG_DIR}/lib
-  ARCHIVE DESTINATION ${PIP_PKG_DIR}/lib
-  RUNTIME DESTINATION ${PIP_PKG_DIR}/bin)
+  LIBRARY DESTINATION lib
+  ARCHIVE DESTINATION lib
+  RUNTIME DESTINATION bin
+  PUBLIC_HEADER DESTINATION include/chimaera)
 
 # CLI binary -> iowarp_core/bin/
 if(TARGET chimaera)
   install(TARGETS chimaera
     COMPONENT pip_package
-    RUNTIME DESTINATION ${PIP_PKG_DIR}/bin)
+    RUNTIME DESTINATION bin)
   # Also install to PYTHON_SITE_PACKAGES/iowarp_core/bin/ so that
   # `sudo make install` keeps the binary in sync with the Python package,
   # matching how chimaera_runtime_ext.so is installed directly to site-packages.
@@ -1218,39 +1327,56 @@ if(TARGET chimaera)
   endif()
 endif()
 
+# Benchmark binaries -> iowarp_core/bin/
+# Per-subdir install(TARGETS) calls in */benchmark/CMakeLists.txt land in
+# the default component, which scikit-build-core filters out of the wheel.
+# Re-install the user-facing benchmarks here under COMPONENT pip_package
+# so they ship in the wheel.  if(TARGET ...) guards skip benchmarks that
+# weren't built (e.g. MPI/Redis-only ones disabled in pip configurations).
+if(WRP_CORE_ENABLE_BENCHMARKS)
+  set(PIP_BENCH_TARGETS
+    wrp_cte_bench
+    wrp_run_thrpt_benchmark)
+  foreach(_bench ${PIP_BENCH_TARGETS})
+    if(TARGET ${_bench})
+      install(TARGETS ${_bench}
+        COMPONENT pip_package
+        RUNTIME DESTINATION bin)
+    endif()
+  endforeach()
+endif()
+
 # Python extensions -> iowarp_core/ext/
 if(WRP_CORE_ENABLE_PYTHON)
   if(TARGET wrp_cte_core_ext)
     install(TARGETS wrp_cte_core_ext
       COMPONENT pip_package
-      LIBRARY DESTINATION ${PIP_PKG_DIR}/ext)
+      LIBRARY DESTINATION ext)
   endif()
   if(TARGET wrp_cee)
     install(TARGETS wrp_cee
       COMPONENT pip_package
-      LIBRARY DESTINATION ${PIP_PKG_DIR}/ext)
+      LIBRARY DESTINATION ext)
   endif()
-  # Context Visualizer -> iowarp_core/visualizer/
-  install(DIRECTORY context-visualizer/context_visualizer/
-    COMPONENT pip_package
-    DESTINATION ${PIP_PKG_DIR}/visualizer
-    FILES_MATCHING
-      PATTERN "*.py"
-      PATTERN "*.html"
-      PATTERN "*.css"
-      PATTERN "*.js")
+  # Note: the context_visualizer Python package ships at the wheel root
+  # (top-level "context_visualizer/") via scikit-build-core's wheel.packages
+  # setting in pyproject.toml, not via CMake install.  That keeps the
+  # `python -m context_visualizer` and `context-visualizer` entry-point
+  # paths consistent with the package's own __main__.py.
 endif()
 
 # Default config -> iowarp_core/data/
 install(FILES context-runtime/config/chimaera_default.yaml
   COMPONENT pip_package
-  DESTINATION ${PIP_PKG_DIR}/data)
+  DESTINATION data)
 
 # .pth file at site-packages root so "import wrp_cee" works without
 # explicitly importing iowarp_core first (triggers _setup() at startup).
+# DESTINATION ".." escapes wheel.install-dir (= iowarp_core/) by one level
+# so the file lands at platlib root.
 install(FILES installers/pip/iowarp_core.pth
   COMPONENT pip_package
-  DESTINATION .)
+  DESTINATION ..)
 
 #------------------------------------------------------------------------------
 # CPack Configuration

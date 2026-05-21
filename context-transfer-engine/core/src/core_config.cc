@@ -32,6 +32,7 @@
  */
 
 #include <wrp_cte/core/core_config.h>
+#include <chimaera/bdev/bdev_tasks.h>
 #include <yaml-cpp/yaml.h>
 #include <fstream>
 #include <iostream>
@@ -287,6 +288,24 @@ bool Config::ParseYamlNode(const YAML::Node &node) {
     }
   }
 
+  // Parse GPU metadata cache configuration (optional)
+  if (node["gpu_metadata_cache"]) {
+    const YAML::Node &gmc = node["gpu_metadata_cache"];
+    if (gmc["enabled"]) {
+      gpu_metadata_cache_.enabled_ = gmc["enabled"].as<bool>();
+    }
+    if (gmc["capacity"]) {
+      std::string cap_str = gmc["capacity"].as<std::string>();
+      ParseSizeString(cap_str, gpu_metadata_cache_.capacity_bytes_);
+    }
+    if (gmc["max_blobs"]) {
+      gpu_metadata_cache_.max_blobs_ = gmc["max_blobs"].as<chi::u32>();
+    }
+    if (gmc["max_tags"]) {
+      gpu_metadata_cache_.max_tags_ = gmc["max_tags"].as<chi::u32>();
+    }
+  }
+
   // Parse environment variable configuration
   if (node["config_env_var"]) {
     config_env_var_ = node["config_env_var"].as<std::string>();
@@ -481,8 +500,28 @@ bool Config::ParseStorageConfig(const YAML::Node &node) {
     }
     
     if (device_config.capacity_limit_ == 0) {
-      HLOG(kError, "Config error: Storage device capacity_limit must be greater than 0");
-      return false;
+      // Policy: a RAM device configured with capacity 0 ("0g") defaults
+      // to 80% of total system DRAM — identical to the bdev module's
+      // own behavior (chimaera::bdev::DefaultRamCapacityBytes), so "0g"
+      // means the same whether a bdev is created directly or via CTE.
+      // Other tiers (file/noop/...) have no DRAM-based default, so 0
+      // remains an error for them.
+      if (device_config.bdev_type_ == "ram") {
+        device_config.capacity_limit_ =
+            chimaera::bdev::DefaultRamCapacityBytes();
+        HLOG(kInfo,
+             "Storage device {}: capacity_limit 0/'0g' for ram tier -> "
+             "defaulting to {}% of system DRAM = {} bytes",
+             device_config.path_,
+             static_cast<int>(
+                 chimaera::bdev::kDefaultRamCapacityFraction * 100),
+             device_config.capacity_limit_);
+      } else {
+        HLOG(kError,
+             "Config error: Storage device capacity_limit must be greater "
+             "than 0 (only 'ram' tier supports 0 = 80% DRAM default)");
+        return false;
+      }
     }
     
     storage_.devices_.push_back(std::move(device_config));

@@ -65,6 +65,11 @@
 
 #include "simple_test.h"
 
+static std::string chi_test_data_dir() {
+  const char *d = std::getenv("CHI_TEST_DATA_DIR");
+  return (d && *d) ? d : ".";
+}
+
 using namespace std::chrono_literals;
 
 // Chimaera core includes
@@ -141,7 +146,7 @@ class CTECoreFunctionalTestFixture {
     INFO("=== Initializing CTE Core Functional Test Environment ===");
 
     // Initialize test storage path in /tmp (always writable)
-    test_storage_path_ = "/tmp/cte_functional_test.dat";
+    test_storage_path_ = chi_test_data_dir() + "/cte_functional_test.dat";
 
     // Clean up any existing test file
     if (fs::exists(test_storage_path_)) {
@@ -160,6 +165,10 @@ class CTECoreFunctionalTestFixture {
       bool success = chi::CHIMAERA_INIT(chi::ChimaeraMode::kClient, true);
       REQUIRE(success);
     }
+
+    // Drain ZMQ background threads in main() before static dtors fire — the
+    // shutdown race here used to produce flaky timeouts under repeated runs.
+    SimpleTest::g_test_finalize = chi::CHIMAERA_FINALIZE;
 
     // Generate unique pool ID for this test session
     int rand_id = 1000 + rand() % 9000;  // Random ID 1000-9999

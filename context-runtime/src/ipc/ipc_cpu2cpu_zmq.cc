@@ -19,13 +19,23 @@ bool IpcCpu2CpuZmq::RuntimeRecv(IpcManager *ipc, u32 &tasks_received) {
   bool did_work = false;
   tasks_received = 0;
 
+  // Instrumentation: cumulative count of client requests this daemon has
+  // accepted from RuntimeRecv. Printed every 256 to keep log volume sane
+  // but still bracket the 24×128 = 3072-req IOR read phase.
+  static std::atomic<size_t> recv_counter{0};
+
   // Process both TCP and IPC servers
   for (int mode_idx = 0; mode_idx < 2; ++mode_idx) {
     IpcMode mode = (mode_idx == 0) ? IpcMode::kTcp : IpcMode::kIpc;
     hshm::lbm::Transport *transport = ipc->GetClientTransport(mode);
     if (!transport) continue;
 
-    // Drain all pending messages from this transport
+    // Drain all pending messages from this transport. Unbounded `while`
+    // is intentional: RuntimeRecv is invoked by the ClientRecv periodic
+    // which runs on its own dedicated net_recv worker (see
+    // project_net_worker_split.md / DefaultScheduler::DivideWorkers),
+    // so a hot client stream here doesn't starve any other periodic.
+    // EAGAIN ends the loop when the transport buffer drains.
     while (true) {
       LoadTaskArchive archive;
       auto recv_info = transport->Recv(archive);
@@ -62,9 +72,30 @@ bool IpcCpu2CpuZmq::RuntimeRecv(IpcManager *ipc, u32 &tasks_received) {
       // Allocate and deserialize the task
       hipc::FullPtr<Task> task_ptr =
           container->AllocLoadTask(method_id, archive);
+
+      // SerializeIn copied any zmq-owned BULK_XFER payloads into
+      // CHI-owned buffers (LoadTaskArchive::bulk), so the zmq_msg_t
+      // handles in archive.recv[*].desc are now unreferenced. Free them
+      // here — this is the only place that closes them on the server
+      // inbound path; without it every inbound TCP bulk leaks one
+      // zmq_msg_t + its payload. Safe to call unconditionally: the zmq
+      // ClearRecvHandles only closes/deletes desc handles and leaves the
+      // (now CHI-owned) data buffers alone; SHM recv has desc==null so
+      // this is a no-op there.
+      transport->ClearRecvHandles(archive);
+
       if (task_ptr.IsNull()) {
         HLOG(kError, "IpcCpu2CpuZmq::RuntimeRecv: Failed to deserialize task");
         continue;
+      }
+
+      // If SerializeIn copied any ZMQ-owned BULK_XFER input into a fresh
+      // CHI buffer, the task now owns that buffer. Promote the count to
+      // TASK_DATA_OWNER so the task destructor frees it (mirrors admin
+      // RecvIn). Without this the copied buffer leaks one io_size
+      // allocation per inbound TCP/IPC bulk.
+      if (archive.daemon_allocated_bulk_count_ > 0) {
+        task_ptr->SetFlags(TASK_DATA_OWNER);
       }
 
       // Create FutureShm for the task (server-side)
@@ -98,14 +129,19 @@ bool IpcCpu2CpuZmq::RuntimeRecv(IpcManager *ipc, u32 &tasks_received) {
           ipc->GetScheduler()->ClientMapTask(ipc, future);
       auto *worker_queues = ipc->GetTaskQueue();
       auto &lane_ref = worker_queues->GetLane(lane_id, 0);
-      bool was_empty = lane_ref.Empty();
       lane_ref.Push(future);
-      if (was_empty) {
-        ipc->AwakenWorker(&lane_ref);
-      }
+      // Always signal — see ipc_cpu2cpu_impl.h for the race.
+      ipc->AwakenWorker(&lane_ref);
 
       did_work = true;
       tasks_received++;
+      size_t total = recv_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+      if ((total & 0xff) == 0) {
+        HLOG(kDebug,
+             "[CountRecv] cumulative client requests received = {} "
+             "(mode={}, latest method_id={}, pool_id={})",
+             total, mode_idx, method_id, pool_id);
+      }
     }
   }
 
@@ -135,6 +171,8 @@ bool IpcCpu2CpuZmq::RuntimeSend(
   auto *pool_manager = CHI_POOL_MANAGER;
   bool did_work = false;
   tasks_sent = 0;
+  static std::atomic<size_t> send_counter{0};
+  static std::atomic<size_t> send_fail_counter{0};
 
   // Flush deferred deletes from previous invocation.
   // Zero-copy send (zmq_msg_init_data) lets ZMQ's IO thread read from the
@@ -157,7 +195,14 @@ bool IpcCpu2CpuZmq::RuntimeSend(
         (mode_idx == 0) ? IpcMode::kTcp : IpcMode::kIpc;
 
     Future<Task> queued_future;
-    while (ipc->TryPopNetTask(priority, queued_future)) {
+    // Snapshot queue depth at function entry and drain exactly that
+    // many — see admin_runtime.cc Send for the same pattern. Bounds
+    // the per-priority drain so neither kClientSendTcp nor
+    // kClientSendIpc can starve the other (or starve the deferred-
+    // delete reclaim above) when one side has a hot producer.
+    const size_t client_send_bound = ipc->GetNetQueueSize(priority);
+    for (size_t send_i = 0; send_i < client_send_bound; ++send_i) {
+      if (!ipc->TryPopNetTask(priority, queued_future)) break;
       auto origin_task = queued_future.GetTaskPtr();
       if (origin_task.IsNull()) continue;
 
@@ -204,18 +249,46 @@ bool IpcCpu2CpuZmq::RuntimeSend(
         archive.client_info_.fd_ = future_shm->response_fd_;
       }
 
-      // Send via lightbeam
+      // Send via lightbeam. Default LbmContext is non-blocking (DONTWAIT in
+      // zmq_transport.h). On read responses each task ships a 1 MiB bulk
+      // frame; at high concurrency the ROUTER socket can transiently
+      // return EAGAIN. Without retry the response is lost and the client
+      // spins on FUTURE_COMPLETE forever, so re-queue on failure.
       int rc = response_transport->Send(archive, hshm::lbm::LbmContext());
       if (rc != 0) {
-        HLOG(kError, "IpcCpu2CpuZmq::RuntimeSend: Send failed: {}", rc);
+        size_t fail_total =
+            send_fail_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+        HLOG(kError,
+             "[CountSend] Send rc={} fail#{} — re-queueing client response "
+             "(priority={})",
+             rc, fail_total, static_cast<int>(priority));
+        ipc->EnqueueNetTask(queued_future, priority);
+        continue;
       }
 
-      // Defer task deletion for zero-copy send safety
-      origin_task->ClearFlags(TASK_DATA_OWNER);
+      // Defer task deletion by one invocation for zero-copy send safety:
+      // ZMQ's IO thread may still be reading the task's send buffer after
+      // Send() returns, so DelTask (and the task destructor's owned-buffer
+      // free) only runs on the next invocation, by which point the message
+      // has flushed. This mirrors the cross-node admin SendOut path, which
+      // also keeps TASK_DATA_OWNER across this same one-invocation window
+      // so the task destructor can free a receiver-allocated bulk buffer
+      // (~PutBlobTask / ~GetBlobTask). The flag is intentionally NOT
+      // cleared here: on the client ZMQ path it was historically a no-op
+      // (RuntimeRecv never set it), and clearing it now would re-leak the
+      // CHI buffer that LoadTaskArchive::bulk copied the ZMQ payload into.
       deferred_deletes.push_back(origin_task);
 
       did_work = true;
       tasks_sent++;
+      size_t total = send_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+      if ((total & 0xff) == 0) {
+        HLOG(kDebug,
+             "[CountSend] cumulative client responses sent = {} "
+             "(mode={}, fails so far = {})",
+             total, mode_idx,
+             send_fail_counter.load(std::memory_order_relaxed));
+      }
     }
   }
 
