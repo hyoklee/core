@@ -36,6 +36,37 @@
             }
         },
         {
+            "name": "cuda-debug",
+            "displayName": "CUDA Debug (full GPU runtime, GCC-14)",
+            "hidden": false,
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "gcc-14",
+                "CMAKE_CXX_COMPILER": "g++-14",
+                "CMAKE_CUDA_HOST_COMPILER": "g++-14",
+                "WRP_CORE_ENABLE_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_CTE": "ON",
+                "WRP_CORE_ENABLE_CAE": "ON",
+                "WRP_CORE_ENABLE_CEE": "ON",
+                "WRP_CORE_ENABLE_TESTS": "ON",
+                "WRP_CORE_ENABLE_BENCHMARKS": "ON",
+                "WRP_CORE_ENABLE_ELF": "OFF",
+                "WRP_CORE_ENABLE_CUDA": "ON",
+                "WRP_CORE_ENABLE_GPU_RUNTIME": "ON",
+                "CMAKE_CUDA_ARCHITECTURES": "native",
+                "CMAKE_CUDA_STANDARD": "17",
+                "WRP_CTE_ENABLE_COMPRESS": "OFF",
+                "WRP_CTE_ENABLE_ADIOS2_ADAPTER": "OFF",
+                "WRP_CORE_ENABLE_GRAY_SCOTT": "OFF",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "WRP_CORE_ENABLE_ASAN": "OFF",
+                "WRP_CORE_ENABLE_IO_URING": "ON",
+                "WRP_CORE_ENABLE_DOCKER_CI": "OFF"
+            }
+        },
+        {
             "name": "cuda-release",
             "displayName": "CUDA Debug (producer-only GPU)",
             "hidden": false,
@@ -59,7 +90,37 @@
                 "WRP_CORE_ENABLE_GRAY_SCOTT": "OFF",
                 "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
                 "WRP_CORE_ENABLE_ASAN": "OFF",
-                "WRP_CORE_ENABLE_IO_URING": "ON"
+                "WRP_CORE_ENABLE_IO_URING": "ON",
+                "WRP_CORE_ENABLE_DOCKER_CI": "ON"
+            }
+        },
+        {
+            "name": "polaris",
+            "displayName": "Polaris (ALCF, A100, GCC-14)",
+            "hidden": false,
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_C_COMPILER": "/usr/bin/gcc-14",
+                "CMAKE_CXX_COMPILER": "/usr/bin/g++-14",
+                "CMAKE_CUDA_HOST_COMPILER": "/usr/bin/g++-12",
+                "WRP_CORE_ENABLE_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_CTE": "ON",
+                "WRP_CORE_ENABLE_CAE": "ON",
+                "WRP_CORE_ENABLE_CEE": "ON",
+                "WRP_CORE_ENABLE_TESTS": "ON",
+                "WRP_CORE_ENABLE_BENCHMARKS": "ON",
+                "WRP_CORE_ENABLE_ELF": "OFF",
+                "WRP_CORE_ENABLE_CUDA": "ON",
+                "WRP_CORE_ENABLE_GPU_RUNTIME": "ON",
+                "WRP_CORE_ENABLE_BAM": "ON",
+                "CMAKE_CUDA_ARCHITECTURES": "80",
+                "CMAKE_CUDA_STANDARD": "17",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "WRP_CORE_ENABLE_ASAN": "OFF",
+                "WRP_CORE_ENABLE_IO_URING": "ON",
+                "WRP_CORE_ENABLE_DOCKER_CI": "OFF"
             }
         },
         {

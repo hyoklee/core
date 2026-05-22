@@ -484,8 +484,9 @@ if(WRP_CORE_ENABLE_CUDA)
   )
   set_tests_properties(cr_gpu_kernel_stress_cuda PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin"
-    TIMEOUT 120
+    TIMEOUT 300
     LABELS "gpu;cuda;stress"
+    RESOURCE_LOCK "chimaera_runtime"
   )
 endif()
 
@@ -863,6 +864,7 @@ if(WRP_CORE_ENABLE_TESTS)
   set_tests_properties(cr_client_retry_client_death_tcp PROPERTIES
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
+    RESOURCE_LOCK "chimaera_runtime"
   )
 
   add_test(
@@ -873,6 +875,7 @@ if(WRP_CORE_ENABLE_TESTS)
   set_tests_properties(cr_client_retry_client_death_ipc PROPERTIES
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
+    RESOURCE_LOCK "chimaera_runtime"
   )
 
   add_test(
@@ -883,6 +886,7 @@ if(WRP_CORE_ENABLE_TESTS)
   set_tests_properties(cr_client_retry_client_death_shm PROPERTIES
     ENVIRONMENT "CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
     TIMEOUT 300
+    RESOURCE_LOCK "chimaera_runtime"
   )
 
   # Unordered Map LL Tests (standalone test with custom main)

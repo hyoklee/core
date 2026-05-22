@@ -80,7 +80,8 @@ function(add_cae_unit_test TEST_NAME TEST_SOURCE)
   # Set test environment variables
   set_tests_properties(${TEST_NAME} PROPERTIES
     ENVIRONMENT "CHI_WITH_RUNTIME=1;CHI_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/wrp_config.yaml;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
-    TIMEOUT 300  # 5 minute timeout
+    TIMEOUT 300
+    RESOURCE_LOCK "chimaera_runtime"
   )
 endfunction()
 
@@ -199,6 +200,7 @@ set_tests_properties(
     TIMEOUT 120
     LABELS "coverage;comprehensive;msan_skip"
     ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK "chimaera_runtime"
 )
 
 #------------------------------------------------------------------------------
@@ -297,6 +299,7 @@ set_tests_properties(
     TIMEOUT 300
     LABELS "coverage;export;msan_skip"
     ENVIRONMENT "CHI_WITH_RUNTIME=1;CHI_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/wrp_config.yaml;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK "chimaera_runtime"
 )
 
 #------------------------------------------------------------------------------

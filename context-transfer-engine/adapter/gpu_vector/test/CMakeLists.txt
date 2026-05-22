@@ -32,6 +32,7 @@ if(WRP_CORE_ENABLE_CUDA)
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CHI_REPO_PATH=${CMAKE_BINARY_DIR}/bin"
         TIMEOUT 120
         LABELS "gpu;cuda;cte;gpu_vector"
+        RESOURCE_LOCK "chimaera_runtime"
     )
 endif()
 

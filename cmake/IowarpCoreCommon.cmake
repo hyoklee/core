@@ -37,8 +37,10 @@ endmacro()
 
 # Enable cuda boilerplate
 macro(wrp_core_enable_cuda CXX_STANDARD)
-    set(CMAKE_CUDA_STANDARD ${CXX_STANDARD})
-    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT CMAKE_CUDA_STANDARD)
+        set(CMAKE_CUDA_STANDARD ${CXX_STANDARD})
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    endif()
 
     if(NOT CMAKE_CUDA_ARCHITECTURES)
         set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA architectures to compile for" FORCE)
@@ -462,6 +464,13 @@ function(add_cuda_library TARGET SHARED DO_COPY)
 
     set_target_properties(${TARGET} PROPERTIES
         CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+
+    if(CMAKE_CUDA_STANDARD)
+        set_target_properties(${TARGET} PROPERTIES
+            CUDA_STANDARD "${CMAKE_CUDA_STANDARD}"
+            CUDA_STANDARD_REQUIRED ON)
+        target_compile_features(${TARGET} PRIVATE cuda_std_${CMAKE_CUDA_STANDARD})
+    endif()
 
     if(SHARED STREQUAL "SHARED")
         set_target_properties(${TARGET} PROPERTIES

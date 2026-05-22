@@ -301,6 +301,31 @@ bool IpcManager::ServerInit() {
     return false;
   }
 
+  // Create IPC Unix-domain socket early so that WaitForServer()-based tests
+  // can detect readiness by checking for the socket file immediately after
+  // the memfd symlink appears. GPU init (ChiServerBootstrapHipGpu below) can
+  // take several seconds; creating the IPC socket before GPU init ensures
+  // clients using CHI_IPC_MODE=IPC can connect as soon as the server is up.
+  {
+    auto *config_early = CHI_CONFIG_MANAGER;
+    if (config_early && config_early->IsValid()) {
+      u32 port_early = config_early->GetPort();
+      try {
+        std::string ipc_path_early =
+            hshm::SystemInfo::GetMemfdPath(
+                "chimaera_" + std::to_string(port_early) + ".ipc");
+        client_ipc_transport_ = hshm::lbm::TransportFactory::Get(
+            ipc_path_early, hshm::lbm::TransportType::kSocket,
+            hshm::lbm::TransportMode::kServer, "ipc", 0);
+        HLOG(kInfo, "IpcManager: IPC server socket bound early on {}",
+             ipc_path_early);
+      } catch (const std::exception &e) {
+        HLOG(kWarning,
+             "IpcManager::ServerInit: Early IPC socket bind failed: {}", e.what());
+      }
+    }
+  }
+
   // Initialize priority queues
   if (!ServerInitQueues()) {
     return false;
@@ -379,17 +404,19 @@ bool IpcManager::ServerInit() {
            e.what());
     }
 
-    try {
-      // IPC server on Unix domain socket
-      std::string ipc_path =
-          hshm::SystemInfo::GetMemfdPath("chimaera_" + std::to_string(port) + ".ipc");
-      client_ipc_transport_ = hshm::lbm::TransportFactory::Get(
-          ipc_path, hshm::lbm::TransportType::kSocket,
-          hshm::lbm::TransportMode::kServer, "ipc", 0);
-      HLOG(kInfo, "IpcManager: IPC lightbeam server bound on {}", ipc_path);
-    } catch (const std::exception &e) {
-      HLOG(kError, "IpcManager::ServerInit: Failed to bind IPC server: {}",
-           e.what());
+    if (!client_ipc_transport_) {
+      try {
+        // IPC server on Unix domain socket (fallback if early bind failed)
+        std::string ipc_path =
+            hshm::SystemInfo::GetMemfdPath("chimaera_" + std::to_string(port) + ".ipc");
+        client_ipc_transport_ = hshm::lbm::TransportFactory::Get(
+            ipc_path, hshm::lbm::TransportType::kSocket,
+            hshm::lbm::TransportMode::kServer, "ipc", 0);
+        HLOG(kInfo, "IpcManager: IPC lightbeam server bound on {}", ipc_path);
+      } catch (const std::exception &e) {
+        HLOG(kError, "IpcManager::ServerInit: Failed to bind IPC server: {}",
+             e.what());
+      }
     }
   }
 

@@ -83,7 +83,9 @@ void DefaultScheduler::DivideWorkers(WorkOrchestrator *work_orch) {
   // periodic net tasks. Carve it out from before the net pair (N-3) when
   // we have headroom; otherwise leave gpu_worker_ null (callers must
   // tolerate this — none of the CPU-only paths exercised below need it).
-  if (total_workers >= 5) {
+  // With N=4 the layout is [sched, gpu, net_send, net_recv] which matches
+  // the default chimaera.yaml num_threads=4 configuration.
+  if (total_workers >= 4) {
     gpu_worker_ = work_orch->GetWorker(total_workers - 3);
   }
 
@@ -91,7 +93,7 @@ void DefaultScheduler::DivideWorkers(WorkOrchestrator *work_orch) {
   // split there's one fewer worker available for I/O than in the old
   // layout; small I/O and metadata still fall back to the scheduler worker
   // via RuntimeMapTask, so this stays correct for any worker count.
-  u32 io_upper_excl = total_workers >= 5 ? total_workers - 3
+  u32 io_upper_excl = total_workers >= 4 ? total_workers - 3
                     : total_workers >= 3 ? total_workers - 2
                                          : 1;
   for (u32 i = 1; i < io_upper_excl; ++i) {
