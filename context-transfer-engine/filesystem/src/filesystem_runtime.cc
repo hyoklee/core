@@ -62,6 +62,30 @@ inline std::string StripTrailingSlash(std::string p) {
   if (p.size() > 1 && p.back() == '/') p.pop_back();
   return p;
 }
+/**
+ * Route an exact-single-path tag/blob op to the container that deterministically
+ * owns `path` cluster-wide, instead of PoolQuery::Local() (which only ever hits
+ * the caller's own node). Without this, a file's tag+page-blobs are created on
+ * whichever node the writing process ran on, so a file written through the POSIX
+ * interceptor on node A is invisible on node B (open -> ENOENT). (#685)
+ *
+ * The hash mirrors the CTE core's OWN GetOrCreateTag scheduling
+ * (core_runtime.cc: static_cast<u32>(std::hash<std::string>(tag_name)) ->
+ * DirectHash), so the container a path's tag is created on is exactly the one
+ * every node re-derives for the follow-up TagQuery / GetTagSize / Put/GetBlob /
+ * DelTag on that same path — keeping a single file's whole data path colocated
+ * on one container and consistent from any node.
+ *
+ * NOTE (scope, #685): only EXACT-single-path ops route this way. Directory /
+ * prefix regex scans (readdir/getattr child_re) stay Local() for now — a
+ * documented follow-up — since a per-node tag namespace makes a global prefix
+ * scan a broadcast+merge problem, out of scope for this single-file-path fix.
+ */
+inline clio::run::PoolQuery PathQuery(const std::string &path) {
+  clio::run::u32 hash_value =
+      static_cast<clio::run::u32>(std::hash<std::string>{}(path));
+  return clio::run::PoolQuery::DirectHash(hash_value);
+}
 /** Escape regex metacharacters for an exact TagQuery match (from libfuse). */
 inline std::string EscapeExact(const std::string &s) {
   std::string out;
@@ -139,7 +163,7 @@ clio::run::TaskResume Runtime::Open(clio::run::shared_ptr<OpenTask> &task) {
   // Did the tag already exist (so we can report created_)?
   bool existed = false;
   {
-    auto q = cte_.AsyncTagQuery(EscapeExact(path), 1, clio::run::PoolQuery::Local());
+    auto q = cte_.AsyncTagQuery(EscapeExact(path), 1, PathQuery(path));
     CLIO_CO_AWAIT(q);
     existed = (q->GetReturnCode() == 0 && !q->results_.empty());
   }
@@ -157,7 +181,7 @@ clio::run::TaskResume Runtime::Open(clio::run::shared_ptr<OpenTask> &task) {
 
   // Resolve / create the tag for this path.
   auto t = cte_.AsyncGetOrCreateTag(path, clio::cte::core::TagId::GetNull(),
-                                    clio::run::PoolQuery::Local());
+                                    PathQuery(path));
   CLIO_CO_AWAIT(t);
   if (t->GetReturnCode() != 0) {
     task->return_code_ = EIO;
@@ -168,7 +192,7 @@ clio::run::TaskResume Runtime::Open(clio::run::shared_ptr<OpenTask> &task) {
   // Current physical size (best-effort baseline for the logical size).
   clio::run::u64 size = 0;
   {
-    auto s = cte_.AsyncGetTagSize(tag_id, clio::run::PoolQuery::Local());
+    auto s = cte_.AsyncGetTagSize(tag_id, PathQuery(path));
     CLIO_CO_AWAIT(s);
     if (s->GetReturnCode() == 0) {
       size = s->tag_size_;
@@ -265,7 +289,7 @@ clio::run::TaskResume Runtime::Read(clio::run::shared_ptr<ReadTask> &task) {
     auto g = cte_.AsyncGetBlob(tag_id, PageName(cur), page_off, to_read,
                                /*flags*/ 0u,
                                (data_base + done).template Cast<void>(),
-                               clio::run::PoolQuery::Local());
+                               PathQuery(fi->path_));
     CLIO_CO_AWAIT(g);
     // A miss/short read just leaves the pre-zeroed bytes as zeros (a hole is
     // not an error), so the return code is intentionally ignored here.
@@ -302,7 +326,7 @@ clio::run::TaskResume Runtime::Write(clio::run::shared_ptr<WriteTask> &task) {
     auto p = cte_.AsyncPutBlob(tag_id, PageName(cur), page_off, to_write,
                                (data_base + done).template Cast<void>(),
                                /*score*/ -1.0f, clio::cte::core::Context(),
-                               /*flags*/ 0u, clio::run::PoolQuery::Local());
+                               /*flags*/ 0u, PathQuery(fi->path_));
     CLIO_CO_AWAIT(p);
     if (p->GetReturnCode() != 0) { ok = false; break; }
     done += to_write;
@@ -421,7 +445,7 @@ clio::run::TaskResume Runtime::Getattr(clio::run::shared_ptr<GetattrTask> &task)
       task->ino_ = InoFromTag(h_tag);
       // ctime from the tag (mutex released before this RPC).
       if (!h_tag.IsNull()) {
-        auto s = cte_.AsyncGetTagSize(h_tag, clio::run::PoolQuery::Local());
+        auto s = cte_.AsyncGetTagSize(h_tag, PathQuery(path));
         CLIO_CO_AWAIT(s);
         task->ctime_ = (s->GetReturnCode() == 0) ? s->ctime_ : 0;
       }
@@ -452,14 +476,14 @@ clio::run::TaskResume Runtime::Getattr(clio::run::shared_ptr<GetattrTask> &task)
   }
 
   // Regular file: an exact tag with no children. Fall back to physical size.
-  auto q = cte_.AsyncTagQuery(EscapeExact(path), 1, clio::run::PoolQuery::Local());
+  auto q = cte_.AsyncTagQuery(EscapeExact(path), 1, PathQuery(path));
   CLIO_CO_AWAIT(q);
   if (q->GetReturnCode() == 0 && !q->results_.empty()) {
     task->exists_ = 1; task->is_dir_ = 0;
     auto tag = cte_.AsyncGetOrCreateTag(path, clio::cte::core::TagId::GetNull(),
-                                        clio::run::PoolQuery::Local());
+                                        PathQuery(path));
     CLIO_CO_AWAIT(tag);
-    auto s = cte_.AsyncGetTagSize(tag->tag_id_, clio::run::PoolQuery::Local());
+    auto s = cte_.AsyncGetTagSize(tag->tag_id_, PathQuery(path));
     CLIO_CO_AWAIT(s);
     task->size_ = (s->GetReturnCode() == 0) ? s->tag_size_ : 0;
     task->ino_ = InoFromTag(tag->tag_id_);
@@ -498,11 +522,11 @@ clio::run::TaskResume Runtime::Truncate(clio::run::shared_ptr<TruncateTask> &tas
   // current size, then record a tracking entry.
   if (!tracked) {
     auto t = cte_.AsyncGetOrCreateTag(path, clio::cte::core::TagId::GetNull(),
-                                      clio::run::PoolQuery::Local());
+                                      PathQuery(path));
     CLIO_CO_AWAIT(t);
     if (t->GetReturnCode() == 0) {
       tag_id = t->tag_id_;
-      auto s = cte_.AsyncGetTagSize(tag_id, clio::run::PoolQuery::Local());
+      auto s = cte_.AsyncGetTagSize(tag_id, PathQuery(path));
       CLIO_CO_AWAIT(s);
       if (s->GetReturnCode() == 0) {
         old_size = s->tag_size_;
@@ -530,13 +554,13 @@ clio::run::TaskResume Runtime::Truncate(clio::run::shared_ptr<TruncateTask> &tas
     clio::run::u64 boundary_off = new_size % kFsPageSize;
     // Trim the boundary page to its surviving prefix (frees the tail).
     auto tb = cte_.AsyncTruncateBlob(tag_id, std::to_string(boundary_page),
-                                     boundary_off, clio::run::PoolQuery::Local());
+                                     boundary_off, PathQuery(path));
     CLIO_CO_AWAIT(tb);
     // Delete whole pages beyond the boundary, up to the old last page.
     clio::run::u64 last_page = (old_size == 0) ? 0 : (old_size - 1) / kFsPageSize;
     for (clio::run::u64 p = boundary_page + 1; p <= last_page; ++p) {
       auto d = cte_.AsyncDelBlob(tag_id, std::to_string(p),
-                                 clio::run::PoolQuery::Local());
+                                 PathQuery(path));
       CLIO_CO_AWAIT(d);
     }
   }
@@ -563,7 +587,7 @@ clio::run::TaskResume Runtime::Unlink(clio::run::shared_ptr<UnlinkTask> &task) {
 
   // DelTag is hierarchy-aware: a hard-link (alias) path unlinks only that name;
   // the canonical path removes the file and all its remaining links + blobs.
-  auto d = cte_.AsyncDelTag(path, clio::run::PoolQuery::Local());
+  auto d = cte_.AsyncDelTag(path, PathQuery(path));
   CLIO_CO_AWAIT(d);
   {
     std::lock_guard<std::mutex> g(meta_mu_);
@@ -840,14 +864,14 @@ clio::run::TaskResume Runtime::StatSize(clio::run::shared_ptr<StatSizeTask> &tas
       CLIO_CO_RETURN;
     }
   }
-  auto qy = cte_.AsyncTagQuery(EscapeExact(path), 1, clio::run::PoolQuery::Local());
+  auto qy = cte_.AsyncTagQuery(EscapeExact(path), 1, PathQuery(path));
   CLIO_CO_AWAIT(qy);
   if (qy->GetReturnCode() == 0 && !qy->results_.empty()) {
     task->exists_ = 1;
     auto tag = cte_.AsyncGetOrCreateTag(path, clio::cte::core::TagId::GetNull(),
-                                        clio::run::PoolQuery::Local());
+                                        PathQuery(path));
     CLIO_CO_AWAIT(tag);
-    auto s = cte_.AsyncGetTagSize(tag->tag_id_, clio::run::PoolQuery::Local());
+    auto s = cte_.AsyncGetTagSize(tag->tag_id_, PathQuery(path));
     CLIO_CO_AWAIT(s);
     task->size_ = (s->GetReturnCode() == 0) ? s->tag_size_ : 0;
   } else {
