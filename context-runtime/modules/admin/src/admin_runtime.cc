@@ -61,12 +61,6 @@
 #include <unordered_set>
 #include <vector>
 
-#ifdef CLIO_COVERAGE
-// abort() in InitiateShutdown skips the gcov at-exit flush; declared here so
-// the shutdown path can dump counters explicitly (see InitiateShutdown).
-extern "C" void __gcov_dump(void);
-#endif
-
 namespace clio::run::admin {
 
 // Method implementations for Runtime class
@@ -298,38 +292,23 @@ clio::run::TaskResume Runtime::StopRuntime(clio::run::shared_ptr<StopRuntimeTask
   task->return_code_ = 0;
   task->error_message_ = "";
 
-  // Die immediately. SWIM will detect the death and trigger recovery.
   is_shutdown_requested_ = true;
-  HLOG(kInfo, "Admin: Runtime shutdown initiated successfully");
-  InitiateShutdown(task->grace_period_ms_);
+  const bool force =
+      (task->shutdown_flags_ & StopRuntimeTask::kForceShutdown) != 0;
+  HLOG(kInfo, "Admin: Runtime shutdown initiated ({})",
+       force ? "forced" : "graceful");
+
+  // This handler runs on a worker thread, so it must not tear down the
+  // runtime inline (ServerFinalize joins this very worker). RequestStop only
+  // sets flags / spawns detached threads; shutdown proceeds asynchronously
+  // after this task's ack is delivered to the client.
+  auto *runtime_manager = CLIO_RUNTIME_MANAGER;
+  runtime_manager->RequestStop(force
+                                   ? clio::run::RuntimeManager::StopMode::kForce
+                                   : clio::run::RuntimeManager::StopMode::kGraceful,
+                               task->grace_period_ms_);
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
-}
-
-void Runtime::InitiateShutdown(clio::run::u32 grace_period_ms) {
-  HLOG(kDebug, "Admin: Initiating runtime shutdown with {}ms grace period",
-       grace_period_ms);
-
-  // In a real implementation, this would:
-  // 1. Signal all worker threads to stop
-  // 2. Wait for current tasks to complete (up to grace period)
-  // 3. Clean up all resources
-  // 4. Exit the runtime process
-
-  // For now, we'll just set a flag that other components can check
-  is_shutdown_requested_ = true;
-
-  // Get CLIO Runtime manager to initiate shutdown
-  auto *runtime_manager = CLIO_RUNTIME_MANAGER;
-  if (runtime_manager) {
-    // runtime_manager->InitiateShutdown(grace_period_ms);
-  }
-#ifdef CLIO_COVERAGE
-  // abort() skips the gcov at-exit flush; dump counters explicitly so
-  // daemon-side coverage from runtime tests is not silently discarded.
-  __gcov_dump();
-#endif
-  std::abort();
 }
 
 clio::run::TaskResume Runtime::Flush(clio::run::shared_ptr<FlushTask> &task) {
@@ -782,8 +761,13 @@ void Runtime::MonitorContainerStats(clio::run::shared_ptr<MonitorTask> &task) {
     const auto *info = pool_manager->GetPoolInfo(pid);
     if (!info) continue;
 
-    // Get the static container for model data
+    // The model lives on the static container, which owns it for the whole
+    // pool (issue #956) — so this reports exactly the weights every container
+    // of the pool schedules with.
     auto container = pool_manager->GetStaticContainer(pid).get();
+    // …but report the id of a container that actually serves tasks; the static
+    // container's id is a reserved sentinel and would be meaningless here.
+    auto serving = pool_manager->GetRealOrStaticContainer(pid).get();
 
     pk.pack_map(6);
 
@@ -797,7 +781,7 @@ void Runtime::MonitorContainerStats(clio::run::shared_ptr<MonitorTask> &task) {
     pk.pack(info->chimod_name_);
 
     pk.pack("container_id");
-    pk.pack(container ? container->container_id_ : 0u);
+    pk.pack(serving ? serving->container_id_ : 0u);
 
     // Model data: array of per-method entries
     if (container) {
@@ -2229,8 +2213,7 @@ clio::run::TaskResume Runtime::RecoverContainers(
       continue;
     }
     container.get()->Recover(ra.pool_id_, ra.pool_name_, ra.container_id_);
-    pool_manager->RegisterContainer(ra.pool_id_, ra.container_id_, container,
-                                    false);
+    pool_manager->RegisterContainer(ra.pool_id_, ra.container_id_, container);
     task->num_recovered_++;
   }
 
@@ -2282,6 +2265,16 @@ clio::run::TaskResume Runtime::SystemMonitor(clio::run::shared_ptr<SystemMonitor
   // Push into ring buffer
   if (system_stats_ring_) {
     system_stats_ring_->Push(stats);
+  }
+
+  // Persist each pool's learned task-stat model (issue #956). This 1 Hz task is
+  // the runtime's existing "sample everything" heartbeat, so it is the natural
+  // driver; FlushModels throttles itself to one write per pool per flush
+  // interval and skips pools whose weights have not changed, so the common tick
+  // does no I/O at all. Without a periodic save the weights would only survive
+  // a graceful shutdown.
+  if (auto *pool_manager = CLIO_POOL_MANAGER) {
+    pool_manager->FlushModels();
   }
 
   cur_task->SetDidWork(true);
