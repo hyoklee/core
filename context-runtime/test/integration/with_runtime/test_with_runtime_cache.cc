@@ -24,7 +24,9 @@
  *                the four. Two runtimes on a port is the failure this issue
  *                exists to prevent, and "all eight attached to nothing" is the
  *                opposite failure — both are caught here.
- *   3. put/get   Each rank PutBlobs a rank-stamped payload under a shared tag,
+ *   3. put/get   Preceded by a whole-cluster barrier — the race is a BRING-UP
+ *                race, and cross-node I/O needs every node's pools composed —
+ *                each rank PutBlobs a rank-stamped payload under a shared tag,
  *                barrier, then GetBlobs the payload written by its node-local
  *                predecessor — a rank that STARTED the runtime reads what a
  *                rank that ATTACHED wrote and vice versa, so the two bring-up
@@ -179,6 +181,22 @@ int main(int argc, char **argv) {
                   " runtime owners (expected exactly 1)");
     if (local_rc == 0) local_rc = 3;
   }
+
+  // The bring-up race is over; from here on the cluster must be WHOLE.
+  //
+  // cte_main is composed per node, one container each, and PutBlob routes by
+  // hash(tag, blob_name) — so roughly half of this node's blobs land on the
+  // OTHER node's container. A node that has not composed yet has a container
+  // with no registered targets, and a put routed there fails placement
+  // (rc=11, "no target has space") through no fault of the attach-or-start
+  // logic under test. Without this barrier the ranks on whichever node won
+  // the bring-up race reached PutBlob while the other node's rank was still
+  // inside CLIO_INIT, which is exactly how this test flaked in CI.
+  //
+  // Every rank has returned from CLIO_INIT here, and the runtime owner does
+  // not return until its ServerInit has composed the pools and registered
+  // their targets, so after this barrier BOTH containers can serve.
+  MPI_Barrier(MPI_COMM_WORLD);
 
   // --- phase 3: PutBlob / GetBlob through the (possibly shared) runtime ---
   std::uint64_t tag_u64 = 0;
