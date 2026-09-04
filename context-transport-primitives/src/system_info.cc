@@ -866,7 +866,33 @@ void SystemInfo::UnmapMemory(void *ptr, size_t size) {
 #if CTP_ENABLE_PROCFS_SYSINFO
   munmap(ptr, size);
 #elif CTP_ENABLE_WINDOWS_SYSINFO
-  VirtualFree(ptr, size, MEM_RELEASE);
+  // munmap() releases both kinds of mapping this class hands out. Win32 needs
+  // a different call for each, and VirtualFree(ptr, size, MEM_RELEASE) is
+  // neither of them: MEM_RELEASE REQUIRES dwSize == 0, so with a non-zero size
+  // it fails with ERROR_INVALID_PARAMETER, and it cannot release a
+  // MapViewOfFile view at any size. This function was therefore a silent
+  // no-op on Windows -- nothing was ever unmapped, private or shared.
+  //
+  // That went unnoticed while the sections were pagefile-backed, because a
+  // leaked view only costs address space. Once they became file-backed (to
+  // stop charging the commit limit), a live view keeps the section alive,
+  // which keeps the backing FILE alive: DestroySharedMemory's DeleteFile then
+  // fails, and re-creating a segment of the same name fails in CreateFile
+  // with ERROR_USER_MAPPED_FILE. That is the cte_shm_metadata_cache failure --
+  // several fixtures share one per-pid segment name, and only the first could
+  // create it.
+  (void)size;
+  if (ptr == nullptr) {
+    return;
+  }
+  // Try a view first: MapSharedMemory is the common case, and UnmapViewOfFile
+  // simply reports ERROR_INVALID_ADDRESS for anything that is not a view base.
+  if (UnmapViewOfFile(ptr)) {
+    return;
+  }
+  // Otherwise it came from MapPrivateMemory's VirtualAlloc, whose release
+  // takes a zero size.
+  VirtualFree(ptr, 0, MEM_RELEASE);
 #endif
 }
 

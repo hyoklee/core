@@ -94,8 +94,18 @@ class PosixShmMmap : public MemoryBackend, public UrlMemoryBackend {
       // shm_open(), and the Win32 one does not set errno at all, so this used
       // to report a commit-limit failure as "Resource temporarily
       // unavailable". Ask the platform what actually went wrong.
+      //
+      // Read it into a local BEFORE logging. GetLastError() is thread-global
+      // and clobbered by any intervening Win32 call, successful ones included
+      // -- and HLOG's first use in a process constructs the Logger singleton,
+      // which looks up CTP_LOG_LEVEL and CTP_LOG_OUT and so leaves
+      // ERROR_ENVVAR_NOT_FOUND behind. Passed as an argument to HLOG this
+      // raced the singleton's construction, and the first shm failure of every
+      // process was reported as "could not find the environment option that
+      // was entered" instead of its real cause.
+      std::string shm_err = SystemInfo::GetLastSharedMemoryError();
       HLOG(kError, "could not create shared memory segment {} of {} bytes: {}",
-           url, backend_size, SystemInfo::GetLastSharedMemoryError());
+           url, backend_size, shm_err);
       return false;
     }
     url_ = url;

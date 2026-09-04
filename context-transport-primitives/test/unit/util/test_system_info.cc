@@ -199,3 +199,52 @@ TEST_CASE("SystemInfoSharedMemoryCreateFailure") {
   SystemInfo::DestroySharedMemory(too_long);
   SystemInfo::DestroySharedMemory("ctp_no_such_segment_xyz");
 }
+
+TEST_CASE("SystemInfoSharedMemoryRecreateSameName") {
+  // Regression: creating a segment, tearing it down, and creating one of the
+  // SAME name again must work -- a process holds one segment name per purpose
+  // (test_cte_shm_metadata_cache derives its from the pid) and builds it up
+  // and down repeatedly.
+  //
+  // On Windows this used to fail from the second round on. UnmapMemory() was
+  // VirtualFree(ptr, size, MEM_RELEASE), which cannot release a MapViewOfFile
+  // view -- and fails outright for any non-zero size -- so no view was ever
+  // unmapped. A live view pins the section, the section pins the file backing
+  // it, DestroySharedMemory's delete then fails, and the next CreateFile over
+  // that path fails with ERROR_USER_MAPPED_FILE.
+  const std::string seg = "ctp_sysinfo_recreate_seg";
+  constexpr size_t kSize = 1024 * 1024;
+
+  for (int round = 0; round < 3; ++round) {
+    INFO("round " << round);
+    ctp::File fd;
+    REQUIRE(SystemInfo::CreateNewSharedMemory(fd, seg, kSize));
+    void *mapped = SystemInfo::MapSharedMemory(fd, kSize, 0);
+    REQUIRE(mapped != nullptr);
+    // Touch it, so a round that reused a stale mapping instead of a fresh one
+    // would still be writing to something real.
+    memset(mapped, round + 1, kSize);
+    SystemInfo::UnmapMemory(mapped, kSize);
+    SystemInfo::CloseSharedMemory(fd);
+    SystemInfo::DestroySharedMemory(seg);
+    REQUIRE_FALSE(SystemInfo::SharedMemoryExists(seg));
+  }
+}
+
+TEST_CASE("PosixShmMmapRecreateSameName") {
+  // The same property one layer up, where the failure was actually observed:
+  // shm_init() destroys any stale segment of that name first, so a second
+  // backend over the same url must come up cleanly.
+  const std::string seg = "ctp_shm_mmap_recreate_seg";
+  constexpr size_t kSize = 4 * 1024 * 1024;
+
+  for (int round = 0; round < 3; ++round) {
+    INFO("round " << round);
+    PosixShmMmap backend;
+    REQUIRE(backend.shm_init(ctp::ipc::MemoryBackendId::GetRoot(), kSize, seg));
+    REQUIRE(backend.data_ != nullptr);
+    REQUIRE(backend.data_capacity_ > 0);
+    memset(backend.data_, round + 1, backend.data_capacity_);
+    backend.shm_destroy();
+  }
+}
