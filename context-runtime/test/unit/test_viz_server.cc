@@ -63,6 +63,7 @@
 #include "clio_runtime/ipc_manager.h"
 #include "clio_runtime/pool_manager.h"
 #include "clio_runtime/viz/viz_json.h"
+#include "clio_ctp/util/msan.h"
 #include "clio_runtime/viz/viz_server.h"
 
 #include <clio_runtime/bdev/bdev_client.h>
@@ -87,9 +88,23 @@ struct HttpReply {
   std::string body;
 };
 
+/** Clear the MSan shadow on everything uninstrumented Poco just produced.
+ *  Poco parses the response off the socket, so the status line, the headers
+ *  and the body all arrive as bytes MSan has no record of; every assertion
+ *  below reads them. */
+void UnpoisonReply(HttpReply *reply) {
+  CTP_MSAN_UNPOISON_OBJ(*reply);
+  CTP_MSAN_UNPOISON_STRING(reply->content_type);
+  CTP_MSAN_UNPOISON_STRING(reply->body);
+}
+
 /** GET @p path from the dashboard on 127.0.0.1:@p port. */
 HttpReply HttpGet(clio::run::u32 port, const std::string &path) {
   HttpReply reply;
+  // Nothing under test runs in here -- it is all Poco, uninstrumented, doing
+  // its own address parsing and socket work through libc. See UnpoisonReply
+  // for the data it hands back.
+  ctp::MsanInterceptorCheckGuard msan_guard;
   Poco::Net::HTTPClientSession session("127.0.0.1",
                                        static_cast<Poco::UInt16>(port));
   session.setTimeout(Poco::Timespan(15, 0));
@@ -98,9 +113,13 @@ HttpReply HttpGet(clio::run::u32 port, const std::string &path) {
   session.sendRequest(request);
   Poco::Net::HTTPResponse response;
   std::istream &stream = session.receiveResponse(response);
+  CTP_MSAN_UNPOISON_OBJ(response);
   Poco::StreamCopier::copyToString(stream, reply.body);
   reply.status = static_cast<int>(response.getStatus());
-  reply.content_type = response.getContentType();
+  const std::string &ctype = response.getContentType();
+  CTP_MSAN_UNPOISON_STRING(ctype);  // read by operator= before we could clear it
+  reply.content_type = ctype;
+  UnpoisonReply(&reply);
   return reply;
 }
 
@@ -110,6 +129,7 @@ HttpReply HttpGet(clio::run::u32 port, const std::string &path) {
 HttpReply HttpPostForm(clio::run::u32 port, const std::string &path,
                        const std::string &form) {
   HttpReply reply;
+  ctp::MsanInterceptorCheckGuard msan_guard;  // see HttpGet
   Poco::Net::HTTPClientSession session("127.0.0.1",
                                        static_cast<Poco::UInt16>(port));
   session.setTimeout(Poco::Timespan(60, 0));
@@ -120,9 +140,13 @@ HttpReply HttpPostForm(clio::run::u32 port, const std::string &path,
   session.sendRequest(request) << form;
   Poco::Net::HTTPResponse response;
   std::istream &stream = session.receiveResponse(response);
+  CTP_MSAN_UNPOISON_OBJ(response);
   Poco::StreamCopier::copyToString(stream, reply.body);
   reply.status = static_cast<int>(response.getStatus());
-  reply.content_type = response.getContentType();
+  const std::string &ctype = response.getContentType();
+  CTP_MSAN_UNPOISON_STRING(ctype);  // see HttpGet
+  reply.content_type = ctype;
+  UnpoisonReply(&reply);
   return reply;
 }
 
