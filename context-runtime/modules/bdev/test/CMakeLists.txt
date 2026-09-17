@@ -53,9 +53,17 @@ if(CLIO_CORE_ENABLE_TESTS)
     COMMAND ${BDEV_TEST_TARGET}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
+  # The `bdev` label is what lets the prediction phase run this suite. That
+  # phase scopes its coverage to context-runtime/modules/bdev but used to run
+  # only the two prediction_e2e tests, so it reported ~21% on a subtree the
+  # unit phase already covers at ~83%. A phase should run the tests for the
+  # code it measures. This stays in the unit phase too: that selection
+  # excludes by name (cr_bdev_) and by the slow/integration labels, neither
+  # of which this matches.
   set_tests_properties(cr_all_bdev_tests PROPERTIES
     TIMEOUT 180
     ENVIRONMENT "CLIO_REPO_PATH=${CMAKE_BINARY_DIR}/bin;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_MODE=1;CLIO_BIND_ADDR=127.0.0.1;CLIO_PORT=10500"
+    LABELS "bdev"
   )
 
   # Dedicated explicit backend tests — each sets CLIO_IPC_MODE so the
