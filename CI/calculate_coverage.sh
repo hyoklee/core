@@ -576,6 +576,7 @@ lcov --remove coverage_all.info \
      '*/local_sched.cc' \
      '*/globus_file_assimilator.cc' \
      '*/fuse_cte_main.cc' \
+     '*/util/clio_cae.cc' \
      --output-file coverage_filtered.info \
      "${LCOV_IGNORE_OPTS[@]}" \
      2>&1 | grep -E "Removed|Summary|lines|functions" | tail -5 || true

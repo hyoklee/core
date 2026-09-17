@@ -176,7 +176,7 @@ target_link_libraries(cae_omni_loader
 # clio_cae utility (CAE OMNI ingest driver). Installed as `clio_cae`;
 # the legacy `clio_cae_omni` name is preserved as an install-time symlink
 # so out-of-tree scripts and pipelines keep working.
-add_executable(clio_cae util/clio_cae.cc)
+add_executable(clio_cae util/clio_cae.cc) # process entry (coverage-excluded)
 target_link_libraries(clio_cae
   PRIVATE
     cae_omni_loader
