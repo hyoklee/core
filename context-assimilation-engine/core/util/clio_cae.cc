@@ -42,7 +42,10 @@
  *
  * The parsing itself lives in core/src/omni_loader.cc so it can be unit
  * tested without a live runtime; what remains here is the part that cannot
- * be (client init, IPC, the ParseOmni round-trip).
+ * be (client init, IPC, the ParseOmni round-trip). Because this file
+ * defines main() no test can link it, so it is coverage-excluded: see the
+ * lists in codecov.yml, CI/calculate_coverage.sh and the CTestCustom block
+ * in the top-level CMakeLists.txt, which are kept in sync.
  */
 
 #include <clio_ctp/util/logging.h>
