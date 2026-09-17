@@ -350,7 +350,17 @@ if [ "$DO_CTEST" = true ]; then
                     exit 1
                 fi
             done
+            # The walk below only visits $REPO_ROOT/context-*, so third-party
+            # and fetched trees are never seen and land in the phase's
+            # denominator. cee builds nanobind Python bindings: build/_deps
+            # contributed 4408 of its 5340 instrumented lines at 39.4%, pinning
+            # the phase at 54.60% while its own code sits at 88.3%. The lcov
+            # --remove list already drops these on the Codecov side; this is the
+            # CDash half of that pair, and the two must stay in sync.
             _excludes=""
+            for _tp in _deps external catch2 nanobind miniconda3 benchmark; do
+                _excludes="${_excludes}    \".*/${_tp}/.*\"\n"
+            done
             for _comp in "${REPO_ROOT}"/context-*; do
                 [ -d "${_comp}" ] || continue
                 _cdash_emit_excludes "${_comp}"
