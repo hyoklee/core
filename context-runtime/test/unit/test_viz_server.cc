@@ -561,6 +561,21 @@ TEST_CASE("Viz HTTP server answers the dashboard API", "[viz]") {
   REQUIRE(missing.status == 404);
   REQUIRE(Contains(missing.body, "\"error\":"));
 
+  // A request line Poco itself cannot turn into a URI: "%zz" is not a valid
+  // percent-escape, so the URI parse throws while the request is still being
+  // unpacked -- before the router ever sees a path. That exception has to
+  // become a 400 naming what was wrong; letting it escape would take down the
+  // HTTP worker thread and leave the browser with a dropped connection.
+  HttpReply bad_uri = HttpGet(port, "/api/%zz");
+  Explain("/api/%zz", bad_uri);
+  REQUIRE(bad_uri.status == 400);
+  REQUIRE(Contains(bad_uri.body, "bad request"));
+
+  // The dashboard is still serving afterwards -- the handler recovered, it did
+  // not just happen to answer once before dying.
+  HttpReply after_bad_uri = HttpGet(port, "/api/health");
+  REQUIRE(after_bad_uri.status == 200);
+
   // ---- static assets and the home page ----
   // The admin ChiMod's viz/ directory is mounted automatically because its
   // container registered while the module was loaded from the build tree.
