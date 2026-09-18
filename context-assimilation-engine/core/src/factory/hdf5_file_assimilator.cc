@@ -35,6 +35,9 @@
 #include <clio_runtime/ipc_manager.h>
 #ifndef _WIN32
 #include <fnmatch.h>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
 #include <sys/stat.h>
 #endif
 #include <clio_cae/core/constants.h>  // For kCaePoolId
@@ -57,12 +60,100 @@ Hdf5FileAssimilator::Hdf5FileAssimilator(
     std::shared_ptr<clio::cte::core::Client> cte_client)
     : cte_client_(cte_client) {}
 
+
+// ---------------------------------------------------------------------------
+// CAE telemetry
+//
+// Set CLIO_CAE_TELEMETRY=<path> to append one JSON object per assimilation to
+// that file. Each record carries the phase timings needed to locate a
+// bottleneck (open / discover / filter / assimilate) and enough of the request
+// to replay it (src, dst, include/exclude patterns).
+//
+// Off by default: with the variable unset this writes nothing and costs one
+// getenv per transfer.
+// ---------------------------------------------------------------------------
+namespace {
+
+double CaeNowMs() {
+  return std::chrono::duration<double, std::milli>(
+             std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+
+std::string CaeJsonEscape(const std::string& in) {
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (char c : in) {
+    if (c == '"' || c == '\\') { out += '\\'; out += c; }
+    else if (c == '\n') { out += "\\n"; }
+    else { out += c; }
+  }
+  return out;
+}
+
+std::string CaeJsonArray(const std::vector<std::string>& v) {
+  std::string out = "[";
+  for (size_t i = 0; i < v.size(); ++i) {
+    if (i) out += ",";
+    out += "\"" + CaeJsonEscape(v[i]) + "\"";
+  }
+  return out + "]";
+}
+
+/** Append one telemetry record. Silently does nothing unless
+ *  CLIO_CAE_TELEMETRY names a writable path. */
+void CaeEmitTelemetry(const std::string& src, const std::string& dst,
+                      const std::vector<std::string>& include_patterns,
+                      const std::vector<std::string>& exclude_patterns,
+                      size_t discovered, size_t filtered, int errors,
+                      const char* mode, size_t num_nodes,
+                      double t_open_ms, double t_discover_ms,
+                      double t_filter_ms, double t_assimilate_ms,
+                      int error_code) {
+  const char* path = std::getenv("CLIO_CAE_TELEMETRY");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream f(path, std::ios::app);
+  if (!f.is_open()) {
+    return;
+  }
+  const double total = t_open_ms + t_discover_ms + t_filter_ms + t_assimilate_ms;
+  f << "{"
+    << "\"wall_ms\":" << CaeNowMs()
+    << ",\"src\":\"" << CaeJsonEscape(src) << "\""
+    << ",\"dst\":\"" << CaeJsonEscape(dst) << "\""
+    << ",\"include_patterns\":" << CaeJsonArray(include_patterns)
+    << ",\"exclude_patterns\":" << CaeJsonArray(exclude_patterns)
+    << ",\"datasets_discovered\":" << discovered
+    << ",\"datasets_filtered\":" << filtered
+    << ",\"dataset_errors\":" << errors
+    << ",\"mode\":\"" << mode << "\""
+    << ",\"num_nodes\":" << num_nodes
+    << ",\"open_ms\":" << t_open_ms
+    << ",\"discover_ms\":" << t_discover_ms
+    << ",\"filter_ms\":" << t_filter_ms
+    << ",\"assimilate_ms\":" << t_assimilate_ms
+    << ",\"total_ms\":" << total
+    << ",\"error_code\":" << error_code
+    << "}\n";
+}
+
+}  // namespace
+
 clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
                                               int& error_code) {
 #ifdef CLIO_ENABLE_BOOST_COROUTINES
   clio::run::shared_ptr<clio::run::Task> cur_task = clio::run::GetCurrentTask();
 #endif
   CLIO_TASK_BODY_BEGIN
+  // Telemetry phase timers (see CaeEmitTelemetry above; inert unless
+  // CLIO_CAE_TELEMETRY is set).
+  double t_phase0 = CaeNowMs();
+  double t_open_ms = 0, t_discover_ms = 0, t_filter_ms = 0, t_assimilate_ms = 0;
+  size_t tele_discovered = 0, tele_filtered = 0;
+  const char* tele_mode = "single";
+  size_t tele_nodes = 1;
   HLOG(kDebug, "Hdf5FileAssimilator::Schedule() - ENTRY");
   HLOG(kDebug, "  ctx.src: '{}'", ctx.src);
   HLOG(kDebug, "  ctx.dst: '{}'", ctx.dst);
@@ -124,6 +215,8 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
   HLOG(kDebug,
        "Hdf5FileAssimilator: HDF5 file opened successfully (file_id: {})",
        file_id);
+  t_open_ms = CaeNowMs() - t_phase0;
+  t_phase0 = CaeNowMs();
 
   // Discover all datasets in the file
   HLOG(kDebug, "Hdf5FileAssimilator: Discovering datasets...");
@@ -137,8 +230,11 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
     CLIO_CO_RETURN;
   }
 
-  HLOG(kDebug, "Hdf5FileAssimilator: Discovered {} dataset(s) in '{}'",
-       dataset_paths.size(), src_path);
+  t_discover_ms = CaeNowMs() - t_phase0;
+  t_phase0 = CaeNowMs();
+  tele_discovered = dataset_paths.size();
+  HLOG(kInfo, "Hdf5FileAssimilator: Discovered {} dataset(s) in '{}' ({:.1f} ms)",
+       dataset_paths.size(), src_path, t_discover_ms);
 
   // Apply dataset filtering if patterns are specified
   std::vector<std::string> filtered_paths;
@@ -167,14 +263,25 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
         filtered_paths.push_back(dataset_path);
       }
     }
-    HLOG(kDebug, "Hdf5FileAssimilator: Filtered to {} dataset(s) (from {})",
+    HLOG(kInfo, "Hdf5FileAssimilator: Filtered to {} dataset(s) (from {})",
          filtered_paths.size(), dataset_paths.size());
+    if (filtered_paths.empty()) {
+      HLOG(kWarning,
+           "Hdf5FileAssimilator: NO datasets matched the include patterns -- "
+           "nothing will be assimilated. Check pattern syntax against the "
+           "discovered dataset paths (run with CTP_LOG_LEVEL=debug to list "
+           "them).");
+    }
   } else {
     HLOG(kDebug,
          "Hdf5FileAssimilator: No dataset filters specified, processing all "
          "datasets");
     filtered_paths = dataset_paths;
   }
+
+  t_filter_ms = CaeNowMs() - t_phase0;
+  t_phase0 = CaeNowMs();
+  tele_filtered = filtered_paths.size();
 
   // Get distributed processing info from CTE/IPC manager
   size_t num_nodes = 1;
@@ -209,6 +316,8 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
     // Create a local CAE client with the correct pool_id for distributed tasks
     // Do NOT use CLIO_CAE_CLIENT global singleton as it may not be properly initialized
     // with the correct pool_id from the runtime's compose configuration
+    tele_mode = "distributed";
+    tele_nodes = num_nodes;
     clio::cae::core::Client cae_client(kCaePoolId);
     HLOG(kInfo, "Hdf5FileAssimilator: Created CAE client with pool_id {} for distributed tasks",
           kCaePoolId);
@@ -290,10 +399,16 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
 
   HLOG(kDebug, "Hdf5FileAssimilator: HDF5 file closed");
 
+  t_assimilate_ms = CaeNowMs() - t_phase0;
+
   if (total_errors > 0) {
     HLOG(kError,
          "Hdf5FileAssimilator: Completed with {} error(s) out of {} dataset(s)",
          total_errors, filtered_paths.size());
+    CaeEmitTelemetry(src_path, ctx.dst, ctx.include_patterns,
+                     ctx.exclude_patterns, tele_discovered, tele_filtered,
+                     total_errors, tele_mode, tele_nodes, t_open_ms,
+                     t_discover_ms, t_filter_ms, t_assimilate_ms, -6);
     error_code = -6;
     CLIO_CO_RETURN;
   }
@@ -302,6 +417,16 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
       kDebug,
       "Hdf5FileAssimilator: Successfully processed all {} dataset(s) from '{}'",
       filtered_paths.size(), src_path);
+  HLOG(kInfo,
+       "Hdf5FileAssimilator: assimilated {} dataset(s) "
+       "[open {:.1f} ms, discover {:.1f} ms, filter {:.1f} ms, "
+       "assimilate {:.1f} ms]",
+       filtered_paths.size(), t_open_ms, t_discover_ms, t_filter_ms,
+       t_assimilate_ms);
+  CaeEmitTelemetry(src_path, ctx.dst, ctx.include_patterns,
+                   ctx.exclude_patterns, tele_discovered, tele_filtered, 0,
+                   tele_mode, tele_nodes, t_open_ms, t_discover_ms,
+                   t_filter_ms, t_assimilate_ms, 0);
   HLOG(kDebug, "Hdf5FileAssimilator::Schedule() - EXIT (success)");
 
   error_code = 0;
