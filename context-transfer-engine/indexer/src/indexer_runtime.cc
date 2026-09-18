@@ -43,6 +43,8 @@
 #include <utility>
 #include <vector>
 
+#include <clio_ctp/util/msan.h>
+
 #include <clio_cte/core/blob_batch.h>
 #include <clio_cte/indexer/indexer_runtime.h>
 
@@ -349,6 +351,9 @@ void Runtime::SnapshotIndex() {
   {
     std::ofstream snap(config_.index_log_path_,
                        std::ios::binary | std::ios::trunc);
+    // Stream state is libstdc++.so's, which MSan does not instrument, so
+    // is_open()/good() read bytes it has no record of.
+    CTP_MSAN_UNPOISON_OBJ(snap);
     if (!snap.is_open()) {
       HLOG(kError, "Indexer: cannot write snapshot at {}",
            config_.index_log_path_);
@@ -417,6 +422,7 @@ bool Runtime::RestoreIndex() {
   // ---- Snapshot ----
   {
     std::ifstream snap(config_.index_log_path_, std::ios::binary);
+    CTP_MSAN_UNPOISON_OBJ(snap);  // see the snapshot writer above
     char magic[8];
     if (snap.is_open() && snap.read(magic, 8) &&
         std::memcmp(magic, kIdxMagic, 8) == 0) {
@@ -490,6 +496,7 @@ bool Runtime::RestoreIndex() {
   // ---- WAL replay (last-wins on top of the snapshot) ----
   {
     std::ifstream wal(config_.index_log_path_ + ".wal", std::ios::binary);
+    CTP_MSAN_UNPOISON_OBJ(wal);  // see the snapshot writer above
     while (wal.is_open() && wal.good()) {
       unsigned char type = 0;
       if (!RPod(wal, &type)) break;

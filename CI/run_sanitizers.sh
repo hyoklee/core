@@ -363,10 +363,20 @@ if [ "$DO_MSAN" = true ]; then
         export MSAN_SYMBOLIZER_PATH="${LLVM_SYMBOLIZER}"
         print_info "Using symbolizer: ${LLVM_SYMBOLIZER}"
     fi
+    # poison_in_malloc / poison_in_free / poison_in_dtor are all off on
+    # purpose. MSan only clears a byte's shadow when INSTRUMENTED code writes
+    # it, and this build links an uninstrumented libstdc++, Poco, yaml-cpp, ZMQ
+    # and Catch2. Any heap block those libraries fill after we freed it, and any
+    # object of theirs laid over storage we destroyed, therefore reads back as
+    # "uninitialized" -- thousands of reports per test run that say nothing
+    # about our code. What those three flags buy is use-after-free and
+    # use-after-destroy detection, which the asan job already does properly, so
+    # turning them off costs no coverage. Stack poisoning stays ON: reading an
+    # uninitialized local is what this job is here to catch.
     run_sanitizer_mode \
         "msan" \
         "MemorySanitizer" \
-        "print_stacktrace=1:halt_on_error=0:poison_in_malloc=0" \
+        "print_stacktrace=1:halt_on_error=0:poison_in_malloc=0:poison_in_free=0:poison_in_dtor=0" \
         || OVERALL_STATUS=$?
 fi
 
