@@ -265,12 +265,25 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
     }
     HLOG(kInfo, "Hdf5FileAssimilator: Filtered to {} dataset(s) (from {})",
          filtered_paths.size(), dataset_paths.size());
-    if (filtered_paths.empty()) {
-      HLOG(kWarning,
-           "Hdf5FileAssimilator: NO datasets matched the include patterns -- "
-           "nothing will be assimilated. Check pattern syntax against the "
-           "discovered dataset paths (run with CTP_LOG_LEVEL=debug to list "
-           "them).");
+    if (filtered_paths.empty() && !ctx.include_patterns.empty()) {
+      // The caller asked for specific datasets and got none. Returning success
+      // here is what made a mistyped pattern indistinguishable from a working
+      // ingest: the transfer still counts as "scheduled", so the client prints
+      // "ParseOmni completed successfully! Tasks scheduled: 1" over an empty
+      // run. Treat it as an error (-9) so it reaches the exit status.
+      HLOG(kError,
+           "Hdf5FileAssimilator: NO datasets matched the {} include pattern(s) "
+           "out of {} discovered -- nothing would be assimilated. Check pattern "
+           "syntax against the discovered dataset paths (CTP_LOG_LEVEL=debug "
+           "lists them); note '*' DOES cross '/' here (fnmatch flags=0).",
+           ctx.include_patterns.size(), dataset_paths.size());
+      CaeEmitTelemetry(src_path, ctx.dst, ctx.include_patterns,
+                       ctx.exclude_patterns, dataset_paths.size(), 0, 0,
+                       "single", 1, t_open_ms, t_discover_ms,
+                       CaeNowMs() - t_phase0, 0.0, -9);
+      CloseHdf5File(file_id);
+      error_code = -9;
+      CLIO_CO_RETURN;
     }
   } else {
     HLOG(kDebug,
