@@ -124,6 +124,14 @@ void DefaultScheduler::DivideWorkers(WorkOrchestrator *work_orch) {
       io_workers_.push_back(worker);
     }
   }
+  // With no I/O worker at all (N<=3), large I/O keeps the general routing
+  // below; only a pool too small to spread across borrows worker 0.
+  large_io_workers_ = io_workers_;
+  if (!large_io_workers_.empty() &&
+      large_io_workers_.size() < kMinLargeIoWorkers &&
+      scheduler_worker_ != nullptr) {
+    large_io_workers_.push_back(scheduler_worker_);
+  }
 
   // Partition the compute workers into the three cost-class pools. Round-robin
   // so the classes interleave across lanes rather than taking contiguous
@@ -172,9 +180,10 @@ void DefaultScheduler::DivideWorkers(WorkOrchestrator *work_orch) {
   int send_id = net_send_worker_ ? (int)net_send_worker_->GetId() : -1;
   int recv_id = net_recv_worker_ ? (int)net_recv_worker_->GetId() : -1;
   HLOG(kInfo,
-       "DefaultScheduler: 1 scheduler worker (0), {} I/O workers, "
-       "net_send_worker={}, net_recv_worker={}, gpu_worker={}",
-       io_workers_.size(), send_id, recv_id,
+       "DefaultScheduler: 1 scheduler worker (0), {} I/O workers "
+       "({} take large I/O), net_send_worker={}, net_recv_worker={}, "
+       "gpu_worker={}",
+       io_workers_.size(), large_io_workers_.size(), send_id, recv_id,
        gpu_worker_ ? (int)gpu_worker_->GetId() : -1);
 }
 
@@ -234,12 +243,13 @@ u32 DefaultScheduler::RuntimeMapTask(Worker *worker, const Future<Task> &task,
   // Route large I/O to dedicated I/O workers (round-robin).
   // predicted_stat_ is populated by IpcManager::BeginTask via
   // container->GetTaskStats(task) before this scheduler hook runs.
-  if (selected == nullptr && task_ptr != nullptr && !io_workers_.empty()) {
+  // Least-loaded rather than blind round-robin: a busy I/O worker (one large
+  // put in progress) no longer gets the next one while another sits idle.
+  if (selected == nullptr && task_ptr != nullptr &&
+      !large_io_workers_.empty()) {
     size_t io_size = task_ptr->PredictedStat().io_size_;
     if (io_size >= kLargeIOThreshold) {
-      u32 idx = next_io_idx_.fetch_add(1, std::memory_order_relaxed) %
-                static_cast<u32>(io_workers_.size());
-      selected = io_workers_[idx];
+      selected = PickLargeIoWorker(NowUs());
     }
   }
 
@@ -276,11 +286,20 @@ u32 DefaultScheduler::RuntimeMapTask(Worker *worker, const Future<Task> &task,
       container != nullptr && !kFunnel) {
     constexpr double kInlineCostThresholdUs = 100.0;   // "quick"
     constexpr double kInlineCallerLoadUs = 250.0;      // caller not backlogged
+    // A local task that moves no data runs here REGARDLESS of the caller's
+    // load (up to a sanity ceiling on its predicted cost). Handing it to
+    // another worker cannot make the work smaller; it only adds a lane push,
+    // a wakeup, and a wait behind that worker's backlog. Under a checkout's
+    // metadata storm every worker read "saturated", so each getattr queued
+    // ~1.5 ms for ~50 us of work.
+    constexpr double kInlineNoIoMaxUs = 1000.0;
     double now_us = NowUs();
     clio::run::TaskStat stat = container->GetTaskStats(task_ptr);
     double predicted = container->InferCpuTime(task_ptr->method_, stat);
-    if (predicted <= kInlineCostThresholdUs &&
-        worker->RealtimeLoad(now_us) <= kInlineCallerLoadUs) {
+    const bool no_io = task_ptr->PredictedStat().io_size_ == 0;
+    if ((no_io && predicted <= kInlineNoIoMaxUs) ||
+        (predicted <= kInlineCostThresholdUs &&
+         worker->RealtimeLoad(now_us) <= kInlineCallerLoadUs)) {
       // Account the predicted cost on the caller so a burst of quick ingests
       // doesn't all decide "I'm idle" simultaneously and pile onto one worker.
       if (predicted > 0.0) {
@@ -395,6 +414,28 @@ u32 DefaultScheduler::RuntimeMapTask(Worker *worker, const Future<Task> &task,
     return selected->GetId();
   }
   return 0;
+}
+
+Worker *DefaultScheduler::PickLargeIoWorker(double now_us) const {
+  const u32 n = static_cast<u32>(large_io_workers_.size());
+  if (n == 0) {
+    return nullptr;
+  }
+  const u32 start = next_io_idx_.fetch_add(1, std::memory_order_relaxed) % n;
+  Worker *best = nullptr;
+  double best_load = 0.0;
+  for (u32 k = 0; k < n; ++k) {
+    Worker *w = large_io_workers_[(start + k) % n];
+    if (w == nullptr) {
+      continue;
+    }
+    const double load = w->RealtimeLoad(now_us);
+    if (best == nullptr || load < best_load) {
+      best = w;
+      best_load = load;
+    }
+  }
+  return best;
 }
 
 Worker *DefaultScheduler::PickAltWorker(u32 avoid_id) const {

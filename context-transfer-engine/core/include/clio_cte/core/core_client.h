@@ -2033,9 +2033,10 @@ class Client : public clio::run::ContainerClient {
    * AwaitPutsUntilSpace / a same-key AsyncGetBlobDefer). Client mode stages
    * at submit as always, and buffers are free on return.
    *
-   * @param runtime_extent When non-null and co-located, registered as the
-   *        put's served extent for read-your-writes; null registers the key
-   *        count-only (pending reads await instead of composing).
+   * @param runtime_extent When non-null and co-located (or when it is
+   *        `staging`), registered as the put's served extent for
+   *        read-your-writes; null registers the key count-only (pending
+   *        reads await instead of composing).
    * @param submit Submits the put; retried after awaiting the oldest deferred
    *        put whenever it returns an empty future (SHM exhaustion).
    */
@@ -2057,8 +2058,15 @@ class Client : public clio::run::ContainerClient {
     }
     clio::run::u64 key = DeferKeyHash(tag_id, blob_name);
     clio::run::u64 seq = reg.seq_gen_.fetch_add(1) + 1;
-    const char *ext =
-        CLIO_RUNTIME_MANAGER->IsRuntime() ? runtime_extent : nullptr;
+    // A staging buffer is ours until this put is reaped (KeyRelease runs
+    // before PoolFreeStaging), so it is a valid extent in client mode too.
+    // Registering it lets a write to the same blob that does not overlap
+    // proceed at once: count-only registration makes KeyOverlapsPending
+    // assume overlap, which serialized every 1 MiB FUSE write whose
+    // unaligned user buffer the kernel split into two requests on one page.
+    const char *ext = (CLIO_RUNTIME_MANAGER->IsRuntime() || !staging.IsNull())
+                          ? runtime_extent
+                          : nullptr;
     reg.KeyAdd(key, seq, ext, offset, size);
     DeferredPut rec;
     rec.fut_ = fut.template Cast<clio::run::Task>();

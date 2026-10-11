@@ -744,6 +744,16 @@ clio::run::TaskResume Runtime::MultiCreate(
       enc.U32(er.rc_);
       continue;
     }
+    // Publish the new name's mirror record, as the unbatched create does
+    // when it opens the file (InodeOpenLocal). The parent may be a COMPLETE
+    // mirror dir, where a miss is authoritative ENOENT: without the record,
+    // once the client retired its pending entry every stat of the file
+    // failed ("unable to stat just-written file" in git checkout).
+    if (auto fi = FindInode(e.tag_packed_)) {
+      std::lock_guard<std::mutex> g(meta_mu_);
+      fi->path_ = path;
+      MirrorFile(path, *fi);
+    }
     task->num_ok_++;
   }
   task->failed_ = clio::run::priv::string(CTP_MALLOC, failed);
@@ -1179,7 +1189,12 @@ clio::run::TaskResume Runtime::Mkdir(clio::run::shared_ptr<MkdirTask> &task) {
     CLIO_CO_AWAIT(DropDir(rr.id_));
   }
   if (task->return_code_ == 0) {
-    MirrorRefuse(FsParentDir(path));
+    // The parent stays COMPLETE: the new name is published right here (as
+    // a complete dir of its own), so a mirror miss under the parent is
+    // still authoritative. Demoting the parent on every mkdir switched off
+    // the negative-lookup fast path in every directory with a subdirectory
+    // -- nearly all of a source tree -- and sent the lookup ahead of each
+    // create to a task.
     MirrorDir(path, FsUnpack(rr.id_), /*complete=*/true);
   }
   CLIO_CO_RETURN;
