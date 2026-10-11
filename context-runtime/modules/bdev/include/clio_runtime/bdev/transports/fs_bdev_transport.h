@@ -14,8 +14,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
+#include <memory>
 #include <mutex>
+#include <new>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace clio::run::bdev {
 
@@ -83,6 +88,44 @@ class FsBdevTransport : public BdevTransport {
 
   /** Stop and join the sync thread (idempotent). */
   void StopAllocLogSync();
+  /** Frees a 4 KiB-aligned bounce buffer. */
+  struct AlignedFree {
+    void operator()(char *p) const {
+      ::operator delete[](p, std::align_val_t(kDirectAlign));
+    }
+  };
+  using AlignedBuf = std::unique_ptr<char[], AlignedFree>;
+  static constexpr size_t kDirectAlign = 4096;
+  /** Writes at least this big are bounced to reach the O_DIRECT fd. */
+  static constexpr size_t kBounceMin = 64 * 1024;
+  /** Recycled bounce buffers kept (larger ones are freed at once). */
+  static constexpr size_t kBouncePoolMax = 32;
+  static constexpr size_t kBounceKeepMax = 4 * 1024 * 1024;
+  std::mutex bounce_mu_;
+  std::vector<std::pair<size_t, AlignedBuf>> bounce_pool_;
+
+  /**
+   * Whether a write should be copied through an aligned bounce buffer: the
+   * AIO backends send a write to the O_DIRECT fd only when the buffer, the
+   * length and the offset are all 4 KiB-aligned, and task data in shared
+   * memory is not page-aligned. Without the bounce, every data write went
+   * through the page cache and fsync then wrote it all back (~550 MB/s on a
+   * device that takes 2.2 GB/s direct).
+   * @param buf source buffer
+   * @param size write length
+   * @param offset file offset
+   * @return true when only the buffer is misaligned
+   */
+  static bool WantsBounce(const void *buf, size_t size, clio::run::u64 offset) {
+    return size >= kBounceMin && size % kDirectAlign == 0 &&
+           offset % kDirectAlign == 0 &&
+           reinterpret_cast<uintptr_t>(buf) % kDirectAlign != 0;
+  }
+  /** @return a 4 KiB-aligned buffer of at least `size` bytes (pooled). */
+  AlignedBuf TakeBounce(size_t size);
+  /** Return a bounce buffer of `size` bytes to the pool. */
+  void GiveBounce(AlignedBuf buf, size_t size);
+
   StandardBlockAllocator allocator_;
   std::vector<WorkerIOContext> io_contexts_;
   std::string file_path_;

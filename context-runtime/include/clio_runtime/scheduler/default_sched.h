@@ -121,6 +121,14 @@ class DefaultScheduler : public Scheduler {
   Worker *GetNetRecvWorker() const override { return net_recv_worker_; }
   Worker *PickAltWorker(u32 avoid_id) const override;
 
+  /**
+   * Choose the worker for a large-I/O task: the least-loaded member of
+   * large_io_workers_, scanning from a rotating start so ties spread.
+   * @param now_us current time (NowUs) for the realtime-load reading
+   * @return the worker, or null when the pool is empty
+   */
+  Worker *PickLargeIoWorker(double now_us) const;
+
  private:
   static constexpr size_t kLargeIOThreshold = 4096;  ///< I/O size threshold
   static constexpr double kStallThresholdSec = 1.0;  ///< #781: worker stall cutoff
@@ -271,6 +279,12 @@ class DefaultScheduler : public Scheduler {
 
   Worker *scheduler_worker_;              ///< Worker 0: metadata + small I/O
   std::vector<Worker *> io_workers_;      ///< Workers 1..N-3: large I/O
+  /** Workers large I/O may be placed on: io_workers_, plus the scheduler
+   *  worker when there are fewer than kMinLargeIoWorkers of them (a 4-thread
+   *  runtime has ONE I/O worker, and every >=4 KiB task queued behind it
+   *  while worker 0 sat idle). Fixed after DivideWorkers. */
+  std::vector<Worker *> large_io_workers_;
+  static constexpr size_t kMinLargeIoWorkers = 2;
   Worker *net_send_worker_;               ///< Worker N-2: kSend / kClientSend
   Worker *net_recv_worker_;               ///< Worker N-1: kRecv / kClientRecv
   Worker *gpu_worker_;                    ///< GPU queue polling worker

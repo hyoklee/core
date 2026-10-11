@@ -164,6 +164,21 @@ clio::run::TaskResume Runtime::PutBlob(
     // invalidate it and this node would serve its own stale bytes forever
     // (the CI-caught fragmented winner split).
     const bool owner_local = IsBlobOwnerLocal(task->tag_id_, blob_name);
+    if (owner_local) {
+      // Owner-local: no copy to keep, so the put IS the authoritative put.
+      // Run the next pool's handler inline, as the other interposers do,
+      // instead of submitting a new task: the extra task cost a scheduler
+      // route, a worker hop and a completion event per put, and large puts
+      // all queue on the I/O workers -- 1 MiB puts ran ~4x slower through
+      // this layer than straight into the layer below it.
+      task->context_ = orig_ctx;
+      CLIO_CO_AWAIT(ForwardToCore(clio::cte::core::Method::kPutBlob,
+                                  task.template Cast<clio::run::Task>()));
+      task->context_.replica_ = orig_ctx.replica_;
+      task->context_.replica_flags_ = orig_ctx.replica_flags_;
+      task->context_.origin_node_ = Context::kNoOriginNode;
+      CLIO_CO_RETURN;
+    }
 
     // 1. ONE fused local task: apply the put to the local raw copy iff it
     //    exists (UPDATE_ONLY; kReplicaAbsentRc = it doesn't). No probes.
@@ -321,7 +336,14 @@ clio::run::TaskResume Runtime::GetBlob(
     // authoritative primary is node-local already; skip straight to the
     // chain and never populate here.
     const bool owner_local = IsBlobOwnerLocal(task->tag_id_, blob_name);
-    if (!owner_local) {
+    if (owner_local) {
+      // The primary is node-local: read it through the next pool inline (no
+      // new task, see PutBlob) and never populate a copy.
+      CLIO_CO_AWAIT(ForwardToCore(clio::cte::core::Method::kGetBlob,
+                                  task.template Cast<clio::run::Task>()));
+      CLIO_CO_RETURN;
+    }
+    {
       task->context_.replica_ = clio::cte::core::kCacheReplica;
       CLIO_CO_AWAIT(ForwardToCore(clio::cte::core::Method::kGetBlob,
                              task.template Cast<clio::run::Task>()));
@@ -542,7 +564,13 @@ clio::run::TaskResume Runtime::GetBlobSize(
     // present copy current. NOTE: the copy is populated whole-blob and
     // reclaimed/invalidated whole-blob, so a present size is the full
     // logical size.
-    if (!IsBlobOwnerLocal(task->tag_id_, task->blob_name_.str())) {
+    if (IsBlobOwnerLocal(task->tag_id_, task->blob_name_.str())) {
+      // Owner-local: ask the next pool inline (no new task, see PutBlob).
+      CLIO_CO_AWAIT(ForwardToCore(clio::cte::core::Method::kGetBlobSize,
+                                  task.template Cast<clio::run::Task>()));
+      CLIO_CO_RETURN;
+    }
+    {
       auto *local = GetLocalClient();
       auto sz = local->AsyncGetBlobSize(task->tag_id_,
                                         task->blob_name_.str(),
