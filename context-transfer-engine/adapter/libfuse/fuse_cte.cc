@@ -654,6 +654,76 @@ static clio::run::u64 WallNowNs() {
 
 void TimesOverlayDropMtime(const std::string &p);
 
+// Directory attribute cache. A directory's stat never comes from the SHM
+// mirror (its times live in the directory block), so each one was a task to
+// the runtime -- and a checkout stats directories constantly (397k of the
+// 400k Getattr tasks of a 16k-file checkout). Directory attributes from the
+// runtime are kept for the mount's attribute TTL, the staleness the kernel
+// attribute cache already allows here, and dropped on every change this
+// mount makes to the directory or its entries. Single-node mounts only:
+// there every change passes through this mount.
+struct DirAttrEntry {
+  cte_stat_t st;
+  std::chrono::steady_clock::time_point expiry;
+};
+std::mutex g_dir_attr_mtx;
+std::unordered_map<std::string, DirAttrEntry> g_dir_attr;
+double g_dir_attr_ttl_s = 0.0;  ///< set at init; 0 disables the cache
+
+/**
+ * Serve a directory's attributes from the cache.
+ * @param p the directory path
+ * @param stbuf receives the attributes on a hit
+ * @return true on a fresh hit
+ */
+static bool DirAttrLookup(const std::string &p, cte_stat_t *stbuf) {
+  if (g_dir_attr_ttl_s <= 0.0) return false;
+  std::lock_guard<std::mutex> lk(g_dir_attr_mtx);
+  auto it = g_dir_attr.find(p);
+  if (it == g_dir_attr.end()) return false;
+  if (std::chrono::steady_clock::now() >= it->second.expiry) {
+    g_dir_attr.erase(it);
+    return false;
+  }
+  *stbuf = it->second.st;
+  return true;
+}
+
+/**
+ * Remember a directory's attributes as the runtime just reported them.
+ * @param p the directory path
+ * @param st its attributes
+ */
+static void DirAttrStore(const std::string &p, const cte_stat_t &st) {
+  if (g_dir_attr_ttl_s <= 0.0) return;
+  const auto ttl = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(g_dir_attr_ttl_s));
+  std::lock_guard<std::mutex> lk(g_dir_attr_mtx);
+  if (g_dir_attr.size() > 65536) g_dir_attr.clear();  // bound it
+  g_dir_attr[p] = DirAttrEntry{st, std::chrono::steady_clock::now() + ttl};
+}
+
+/** Drop every cached directory attribute (a rename moves whole subtrees). */
+static void DirAttrClear() {
+  std::lock_guard<std::mutex> lk(g_dir_attr_mtx);
+  g_dir_attr.clear();
+}
+
+/**
+ * Forget the cached attributes a change to \a p can make stale: \a p
+ * itself (if it is a directory) and its parent (whose entries changed).
+ * @param p the path being created, removed, renamed or changed
+ */
+static void DirAttrInvalidate(const std::string &p) {
+  if (g_dir_attr_ttl_s <= 0.0) return;
+  std::lock_guard<std::mutex> lk(g_dir_attr_mtx);
+  g_dir_attr.erase(p);
+  const size_t slash = p.find_last_of('/');
+  if (slash != std::string::npos) {
+    g_dir_attr.erase(slash == 0 ? std::string("/") : p.substr(0, slash));
+  }
+}
+
 void HiwaterRaise(const std::string &path, clio::run::u64 end) {
   {
     std::lock_guard<std::mutex> lk(g_hw_mtx);
@@ -1516,6 +1586,7 @@ static void *cte_fuse_init(struct fuse_conn_info *conn,
   }
   cfg->attr_timeout = attr_ttl;
   cfg->entry_timeout = entry_ttl;
+  g_dir_attr_ttl_s = MultiNode() ? 0.0 : attr_ttl;
   cfg->negative_timeout = attr_ttl;
   // Writeback cache: OFF by default. Enabling it batches write()s in the
   // kernel page cache, but the kernel then requires the filesystem to be a
@@ -1861,6 +1932,8 @@ static int cte_fuse_getattr_stat_inner(const char *path, cte_stat_t *stbuf,
     }
   }
 
+  if (DirAttrLookup(p, stbuf)) return 0;
+
   // MIRROR-FIRST stat (user directive): build the full stat from the SHM
   // mirrors — file record (identity, size, overrides) + tag record (natural
   // timestamps) — with no task at all. Records that are absent, refused
@@ -1985,6 +2058,7 @@ static int cte_fuse_getattr_stat_inner(const char *path, cte_stat_t *stbuf,
     return -ENOENT;
   }
   FillStatFromGetattr(t.get(), p, stbuf);
+  if (S_ISDIR(stbuf->st_mode)) DirAttrStore(p, *stbuf);
   return 0;
 }
 
@@ -2182,6 +2256,7 @@ static int cte_fuse_getattr(const char *path, cte_stat_t *stbuf,
 
 int cte_fuse_utimens(const char *path_in, const cte_timespec_t tv[2],
                             struct fuse_file_info *fi) {
+  if (path_in != nullptr) DirAttrInvalidate(path_in);
   const std::string path_s = OpPath(path_in, fi);
   if (path_s.empty()) return -EBADF;
   const char *path = path_s.c_str();
@@ -2280,6 +2355,7 @@ int cte_fuse_utimens(const char *path_in, const cte_timespec_t tv[2],
 // existence probe is needed.
 int cte_fuse_chmod(const char *path, cte_mode_t mode,
                           struct fuse_file_info *fi) {
+  if (path != nullptr) DirAttrInvalidate(path);
   auto *cfs = CLIO_CFS_CLIENT;
   std::string p = OpPath(path, fi);
   if (p.empty()) return -EBADF;
@@ -2319,6 +2395,7 @@ int cte_fuse_chmod(const char *path, cte_mode_t mode,
 // exactly the chimod's "unchanged" sentinel, so no translation is needed.
 int cte_fuse_chown(const char *path, uid_t uid, gid_t gid,
                           struct fuse_file_info *fi) {
+  if (path != nullptr) DirAttrInvalidate(path);
   auto *cfs = CLIO_CFS_CLIENT;
   const std::string p = OpPath(path, fi);
   if (p.empty()) return -EBADF;
@@ -2442,6 +2519,7 @@ static bool NameTooLong(const char *path) {
 }
 
 int cte_fuse_mkdir(const char *path, cte_mode_t mode) {
+  DirAttrInvalidate(path);
   if (NameTooLong(path)) return -ENAMETOOLONG;
   auto *cfs = CLIO_CFS_CLIENT;
   auto t = cfs->AsyncMkdir(std::string(path));
@@ -2459,6 +2537,7 @@ int cte_fuse_mkdir(const char *path, cte_mode_t mode) {
 }
 
 int cte_fuse_rmdir(const char *path) {
+  DirAttrInvalidate(path);
   cte_fuse_readdir_flush_guard();  // children may still be pending creates
   auto *cfs = CLIO_CFS_CLIENT;
   auto t = cfs->AsyncRmdir(std::string(path));
@@ -2558,6 +2637,7 @@ static inline void MaybeTruncateOnOpen(clio::cte::filesystem::Client *cfs,
 
 int cte_fuse_create(const char *path, cte_mode_t mode,
                            struct fuse_file_info *fi) {
+  if (path != nullptr) DirAttrInvalidate(path);
   if (NameTooLong(path)) return -ENAMETOOLONG;
   std::string p(path);
   auto *cfs = CLIO_CFS_CLIENT;
@@ -3368,6 +3448,7 @@ int cte_fuse_write(const char *path, const char *buf, size_t size,
 // ============================================================================
 
 int cte_fuse_unlink(const char *path) {
+  DirAttrInvalidate(path);
   // libfuse removes a hidden name when the file's last descriptor closes.
   // Unless the hide fell back to a server rename, the name never existed on
   // the server (HideOpenFile), which purges the file at its last close.
@@ -3589,6 +3670,7 @@ static int cte_fuse_fallocate(const char *path, int mode, cte_off_t offset,
 #endif  // __linux__
 
 int cte_fuse_link(const char *from, const char *to) {
+  DirAttrInvalidate(to);
   if (NameTooLong(to)) return -ENAMETOOLONG;
   if (IsHiddenName(from) || IsHiddenName(to)) return -ENOENT;
   // The new name resolves through the store, not this daemon's per-path
@@ -3613,6 +3695,7 @@ int cte_fuse_link(const char *from, const char *to) {
 }
 
 int cte_fuse_symlink(const char *target, const char *path) {
+  DirAttrInvalidate(path);
   if (NameTooLong(path)) return -ENAMETOOLONG;
   // Create a symlink at `path` pointing at `target`. The chimod stores the
   // target string in a reserved marker blob under `path`'s tag.
@@ -3819,6 +3902,7 @@ static bool HideOpenFile(const char *from, const char *to, int *rc) {
 
 int cte_fuse_rename(const char *from, const char *to,
                            unsigned int flags) {
+  DirAttrClear();  // a moved directory takes its subtree's paths with it
   if (NameTooLong(to)) return -ENAMETOOLONG;
   if (IsHiddenName(from)) return -ENOENT;  // only libfuse knows these names
   auto *cfs = CLIO_CFS_CLIENT;
