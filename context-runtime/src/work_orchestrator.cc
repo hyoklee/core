@@ -37,6 +37,7 @@
 
 #include "clio_runtime/work_orchestrator.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -439,6 +440,10 @@ void WorkOrchestrator::StopMonitorThread() {
   if (!monitor_running_.exchange(false)) {
     return;
   }
+  {
+    std::lock_guard<std::mutex> g(monitor_mu_);
+  }
+  monitor_cv_.notify_all();
   if (monitor_thread_.joinable()) {
     monitor_thread_.join();
   }
@@ -449,12 +454,41 @@ void WorkOrchestrator::MonitorLoop() {
   // scheduler's LoadBalance(), which owns stall detection, elastic spawn, work
   // stealing, retirement, and telemetry. Kept intentionally thin here so all
   // policy lives in the Scheduler. LoadBalance() is a no-op stub today (#781).
+  // A worker request (RequestWorker) wakes it early: the pool grows the
+  // moment a mapper finds no worker with room, not up to a period later.
+  auto next_tick = std::chrono::steady_clock::now();
   while (monitor_running_.load(std::memory_order_relaxed)) {
-    if (scheduler_) {
-      scheduler_->LoadBalance();
+    if (std::chrono::steady_clock::now() >= next_tick) {
+      if (scheduler_) {
+        scheduler_->LoadBalance();
+      }
+      next_tick = std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(kMonitorPeriodMs);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(kMonitorPeriodMs));
+    {
+      std::unique_lock<std::mutex> lk(monitor_mu_);
+      monitor_cv_.wait_until(lk, next_tick, [this] {
+        return worker_requested_.load(std::memory_order_relaxed) ||
+               !monitor_running_.load(std::memory_order_relaxed);
+      });
+    }
+    if (worker_requested_.exchange(false, std::memory_order_relaxed) &&
+        scheduler_) {
+      scheduler_->GrowPool();
+    }
   }
+}
+
+void WorkOrchestrator::RequestWorker() {
+  if (worker_requested_.exchange(true, std::memory_order_relaxed)) {
+    return;  // already pending: the monitor will see it
+  }
+  {
+    // Under the mutex, so the flag cannot land between the monitor's
+    // predicate check and its wait (a lost wakeup).
+    std::lock_guard<std::mutex> g(monitor_mu_);
+  }
+  monitor_cv_.notify_one();
 }
 
 Worker *WorkOrchestrator::SpawnAdditionalWorker() {
@@ -558,6 +592,19 @@ Worker *WorkOrchestrator::SpawnAdditionalWorker() {
   HLOG(kWarning, "[#785] spawned elastic worker {} (pool now {} workers)",
        worker_id, num_workers_published_.load(std::memory_order_relaxed));
   return worker_ptr;
+}
+
+Worker *WorkOrchestrator::FindIdleElasticWorker(
+    const std::vector<Worker *> &exclude) {
+  for (size_t i = baseline_worker_count_; i < all_workers_.size(); ++i) {
+    Worker *w = all_workers_[i];
+    if (w == nullptr || w->IsExecuting()) continue;
+    if (std::find(exclude.begin(), exclude.end(), w) != exclude.end()) {
+      continue;
+    }
+    return w;
+  }
+  return nullptr;
 }
 
 Worker *WorkOrchestrator::FindIdleElasticWorker() {
