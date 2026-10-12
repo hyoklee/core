@@ -303,16 +303,6 @@ class Runtime : public clio::cte::core::CoreInterposer {
    *  first-insertion trigger. Persisted, so restarts never re-backfill.
    *  Guarded by index_mutex_. */
   std::unordered_set<clio::run::u64> tags_seen_;
-  /** Tags that existed when this indexer started (Create's TagQuery). Only
-   *  these can hold blobs written before the indexer joined the chain, so
-   *  only these need a first-insertion backfill; a tag created later has
-   *  every write pass through here. The backfill scans every blob on the
-   *  node (BlobQuery), so running it for each new tag made a checkout of N
-   *  files O(N^2). Guarded by index_mutex_. */
-  std::unordered_set<clio::run::u64> preexisting_tags_;
-  /** False when the startup TagQuery failed: then every tag is backfilled,
-   *  as before. */
-  bool preexisting_known_ = false;
   /** Entries popped by a drainer but not yet indexed — the search barrier
    *  waits for BOTH pending sets empty and this zero. Guarded by
    *  index_mutex_. */

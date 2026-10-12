@@ -180,21 +180,6 @@ clio::run::TaskResume Runtime::Create(clio::run::shared_ptr<CreateTask> &task) {
            config_.index_log_path_);
     }
   }
-  // The tags that exist now are the only ones that can hold blobs this
-  // indexer never saw (see preexisting_tags_). Fresh runtime: none.
-  {
-    auto q = GetNextClient()->AsyncTagQuery(".*", 0,
-                                            clio::run::PoolQuery::Local());
-    CLIO_CO_AWAIT(q);
-    std::lock_guard<std::mutex> lock(index_mutex_);
-    if (q->GetReturnCode() == 0) {
-      preexisting_tags_.insert(q->result_ids_.begin(), q->result_ids_.end());
-      preexisting_known_ = true;
-    } else {
-      HLOG(kWarning, "Indexer: startup TagQuery failed (rc={}); every new "
-           "tag will be backfilled", q->GetReturnCode());
-    }
-  }
   // Background progress for the asynchronous index drain (same periodic
   // pattern as replication's write-through sweep). Searches drain
   // synchronously regardless — the sweep only bounds how stale the index
@@ -796,10 +781,7 @@ void Runtime::EnqueuePending(const TagId &tag_id,
   clio::run::u64 tkey = TagKey(tag_id);
   if (tags_seen_.insert(tkey).second) {
     WalAppendTagSeen(tag_id);
-    // Only a tag that predates this indexer can have unseen blobs.
-    if (!preexisting_known_ || preexisting_tags_.count(tkey) != 0) {
-      pending_tag_backfills_[tkey] = tag_id;
-    }
+    pending_tag_backfills_[tkey] = tag_id;
   }
 }
 
