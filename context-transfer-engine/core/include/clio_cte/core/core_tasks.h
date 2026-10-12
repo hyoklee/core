@@ -1600,7 +1600,14 @@ struct BlobInfo {
   // is caught during testing before it can corrupt a size in release.
   CTP_CROSS_FUN clio::run::u64 GetTotalSize() const {
 #if !defined(NDEBUG) && CTP_IS_HOST
-    assert(ComputeTotalSizeSlow() == total_size_cache_ &&
+    // Only checkable while no writer holds the blob: GetBlob reads the cache
+    // while a PutBlob may be mid-update (it polls this under IsWriteLocked),
+    // and re-summing blocks_ under that writer both races it and sees blocks_
+    // ahead of the cache.
+    const bool writer = ctp::ipc::atomic_ref<clio::run::u64>(
+                            const_cast<clio::run::u64 &>(write_owner_))
+                            .load() != 0;
+    assert((writer || ComputeTotalSizeSlow() == total_size_cache_) &&
            "BlobInfo::total_size_cache_ drifted from sum(blocks_)");
 #endif
     return total_size_cache_;
