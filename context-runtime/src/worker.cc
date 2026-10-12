@@ -197,6 +197,7 @@ bool Worker::Init() {
       "", ctp::lbm::TransportType::kShm, ctp::lbm::TransportMode::kServer);
 
   is_initialized_ = true;
+  is_running_ = true;  // see Run(): a later Stop() must stick
   return true;
 }
 
@@ -331,7 +332,11 @@ void Worker::Run() {
   }
   // Set current worker once for the entire thread duration
   SetAsCurrentWorker();
-  is_running_ = true;
+  // is_running_ was set by Init, before this thread existed. Setting it
+  // here overwrote a Stop() that came first: an elastic worker spawned just
+  // before shutdown then never exited, its join timed out, and the
+  // orchestrator freed the Worker under the still-running thread
+  // (heap-use-after-free in SuspendMe under ASan).
 
   // Create this worker thread's IpcManagerTls on its OWN thread, which
   // ServerInit's the named MPSC SHM receive server "clio-<pid>-<tid>" (#642).
