@@ -27,8 +27,9 @@ set(CLIO_CTP_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # ------------------------------------------------------------------------------
 # Each module owns an include/, src/ and test/ directory under the CTP root.
 # Headers live at <module>/include/clio_ctp/<module>/, so they are still
-# included as "clio_ctp/<module>/...". The top-level include/ only holds the
-# clio_ctp.h umbrella header.
+# included as "clio_ctp/<module>/...". base/ holds what belongs to no single
+# module: the clio_ctp.h umbrella header (base/include) and the shared test
+# harness plus the cross-module tests (base/test).
 set(CLIO_CTP_MODULES
     constants
     types
@@ -45,7 +46,7 @@ set(CLIO_CTP_MODULES
     search
     solver
 )
-set(CLIO_CTP_INCLUDE_DIRS ${CLIO_CTP_ROOT}/include)
+set(CLIO_CTP_INCLUDE_DIRS ${CLIO_CTP_ROOT}/base/include)
 foreach(_module IN LISTS CLIO_CTP_MODULES)
     list(APPEND CLIO_CTP_INCLUDE_DIRS ${CLIO_CTP_ROOT}/${_module}/include)
 endforeach()
@@ -352,7 +353,7 @@ if(CLIO_CORE_ENABLE_TESTS)
     message("Building CTP unit tests")
     find_package(Catch2 3 REQUIRED)
     # main.cc, main_mpi.cc and basic_test.h
-    set(TEST_MAIN ${CLIO_CTP_ROOT}/test)
+    set(TEST_MAIN ${CLIO_CTP_ROOT}/base/test)
     include_directories(${TEST_MAIN})
 endif()
 
@@ -568,11 +569,6 @@ if(CLIO_CORE_ENABLE_DOXYGEN)
     )
 endif()
 
-if(NOT IS_HSHM_MAIN)
-    add_custom_target(lint COMMAND bash ${CLIO_CTP_ROOT}/scripts/lint.sh ${CLIO_CTP_ROOT})
-    add_custom_target(preamble COMMAND python3 ${CLIO_CTP_ROOT}/scripts/preamble.py ${CLIO_CTP_ROOT})
-endif()
-
 # ------------------------------------------------------------------------------
 # Build cross-module tests + benchmarks
 # ------------------------------------------------------------------------------
@@ -580,7 +576,7 @@ endif()
 # enable_testing() is handled by root CMakeLists.txt
 
 if(CLIO_CORE_ENABLE_TESTS)
-    add_subdirectory(test)
+    add_subdirectory(base/test)
 endif()
 
 if(CLIO_CORE_ENABLE_BENCHMARKS)
@@ -607,5 +603,5 @@ install(EXPORT ${CLIO_CTP_EXPORTED_TARGETS}
 )
 
 if(CLIO_CORE_ENABLE_JARVIS)
-    jarvis_repo_add("${CTP_ROOT}/test/jarvis_hshm")
+    jarvis_repo_add("${CTP_ROOT}/base/test/jarvis_hshm")
 endif()

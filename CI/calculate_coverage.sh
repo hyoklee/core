@@ -664,7 +664,7 @@ print_info "Extracting component coverage..."
 # CTP is mostly header-only, so include every module's src/ and include/
 lcov --extract coverage_filtered.info \
      "${REPO_ROOT}/context-transport-primitives/*/src/*" \
-     "${REPO_ROOT}/context-transport-primitives/include/*" \
+     "${REPO_ROOT}/context-transport-primitives/base/include/*" \
      "${REPO_ROOT}/context-transport-primitives/*/include/*" \
      --output-file "${TMP_DIR}/ctp.info" \
      >/dev/null 2>&1 || true
