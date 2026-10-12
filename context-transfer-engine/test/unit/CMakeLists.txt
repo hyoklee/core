@@ -1313,6 +1313,24 @@ set_tests_properties(cte_conditional_put PROPERTIES
     LABELS "unit;cte"
     ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1")
 
+add_executable(test_cte_tag_xattr test_cte_tag_xattr.cc)
+target_include_directories(test_cte_tag_xattr PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test)
+target_link_libraries(test_cte_tag_xattr
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME cte_tag_xattr COMMAND test_cte_tag_xattr)
+set_tests_properties(cte_tag_xattr PROPERTIES
+    TIMEOUT 300
+    LABELS "unit;cte"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1")
+
 if(TARGET clio_cte_stream_client)
 add_executable(test_stream_append test_stream_append.cc)
 target_include_directories(test_stream_append PRIVATE

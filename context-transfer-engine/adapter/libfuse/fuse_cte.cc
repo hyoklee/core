@@ -606,7 +606,9 @@ static int SyncDurable(const clio::cte::core::TagId &tag,
   if (rc != 0) return rc;
   auto *cfs = CLIO_CFS_CLIENT;
   if (cfs == nullptr) return 0;
-  return SyncOneTag(cfs->TagOfPath(dir, /*want_dir=*/true));
+  rc = SyncOneTag(cfs->TagOfPath(dir, /*want_dir=*/true));
+  if (rc != 0) return rc;
+  return cfs->SyncMetaDurable();  // the directory journal
 }
 
 /**
@@ -1178,6 +1180,12 @@ struct PendingClose {
   clio::run::u32 flags = 0;
   clio::cte::core::TagId tag = clio::cte::core::TagId::GetNull();  // kClose
   clio::run::u64 hiwater = 0;  // kClose: size to advance to (0 = none)
+  // Time of the last write the hiwater covers, captured when the entry is
+  // queued: by the time the closer runs it, an earlier entry's publish may
+  // have dropped the path's write time, and the push would then stamp the
+  // time it lands -- moving an mtime stat already reported (git re-hashed
+  // every file of a checkout).
+  clio::run::u64 wtime = 0;
 };
 std::mutex g_closer_mtx;
 std::condition_variable g_closer_cv;
@@ -1191,6 +1199,17 @@ std::string g_closer_busy_path;  // the path of that entry (g_closer_busy)
 bool CreateQueueNonEmpty() {
   std::lock_guard<std::mutex> lk(g_pc_mtx);
   return !g_create_queue.empty();
+}
+
+/**
+ * True while any creation is not yet retired: queued, or in a batch the
+ * closer thread has already swapped out and is still waiting on. A batch in
+ * flight leaves the queue empty, so CreateQueueNonEmpty misses it.
+ * @return true if some created path is not yet known to the server
+ */
+bool AnyCreateUnretired() {
+  std::lock_guard<std::mutex> lk(g_pc_mtx);
+  return !g_pending_creates.empty();
 }
 
 // Failures of a background publish (kPublish), by path: the next flush or
@@ -1247,7 +1266,7 @@ void RunPublish(const PendingClose &pc) {
   auto t = CLIO_CFS_CLIENT->AsyncAdvanceSize(
       (static_cast<clio::run::u64>(pc.tag.major_) << 32) |
           static_cast<clio::run::u64>(pc.tag.minor_),
-      pc.hiwater);
+      pc.hiwater, pc.wtime);
   t.Wait();
   if (t->GetReturnCode() != 0) {
     HLOG(kError, "clio_cte_fuse: publishing the size of {} failed (rc {}); "
@@ -1298,7 +1317,7 @@ void RunCloserEntry(const PendingClose &pc) {
       auto t = CLIO_CFS_CLIENT->AsyncAdvanceSize(
           (static_cast<clio::run::u64>(pc.tag.major_) << 32) |
               static_cast<clio::run::u64>(pc.tag.minor_),
-          pc.hiwater);
+          pc.hiwater, pc.wtime);
       t.Wait();
       HiwaterEraseIfCovered(pc.path, pc.hiwater);
     }
@@ -1835,6 +1854,9 @@ static int cte_fuse_getattr_stat_inner(const char *path, cte_stat_t *stbuf,
                        stbuf->st_mtim.tv_nsec);
       NsBitsToTimespec(pc.ctime_ns, stbuf->st_atim.tv_sec,
                        stbuf->st_atim.tv_nsec);
+      // Writes since the create: the size push will make their time the
+      // file's mtime, so report it now (git records this stat).
+      OverlayWriteTime(p, stbuf);
       return 0;
     }
   }
@@ -1927,8 +1949,11 @@ static int cte_fuse_getattr_stat_inner(const char *path, cte_stat_t *stbuf,
   {
     auto *cte1 = CLIO_CTE_CLIENT;
     clio::cte::filesystem::ShmFileRecord self;
+    bool self_absent = false;
+    // Only a PROVEN absence counts: a torn read of a record being rewritten
+    // is a miss, not evidence (see TryGetFileRecordShm).
     if (cfs != nullptr && cte1 != nullptr && !cfs->MirrorSaturated() &&
-        !cfs->TryGetFileRecordShm(p, &self)) {
+        !cfs->TryGetFileRecordShm(p, &self, &self_absent) && self_absent) {
       auto slash = p.find_last_of('/');
       if (slash != std::string::npos) {
         std::string parent = (slash == 0) ? "/" : p.substr(0, slash);
@@ -2319,8 +2344,11 @@ int cte_fuse_readdir_flush_guard() {
   // Pending minted creates are invisible to the chimod's listing until their
   // batch flushes; readdir callers (rm -r, ls) must see every child or they
   // act on a partial view (generic/070: rm -r left "non-empty" dirs whose
-  // remaining children it was never shown).
-  if (CreateQueueNonEmpty()) {
+  // remaining children it was never shown). Test the unretired set, not the
+  // queue: a batch in flight has emptied the queue, and FlushCreates waits
+  // for it (g_flush_mtx). Git for Windows' fscache lists the parent to stat
+  // a file it just wrote, and missed ones still in flight.
+  if (AnyCreateUnretired()) {
     FlushCreates();
   }
   return 0;
@@ -2559,6 +2587,7 @@ int cte_fuse_create(const char *path, cte_mode_t mode,
           (static_cast<clio::run::u64>(handle->tag.major_) << 32) |
           static_cast<clio::run::u64>(handle->tag.minor_);
       e.mode_ = pc.mode;
+      e.ctime_ns_ = pc.ctime_ns;
       g_create_queue.push_back(std::move(e));
     }
     g_closer_cv.notify_one();
@@ -2828,7 +2857,7 @@ static int PublishOnClose(CfsHandle *handle, const std::string &hp) {
     auto t = cfs->AsyncAdvanceSize(
         (static_cast<clio::run::u64>(handle->tag.major_) << 32) |
             static_cast<clio::run::u64>(handle->tag.minor_),
-        hiwater);
+        hiwater, WriteTimeFor(hp));
     t.Wait();
     if (t->GetReturnCode() != 0) {
       HLOG(kError, "clio_cte_fuse: publishing the size of {} failed (rc {}); "
@@ -2890,6 +2919,7 @@ static int FlushAsync(CfsHandle *handle, const std::string &p) {
     pc.path = p;
     pc.tag = handle->tag;
     pc.hiwater = HiwaterFor(p);
+    pc.wtime = WriteTimeFor(p);
     EnqueueDrainOrdered(std::move(pc));
     // The kernel caches each NAME separately (see the awaited path below).
     for (const auto &sib : LinkGroupSiblings(p)) InvalidatePath(sib);
@@ -3029,6 +3059,7 @@ int cte_fuse_release(const char *path, struct fuse_file_info *fi) {
       pc.path = handle->path;
       pc.tag = handle->tag;
       pc.hiwater = hiwater;
+      pc.wtime = WriteTimeFor(handle->path);
       EnqueueDrainOrdered(std::move(pc));
     } else {
       cfs->AsyncCloseDetached(handle->fh);
@@ -3043,7 +3074,7 @@ int cte_fuse_release(const char *path, struct fuse_file_info *fi) {
         auto tt = cfs->AsyncAdvanceSize(
             (static_cast<clio::run::u64>(handle->tag.major_) << 32) |
                 static_cast<clio::run::u64>(handle->tag.minor_),
-            hiwater);
+            hiwater, WriteTimeFor(handle->path));
         tt.Wait();
         HiwaterEraseIfCovered(handle->path, hiwater);
       }

@@ -39,6 +39,8 @@
 #include <memory>
 #include <atomic>
 #include <functional>
+#include <fstream>
+#include <map>
 #include <clio_cte/core/blob_placement.h>
 #include <mutex>
 #include <string>
@@ -634,6 +636,13 @@ public:
   clio::run::TaskResume GetTagName(clio::run::shared_ptr<GetTagNameTask> &task);
 
   /**
+   * TagXattr (Method::kTagXattr) - one set / get / delete / list on a tag's
+   * xattr section, held by the container the task reached (core_tag_xattr.cc).
+   * @param task the TagXattrTask; return_code_ 0 or a kTagXattr*Rc
+   */
+  clio::run::TaskResume TagXattr(clio::run::shared_ptr<TagXattrTask> &task);
+
+  /**
    * Get tag size operation - returns total size of all blobs in tag
    */
   clio::run::TaskResume GetTagSize(clio::run::shared_ptr<GetTagSizeTask> &task);
@@ -910,6 +919,58 @@ private:
   // Write-Ahead Transaction Logs (per-worker)
   std::vector<std::unique_ptr<TransactionLog>> blob_txn_logs_;
   std::vector<std::unique_ptr<TransactionLog>> tag_txn_logs_;
+
+  // ---- tag xattr sections (core_tag_xattr.cc) ----
+  /** Every tag's xattr section held here: packed tag id -> key -> value. */
+  std::unordered_map<clio::run::u64, std::map<std::string, std::string>>
+      tag_xattrs_;
+  /** Guards tag_xattrs_; a change is applied and WAL-logged under it. */
+  std::mutex tag_xattr_mu_;
+  /** FlushMetadata snapshot entry type of one tag's xattr section. */
+  static constexpr uint8_t kSnapTagXattrEntry = 7;
+  /**
+   * The container a Dynamic TagXattrTask goes to: the hash of its tag id.
+   * @param tag_id the tag
+   * @return a DirectHash query
+   */
+  static clio::run::PoolQuery TagXattrOwner(const TagId &tag_id);
+  /**
+   * Apply one TagXattrTask to tag_xattrs_ and log the change.
+   * @param t the task (keys_, value_ and found_ receive the results)
+   * @return 0 or a kTagXattr*Rc
+   */
+  clio::run::u32 RunTagXattr(TagXattrTask &t);
+  /**
+   * Append one xattr change to this worker's tag WAL shard (no-op without a
+   * WAL).
+   * @param type kSetTagXattr or kDelTagXattr
+   * @param tag_id the tag
+   * @param key the key (empty with kDelTagXattr = every key)
+   * @param value the value (kSetTagXattr only)
+   */
+  void LogTagXattr(TxnType type, const TagId &tag_id, const std::string &key,
+                   const std::string &value);
+  /**
+   * Drop a tag's whole xattr section from memory (DelTag; the kDelTag
+   * record does the same on replay).
+   * @param tag_id the deleted tag
+   */
+  void EraseTagXattrs(const TagId &tag_id);
+  /**
+   * Write every xattr section to a FlushMetadata snapshot, one
+   * kSnapTagXattrEntry record per tag.
+   * @param ofs the snapshot being written
+   * @return number of sections written
+   */
+  size_t WriteTagXattrSnapshot(std::ofstream &ofs);
+  /**
+   * Install one tag's section read back from a snapshot, replacing any
+   * section already held for it.
+   * @param tag_id the tag
+   * @param kvs its keys and values
+   */
+  void RestoreTagXattrSection(
+      const TagId &tag_id, std::vector<std::pair<std::string, std::string>> kvs);
 
   /**
    * Global monotonic sequence source for every WAL record this container's
@@ -1358,6 +1419,12 @@ private:
    *  canonical name + alias list (rename / hard link / unlink survival). */
   void ApplyWalSetTagIdentity(const std::vector<char> &payload,
                              clio::run::u32 &tags_replayed);
+  /**
+   * Apply one replayed kSetTagXattr (upsert) or kDelTagXattr record.
+   * @param payload the record payload
+   * @param del true for kDelTagXattr
+   */
+  void ApplyWalTagXattr(const std::vector<char> &payload, bool del);
   /** Apply one replayed kCreateNewBlob record, carrying forward any
    *  transform/droppable/replica/block state already seen for this key. */
   void ApplyWalCreateNewBlob(const std::vector<char> &payload,

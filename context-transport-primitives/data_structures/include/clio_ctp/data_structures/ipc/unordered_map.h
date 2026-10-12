@@ -327,12 +327,17 @@ class unordered_map : public ShmContainer<AllocT> {
    *        against a pathologically hot slot (or a writer that died mid-update
    *        leaving the generation odd -- see the TimedMutex reclamation path).
    *        Exhausting retries returns false, and the caller falls back to RPC.
+   * @param absent if non-null, set true only when false means the key is
+   *        definitely not in the table (the probe ended consistently); a
+   *        false from torn reads or exhausted retries leaves it false. A
+   *        caller that treats a miss as proof of absence must check it.
    * @return true if a consistent value was copied out.
    */
   template <typename KeyInit>
   CTP_INLINE_CROSS_FUN bool TryGet(const KeyInit &key_probe, size_t key_hash,
-                                   ValueT *out,
-                                   min_u32 max_retries = 16) const {
+                                   ValueT *out, min_u32 max_retries = 16,
+                                   bool *absent = nullptr) const {
+    if (absent != nullptr) *absent = false;
     if (!valid() || out == nullptr) {
       return false;
     }
@@ -355,6 +360,7 @@ class unordered_map : public ShmContainer<AllocT> {
         if (st == kEmpty) {
           // End of probe sequence. Only trust it if nothing changed under us.
           if (s.gen_.load() == g0) {
+            if (absent != nullptr) *absent = true;
             return false;
           }
           saw_torn = true;
@@ -374,6 +380,8 @@ class unordered_map : public ShmContainer<AllocT> {
         idx = (idx + 1) & mask;
       }
       if (!saw_torn) {
+        // The whole probe window held no match and nothing moved.
+        if (absent != nullptr) *absent = true;
         return false;
       }
     }
@@ -387,9 +395,9 @@ class unordered_map : public ShmContainer<AllocT> {
    */
   CTP_INLINE_CROSS_FUN
   bool TryGetBytes(const char *key, size_t len, ValueT *out,
-                   min_u32 max_retries = 16) const {
+                   min_u32 max_retries = 16, bool *absent = nullptr) const {
     return TryGet(BytesProbe{key, len}, KeyT::HashBytes(key, len), out,
-                  max_retries);
+                  max_retries, absent);
   }
 
   /** Hash a key the same way the table does. */

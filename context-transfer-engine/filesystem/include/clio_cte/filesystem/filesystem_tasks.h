@@ -228,6 +228,10 @@ struct MultiCreateEnt {
   std::string path_;
   clio::run::u64 tag_packed_ = 0;
   clio::run::u32 mode_ = 0644;
+  /** Wall time (ns) the client created the file, its initial times; 0 = when
+   *  the batch lands. The batch lands after the client already reported
+   *  this time (and the file's writes) to stat callers. */
+  clio::run::u64 ctime_ns_ = 0;
 };
 
 inline std::string EncodeMultiCreate(const std::vector<MultiCreateEnt> &ents) {
@@ -244,6 +248,7 @@ inline std::string EncodeMultiCreate(const std::vector<MultiCreateEnt> &ents) {
     out.append(e.path_);
     put64(e.tag_packed_);
     put32(e.mode_);
+    put64(e.ctime_ns_);
   }
   return out;
 }
@@ -273,7 +278,10 @@ inline bool DecodeMultiCreate(const char *data, size_t len,
     if (!get32(&plen) || off + plen > len) return false;
     e.path_.assign(data + off, plen);
     off += plen;
-    if (!get64(&e.tag_packed_) || !get32(&e.mode_)) return false;
+    if (!get64(&e.tag_packed_) || !get32(&e.mode_) ||
+        !get64(&e.ctime_ns_)) {
+      return false;
+    }
     out->push_back(std::move(e));
   }
   return true;
@@ -331,27 +339,35 @@ struct AdvanceSizeTask : public clio::run::Task {
    * have appended since); the reservation is linearized at the home.
    */
   IN clio::run::u32 reserve_;
+  /**
+   * Raise mode: wall time (ns) of the last write the size covers, which
+   * becomes the file's mtime; 0 = the time this lands. The push trails the
+   * write (it is sent at or after close), so stamping its arrival moved the
+   * mtime a client had already reported, and git re-hashed every file.
+   */
+  IN clio::run::u64 mtime_ns_;
   OUT clio::run::u64 old_size_;
   AdvanceSizeTask()
       : clio::run::Task(), tag_packed_(0), size_(0), reserve_(0),
-        old_size_(0) {}
+        mtime_ns_(0), old_size_(0) {}
   explicit AdvanceSizeTask(const clio::run::TaskId &task_id,
                            const clio::run::PoolId &pool_id,
                            const clio::run::PoolQuery &pool_query,
                            clio::run::u64 tag_packed, clio::run::u64 size,
-                           clio::run::u32 reserve = 0)
+                           clio::run::u32 reserve = 0,
+                           clio::run::u64 mtime_ns = 0)
       : clio::run::Task(task_id, pool_id, pool_query, Method::kAdvanceSize),
         tag_packed_(tag_packed), size_(size), reserve_(reserve),
-        old_size_(0) {}
+        mtime_ns_(mtime_ns), old_size_(0) {}
   void Copy(const ctp::ipc::FullPtr<AdvanceSizeTask> &o) {
     // Base fields first (pool id, method, query, flags): a forwarded copy
     // without them reached SendIn with a null pool and crashed the node.
     clio::run::Task::Copy(o.template Cast<clio::run::Task>());
     tag_packed_ = o->tag_packed_; size_ = o->size_; reserve_ = o->reserve_;
-    old_size_ = o->old_size_;
+    mtime_ns_ = o->mtime_ns_; old_size_ = o->old_size_;
   }
   template <typename Ar> void SerializeIn(Ar &ar) {
-    Task::SerializeIn(ar); ar(tag_packed_, size_, reserve_);
+    Task::SerializeIn(ar); ar(tag_packed_, size_, reserve_, mtime_ns_);
   }
   template <typename Ar> void SerializeOut(Ar &ar) {
     Task::SerializeOut(ar); ar(old_size_);

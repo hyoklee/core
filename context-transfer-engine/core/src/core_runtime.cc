@@ -1377,6 +1377,12 @@ clio::run::PoolQuery Runtime::ScheduleTask(const clio::run::shared_ptr<clio::run
     case Method::kGetTagSize:
       return clio::run::PoolQuery::Broadcast(0.0f);
 
+    // A tag's xattr section lives on the container its id hashes to.
+    case Method::kTagXattr: {
+      auto typed = task.template Cast<TagXattrTask>();
+      return TagXattrOwner(typed->tag_id_);
+    }
+
     // Broadcast operations
     case Method::kGetContainedBlobs:
     case Method::kBlobQuery:
@@ -6190,6 +6196,7 @@ clio::run::TaskResume Runtime::DelTag(clio::run::shared_ptr<DelTagTask> &task) {
       {
         tag_id_to_info_.erase(del_id);
       }
+      EraseTagXattrs(del_id);
     }
 
     // Step 7b: prune now-empty auto-created parent directories, bottom-up. Stop
@@ -7214,6 +7221,9 @@ clio::run::TaskResume Runtime::FlushMetadata(clio::run::shared_ptr<FlushMetadata
       }
       task->entries_flushed_++;
     });
+    // Each tag's xattr section (entry_type 7): the WAL records that built
+    // it are truncated once this snapshot is in place.
+    task->entries_flushed_ += WriteTagXattrSnapshot(ofs);
 
     // Write BlobInfo entries (entry_type 2; see below)
     // Serialize each blob while HOLDING its write token.
@@ -7243,7 +7253,9 @@ clio::run::TaskResume Runtime::FlushMetadata(clio::run::shared_ptr<FlushMetadata
       // does whenever a blob's token is busy.
       if (++snap_since_yield >= kSnapshotYieldEvery) {
         snap_since_yield = 0;
-        CLIO_CO_AWAIT(clio::run::yield(0));
+        // A delay > 0: yield(0) parks the task until a Future wakes it, and
+        // nothing does -- the snapshot never finished.
+        CLIO_CO_AWAIT(clio::run::yield(BlobWriteLockPollUs()));
       }
       const std::string &key = kv.first;
       BlobInfo &blob_info = *kv.second;
@@ -8375,6 +8387,31 @@ void Runtime::RestoreMetadataFromLog() {
         MirrorBlobToShm(composite_key, *blob_info_ptr);
       }
 
+    } else if (entry_type == kSnapTagXattrEntry) {
+      // One tag's xattr section: [TagId][u32 count]{[key][value]}*.
+      TagId tag_id;
+      ifs.read(reinterpret_cast<char *>(&tag_id), sizeof(tag_id));
+      uint32_t count = 0;
+      ifs.read(reinterpret_cast<char *>(&count), sizeof(count));
+      if (!ifs.good()) break;
+      // Each pair costs at least its two 4-byte length prefixes.
+      if (static_cast<clio::run::u64>(count) * 2 * sizeof(uint32_t) >
+          remaining()) {
+        corrupt("tag xattr count", count);
+        break;
+      }
+      std::vector<std::pair<std::string, std::string>> kvs(count);
+      bool kvs_ok = true;
+      for (auto &kv : kvs) {
+        if (!read_str(kv.first, "tag xattr key length") ||
+            !read_str(kv.second, "tag xattr value length")) {
+          kvs_ok = false;
+          break;
+        }
+      }
+      if (!kvs_ok) break;
+      RestoreTagXattrSection(tag_id, std::move(kvs));
+
     } else {
       corrupt("entry type", entry_type);
       stop = true;
@@ -8467,6 +8504,12 @@ void Runtime::ReplayTransactionLogs() {
         break;
       case TxnType::kSetTagIdentity:
         ApplyWalSetTagIdentity(rec.payload_, tags_replayed);
+        break;
+      case TxnType::kSetTagXattr:
+        ApplyWalTagXattr(rec.payload_, false);
+        break;
+      case TxnType::kDelTagXattr:
+        ApplyWalTagXattr(rec.payload_, true);
         break;
       case TxnType::kCreateNewBlob:
         ApplyWalCreateNewBlob(rec.payload_, blobs_replayed);
@@ -8633,6 +8676,7 @@ void Runtime::ApplyWalDelTag(const std::vector<char> &payload,
     shm_cache_.EraseBlob(key);  // issue #783: keep the mirror from going stale
   }
   tag_id_to_info_.erase(tag_id);
+  EraseTagXattrs(tag_id);
   tags_replayed++;
 }
 

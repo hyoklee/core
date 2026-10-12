@@ -209,9 +209,15 @@ clio::run::TaskResume Runtime::Create(clio::run::shared_ptr<CreateTask> &task) {
     if (st->GetReturnCode() == 0) sys_tag_id_ = st->tag_id_;
   }
   split_entries_ = std::max<clio::run::u32>(cfg.dir_split_entries_, 16);
-  // The namespace itself lives in CTE blobs (directory blocks, inode
-  // records) and loads on demand; only this container's id reservation and
-  // orphan list are read up front.
+  // Directory blocks this container is home for: in memory, persisted in a
+  // node-local journal next to the stream log when metadata_log_path is set
+  // (else in CTE blobs). Replayed before anything reads a directory.
+  OpenDirJournal(cfg.metadata_log_path_.empty()
+                     ? std::string()
+                     : ctp::ConfigParse::ExpandPath(cfg.metadata_log_path_) +
+                           ".dirs." + std::to_string(container_id_));
+  // Inode records live in CTE blobs and load on demand; only this
+  // container's id reservation and orphan list are read up front.
   CLIO_CO_AWAIT(LoadSysRecords());
   if (is_restart_) CLIO_CO_AWAIT(ReconcileRestoredStreams());
   // Mirror the namespace into CTE tag names (async). The root first; on a
@@ -627,18 +633,35 @@ clio::run::TaskResume Runtime::FileSizeOp(clio::cte::core::TagId tag,
 clio::run::TaskResume Runtime::SyncMeta(
     clio::run::shared_ptr<SyncMetaTask> &task) {
   CLIO_TASK_BODY_BEGIN
-  // The namespace lives in CTE blobs now (directory blocks, inode records);
-  // fsync/fsyncdir make them durable with SyncTag on the tags involved. This
-  // container only has to sync its own system records.
+  // Inode records (and, without a journal, directory blocks) live in CTE
+  // blobs; fsync/fsyncdir make them durable with SyncTag on the tags
+  // involved. This container syncs its directory journal and its own
+  // system records.
+  task->return_code_ = SyncDirJournal() == 0 ? 0 : 5;  // EIO
   if (!sys_tag_id_.IsNull()) {
     auto st = cte_.AsyncSyncTag(sys_tag_id_, clio::run::PoolQuery::Local());
     CLIO_CO_AWAIT(st);
-    task->return_code_ = st->GetReturnCode() == 0 ? 0 : 5;  // EIO
-  } else {
-    task->return_code_ = 0;
+    if (st->GetReturnCode() != 0) task->return_code_ = 5;  // EIO
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
+}
+
+void Runtime::StampSizePush(const AdvanceSizeTask &task, FileInfo *fi) {
+  if (task.reserve_ == 0 && task.mtime_ns_ != 0) {
+    // The write's own time: the push lands after close, and the client has
+    // already reported that time to stat callers. Never backwards: a batched
+    // create can land after the write and stamp its own (later) time.
+    const clio::run::u64 t = std::max(fi->mtime_, task.mtime_ns_);
+    fi->mtime_ = t;
+    fi->ctime_ = std::max(fi->ctime_, t);
+    return;
+  }
+  // No write time: a reservation, or a client that does not track one.
+  // Only a push that grew the file is a change; a repeated push is not.
+  if (task.reserve_ != 0 || task.old_size_ < task.size_) {
+    fi->mtime_ = fi->ctime_ = clio::cte::core::GetWallTimeNs();
+  }
 }
 
 clio::run::TaskResume Runtime::AdvanceSize(
@@ -655,7 +678,7 @@ clio::run::TaskResume Runtime::AdvanceSize(
     auto f = self_.AsyncAdvanceSizeAt(
         clio::run::PoolQuery::DirectId(
             static_cast<clio::run::ContainerId>(owner)),
-        task->tag_packed_, task->size_, task->reserve_);
+        task->tag_packed_, task->size_, task->reserve_, task->mtime_ns_);
     CLIO_CO_AWAIT(f);
     task->old_size_ = f->old_size_;
     task->return_code_ = f->GetReturnCode();
@@ -693,8 +716,7 @@ clio::run::TaskResume Runtime::AdvanceSize(
   }
   {
     std::lock_guard<std::mutex> g(meta_mu_);
-    const clio::run::u64 now = clio::cte::core::GetWallTimeNs();
-    fi->mtime_ = fi->ctime_ = now;
+    StampSizePush(*task, fi.get());
     LogInode(*fi);
     if (!fi->path_.empty()) MirrorFile(fi->path_, *fi);
   }
@@ -752,6 +774,12 @@ clio::run::TaskResume Runtime::MultiCreate(
     if (auto fi = FindInode(e.tag_packed_)) {
       std::lock_guard<std::mutex> g(meta_mu_);
       fi->path_ = path;
+      if (e.ctime_ns_ != 0) {
+        // The client's creation time, not this batch's arrival: stat
+        // already reported it, and git compares it exactly.
+        fi->atime_ = fi->mtime_ = fi->ctime_ = e.ctime_ns_;
+        LogInode(*fi);
+      }
       MirrorFile(path, *fi);
     }
     task->num_ok_++;

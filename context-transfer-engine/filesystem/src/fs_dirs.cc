@@ -139,6 +139,19 @@ clio::run::TaskResume Runtime::ReadBlockBlob(clio::run::u64 dir,
                                              int &rc) {
   CLIO_TASK_BODY_BEGIN
   rc = 0;
+  if (dir_journal_) {
+    rc = TakeJournaledBlock(dir, k, out);
+    const clio::run::u32 n = NumContainers();
+    if (rc == ENOENT && n > 1 &&
+        clio::cte::core::BlobHash(FsUnpack(dir), DirBlockName(k)) % n !=
+            container_id_) {
+      // Serving a dead home's block: it is in that node's own journal
+      // (#1263), not here. Not "no such directory", which would let a
+      // create or a repair replace it.
+      rc = EIO;
+    }
+    CLIO_CO_RETURN;
+  }
   bool ready = false;
   CLIO_CO_AWAIT(AwaitCteReady(ready));
   if (!ready) {
@@ -192,6 +205,10 @@ clio::run::TaskResume Runtime::WriteBlockBlob(clio::run::u64 dir,
                                               int &rc) {
   CLIO_TASK_BODY_BEGIN
   rc = 0;
+  if (dir_journal_) {
+    rc = JournalAppend(FsLogRec::kBlockImage, image);
+    CLIO_CO_RETURN;
+  }
   bool ready = false;
   CLIO_CO_AWAIT(AwaitCteReady(ready));
   if (!ready) {
@@ -411,6 +428,8 @@ void Runtime::InstallLoadedBlock(const BlockKey &key,
     }
     blocks_[key] = slot;
     *out = slot;
+    // A home block now lives in blocks_; compaction takes it from there.
+    if (slot->home_) journaled_.erase(key);
   }
   if (ev != early_.end()) early_.erase(ev);
 }
@@ -424,6 +443,8 @@ clio::run::TaskResume Runtime::LoadHomeBlock(clio::run::u64 dir,
   const BlockKey key{dir, k};
   SetLoadStage(key, "home load: reading the block blob (GetBlobSize/GetBlob)");
   CLIO_CO_AWAIT(ReadBlockBlob(dir, k, &slot->blk_, lrc));
+  // Loaded from the journal: its deltas build on the image there.
+  slot->journal_image_ = lrc != 0;
   if (lrc == ENOENT && dir == FsPack(FsRootId()) && k == 0) {
     // "/" exists by definition: its home materializes it on first use.
     slot->blk_.dir_ = dir;
@@ -451,7 +472,10 @@ clio::run::TaskResume Runtime::LoadHomeBlock(clio::run::u64 dir,
     SetLoadStage(key, "home load: persisting the incarnation jump (PutBlob)");
     CLIO_CO_AWAIT(WriteBlockBlob(dir, k, EncodeDirBlock(slot->blk_, true),
                                  wrc));
-    if (wrc != 0) slot->persist_dirty_ = true;  // the next commit retries
+    if (wrc != 0) {
+      slot->persist_dirty_ = true;  // the next commit retries
+      slot->journal_image_ = true;
+    }
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -710,7 +734,8 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<BlockSlot> slot,
   rc = 0;
   for (;;) {
     std::vector<DirDelta> deltas;
-    std::string image;
+    std::string image, jrec;
+    FsLogRec jtype = FsLogRec::kBlockDeltas;
     std::vector<clio::run::u32> holders;
     std::vector<clio::run::u64> leases;  // parallel to holders
     std::map<clio::run::u32, clio::run::u64> reg;  // registrations pushed to
@@ -726,10 +751,7 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<BlockSlot> slot,
         dir = slot->blk_.dir_;
         k = slot->blk_.index_;
         deltas.swap(slot->unpushed_);
-        if (slot->persist_dirty_) {
-          image = EncodeDirBlock(slot->blk_, true);
-          slot->persist_dirty_ = false;
-        }
+        TakePersistLocked(*slot, deltas, &image, &jtype, &jrec);
         reg = slot->holders_;
         if (slot->holders_unknown_) {
           resync = true;
@@ -746,6 +768,7 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<BlockSlot> slot,
     int wrc = 0;
     const auto commit_t0 = std::chrono::steady_clock::now();
     if (!image.empty()) CLIO_CO_AWAIT(WriteBlockBlob(dir, k, image, wrc));
+    if (!jrec.empty()) wrc = JournalAppend(jtype, jrec);
     std::vector<clio::run::u32> gone;
     if (!deltas.empty() && !holders.empty()) {
       FsReq pr;
@@ -779,7 +802,10 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<BlockSlot> slot,
         }
       }
       DropGoneHolders(gone, reg, &slot->holders_, &slot->holder_lease_ms_);
-      if (wrc != 0) slot->persist_dirty_ = true;  // the next commit retries
+      if (wrc != 0) {
+        slot->persist_dirty_ = true;  // the next commit retries
+        slot->journal_image_ = true;  // these deltas never reached it
+      }
       slot->durable_version_ = v;
       slot->committing_ = false;
     }
@@ -1204,9 +1230,14 @@ clio::run::TaskResume Runtime::DropBlock(const FsReq &req, FsResp &resp) {
   // The sealed block stays cached until its blob is gone: a racing create
   // finds it sealed (ENOENT), and no load can bring back the blob's
   // unsealed image in the meantime.
-  auto d = cte_.AsyncDelBlob(FsUnpack(req.dir_id_), DirBlockName(req.block_),
-                             clio::run::PoolQuery::Dynamic());
-  CLIO_CO_AWAIT(d);
+  if (dir_journal_) {
+    JournalDropBlock(req.dir_id_, req.block_);
+  } else {
+    auto d = cte_.AsyncDelBlob(FsUnpack(req.dir_id_),
+                               DirBlockName(req.block_),
+                               clio::run::PoolQuery::Dynamic());
+    CLIO_CO_AWAIT(d);
+  }
   if (sealed != nullptr) {
     std::lock_guard<std::mutex> g(ns_mu_);
     auto it = blocks_.find(BlockKey{req.dir_id_, req.block_});
@@ -1640,14 +1671,24 @@ clio::run::TaskResume Runtime::CheckMoveTarget(clio::run::u64 moving,
 clio::run::TaskResume Runtime::EncodeHomeNames(std::string *out) {
   CLIO_TASK_BODY_BEGIN
   out->clear();
-  auto list = cte_.AsyncListLocalBlobs("d\\.[0-9]+",
-                                       clio::run::PoolQuery::Local());
-  CLIO_CO_AWAIT(list);
+  std::vector<BlockKey> keys;
+  if (dir_journal_) {
+    JournaledHomeKeys(&keys);
+  } else {
+    auto list = cte_.AsyncListLocalBlobs("d\\.[0-9]+",
+                                         clio::run::PoolQuery::Local());
+    CLIO_CO_AWAIT(list);
+    for (size_t i = 0; i < list->tag_ids_.size(); ++i) {
+      keys.push_back(BlockKey{list->tag_ids_[i],
+                              static_cast<clio::run::u32>(std::strtoul(
+                                  list->blob_names_[i].c_str() + 2, nullptr,
+                                  10))});
+    }
+  }
   const clio::run::u64 now = NowNs();
-  for (size_t i = 0; i < list->tag_ids_.size(); ++i) {
-    const clio::run::u64 dir = list->tag_ids_[i];
-    const clio::run::u32 k = static_cast<clio::run::u32>(
-        std::strtoul(list->blob_names_[i].c_str() + 2, nullptr, 10));
+  for (const BlockKey &key : keys) {
+    const clio::run::u64 dir = key.dir_;
+    const clio::run::u32 k = key.index_;
     if (BlockHome(dir, k) != container_id_) continue;
     std::shared_ptr<BlockSlot> slot;
     int rc = 0;

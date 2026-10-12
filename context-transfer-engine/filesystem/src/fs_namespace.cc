@@ -173,11 +173,14 @@ clio::run::u32 Runtime::NumContainers() {
   return n == 0 ? 1u : static_cast<clio::run::u32>(n);
 }
 
+clio::run::u32 Runtime::InodeHome(clio::run::u64 packed) {
+  return FsIdHasHome(packed)
+             ? FsIdHome(packed)
+             : static_cast<clio::run::u32>(FsMix64(packed)) % NumContainers();
+}
+
 clio::run::u32 Runtime::InodeOwner(clio::run::u64 packed) {
-  const clio::run::u32 home =
-      FsIdHasHome(packed)
-          ? FsIdHome(packed)
-          : static_cast<clio::run::u32>(FsMix64(packed)) % NumContainers();
+  const clio::run::u32 home = InodeHome(packed);
   // While the home's node is dead its successor serves the inode, loaded
   // from its CTE record (which replication keeps reachable) -- the same
   // rule the CTE uses for the dead node's blobs.
@@ -681,6 +684,8 @@ clio::run::TaskResume Runtime::PurgeDrain() {
   CLIO_CO_AWAIT(FlushNames());
   CLIO_CO_AWAIT(FlushInodes());  // anything a handler left dirty
   if (catchup_pending_) CLIO_CO_AWAIT(CatchUpNames());
+  // Bound what a power loss can take from the directory journal.
+  SyncDirJournalIfDue();
   std::vector<PurgeItem> work;
   {
     std::lock_guard<std::mutex> g(purge_mu_);
@@ -711,6 +716,13 @@ clio::run::TaskResume Runtime::PurgeDrain() {
         FsResp ignored;  // an unreachable node keeps its pages (a leak)
         CLIO_CO_AWAIT(CallShard(c, kShardPurgeLocal, batch, ignored));
       }
+    }
+    for (size_t j = i; j < end; ++j) {
+      // The inode record: a key on this home's CTE container, which the
+      // per-node page purge above does not reach when no page lives here.
+      auto r = cte_.AsyncTagDelXattr(work[j].id_, std::string(), 0,
+                                     clio::run::PoolQuery::Local());
+      CLIO_CO_AWAIT(r);
     }
     {
       // The records are gone: EnsureInode finds nothing to load now.

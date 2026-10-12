@@ -12,6 +12,7 @@ add_clio_module_runtime(
     src/fs_namespace.cc
     src/fs_inode.cc
     src/fs_dirs.cc
+    src/fs_dir_journal.cc
     src/autogen/filesystem_lib_exec.cc
 )
 

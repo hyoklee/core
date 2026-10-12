@@ -5667,6 +5667,129 @@ struct ListLocalBlobsTask : public clio::run::Task {
   }
 };
 
+/** TagXattrTask::op_: insert or replace one key. */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrSet = 0;
+/** TagXattrTask::op_: read one key (found_ says whether it exists). */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrGet = 1;
+/** TagXattrTask::op_: remove one key; an empty key removes every key. */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrDel = 2;
+/** TagXattrTask::op_: list keys, in order, after the cursor in key_. */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrList = 3;
+
+/** TagXattrTask::flags_ for kTagXattrSet: fail if the key exists. */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrCreate = 0x1;
+/** TagXattrTask::flags_ for kTagXattrSet: fail if the key is absent. */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrReplace = 0x2;
+/** TagXattrTask::flags_ for kTagXattrDel: fail if the key is absent. */
+GLOBAL_CROSS_CONST clio::run::u32 kTagXattrMustExist = 0x4;
+
+/** TagXattr return code: kTagXattrCreate and the key exists. */
+static constexpr clio::run::u32 kTagXattrExistsRc = 17;   // EEXIST
+/** TagXattr return code: kTagXattrReplace / kTagXattrMustExist and the key
+ *  is absent. */
+static constexpr clio::run::u32 kTagXattrMissingRc = 61;  // ENODATA
+/** TagXattr return code: the key or value exceeds its limit. */
+static constexpr clio::run::u32 kTagXattrTooBigRc = 7;    // E2BIG
+/** TagXattr return code: an unknown op_. */
+static constexpr clio::run::u32 kTagXattrBadOpRc = 22;    // EINVAL
+/** Longest key a tag's xattr section accepts, in bytes. */
+static constexpr size_t kTagXattrMaxKey = 255;
+/** Largest value a tag's xattr section accepts, in bytes. */
+static constexpr size_t kTagXattrMaxValue = 64 * 1024;
+
+/**
+ * TagXattrTask - one operation on a tag's xattr section: a key/value map
+ * kept beside the tag's blobs, in memory on the container the task reaches
+ * and logged one key at a time in that container's WAL. Keys and values are
+ * opaque bytes. With PoolQuery::Dynamic the task goes to the container the
+ * tag id hashes to; a caller that keeps its own placement (one writer per
+ * tag) may route it explicitly instead.
+ */
+struct TagXattrTask : public clio::run::Task {
+  IN TagId tag_id_;                   ///< Tag whose section is addressed
+  IN clio::run::u32 op_;              ///< kTagXattrSet/Get/Del/List
+  IN clio::run::u32 flags_;           ///< kTagXattrCreate/Replace/MustExist
+  IN clio::run::priv::string key_;    ///< Key; for List, the cursor
+  INOUT clio::run::priv::string value_;  ///< Set: the value; Get: result
+  IN clio::run::u32 max_keys_;        ///< List: page size (0 = all)
+  OUT std::vector<std::string> keys_; ///< List: keys after the cursor
+  OUT clio::run::u32 found_;          ///< Get: 1 if the key exists; List: 1
+                                      ///< if keys remain after this page
+
+  /** SHM default constructor */
+  TagXattrTask()
+      : clio::run::Task(),
+        tag_id_(TagId::GetNull()),
+        op_(kTagXattrGet),
+        flags_(0),
+        key_(CLIO_PRIV_ALLOC),
+        value_(CLIO_PRIV_ALLOC),
+        max_keys_(0),
+        found_(0) {}
+
+  /** Emplace constructor */
+  CTP_CROSS_FUN explicit TagXattrTask(const clio::run::TaskId &task_id,
+                                      const clio::run::PoolId &pool_id,
+                                      const clio::run::PoolQuery &pool_query,
+                                      const TagId &tag_id, clio::run::u32 op,
+                                      clio::run::u32 flags,
+                                      const std::string &key,
+                                      const std::string &value,
+                                      clio::run::u32 max_keys)
+      : clio::run::Task(task_id, pool_id, pool_query, Method::kTagXattr),
+        tag_id_(tag_id),
+        op_(op),
+        flags_(flags),
+        key_(CLIO_PRIV_ALLOC, key),
+        value_(CLIO_PRIV_ALLOC, value),
+        max_keys_(max_keys),
+        found_(0) {
+    task_id_ = task_id;
+    pool_id_ = pool_id;
+    method_ = Method::kTagXattr;
+    task_flags_.Clear();
+    pool_query_ = pool_query;
+  }
+
+  /** Serialize IN and INOUT parameters */
+  template <typename Archive>
+  CTP_CROSS_FUN void SerializeIn(Archive &ar) {
+    Task::SerializeIn(ar);
+    ar(tag_id_, op_, flags_, key_, value_, max_keys_);
+  }
+
+  /** Serialize OUT and INOUT parameters */
+  template <typename Archive>
+  CTP_CROSS_FUN void SerializeOut(Archive &ar) {
+    Task::SerializeOut(ar);
+    ar(value_, keys_, found_);
+  }
+
+  /** Copy from another TagXattrTask */
+  void Copy(const ctp::ipc::FullPtr<TagXattrTask> &other) {
+    Task::Copy(other.template Cast<Task>());
+    tag_id_ = other->tag_id_;
+    op_ = other->op_;
+    flags_ = other->flags_;
+    key_ = other->key_;
+    value_ = other->value_;
+    max_keys_ = other->max_keys_;
+    keys_ = other->keys_;
+    found_ = other->found_;
+  }
+
+  /** AggregateOut: keep the answer of a container that found the key. */
+  void AggregateOut(const ctp::ipc::FullPtr<clio::run::Task> &other_base) {
+    Task::AggregateOut(other_base);
+    auto other = other_base.template Cast<TagXattrTask>();
+    if (other->found_ && !found_) {
+      found_ = other->found_;
+      value_ = other->value_;
+    }
+    keys_.insert(keys_.end(), other->keys_.begin(), other->keys_.end());
+  }
+};
+
 /** SyncTag return code: a persistent tier had no room for the tag's bytes. */
 static constexpr clio::run::u32 kSyncNoSpaceRc = 28;  // ENOSPC
 /** SyncTag return code: a device sync or a read of the tag's bytes failed. */

@@ -54,6 +54,7 @@
 #include <clio_cte/stream/stream_runtime.h>
 #include <clio_cte/filesystem/fs_shard.h>
 #include <clio_cte/filesystem/fs_dir_block.h>
+#include <clio_cte/filesystem/fs_meta_log.h>
 #include <clio_cte/filesystem/shm_fs_cache.h>
 
 namespace clio::cte::filesystem {
@@ -396,6 +397,10 @@ class Runtime : public clio::run::Container {
     std::map<clio::run::u32, clio::run::u64> holder_lease_ms_;
     /** Copy: served without asking the home until then (steady ms). */
     clio::run::u64 lease_until_ms_ = 0;
+    /** Home, directory journal: the journal holds no image this block's
+     *  deltas build on (new, split off, materialized, or a journal write
+     *  failed), so the next commit journals the whole block. */
+    bool journal_image_ = true;
   };
   std::mutex ns_mu_;  ///< guards blocks_, loading_, early_ and every slot
   std::unordered_map<BlockKey, std::shared_ptr<BlockSlot>, BlockKeyHash> blocks_;
@@ -416,6 +421,21 @@ class Runtime : public clio::run::Container {
   }
   /** Pushes that arrived while their block was loading. */
   std::unordered_map<BlockKey, std::vector<DirDelta>, BlockKeyHash> early_;
+
+  // ---- directory journal (fs_dir_journal.cc) ----
+  /** True when directory blocks persist in dir_log_ (metadata_log_path is
+   *  set) instead of CTE blobs. */
+  bool dir_journal_ = false;
+  /** Node-local journal of the blocks this container is home for. */
+  FsMetaLog dir_log_;
+  /** Orders appends against a compaction's snapshot + rewrite. Taken
+   *  BEFORE ns_mu_, never while holding it. */
+  std::mutex dir_log_mu_;
+  /** Durable images replayed from the journal and not loaded yet (a home
+   *  block moves to blocks_ on first use). Guarded by ns_mu_. */
+  std::unordered_map<BlockKey, std::string, BlockKeyHash> journaled_;
+  /** Steady ms of the journal's last periodic fsync. */
+  clio::run::u64 dir_log_synced_ms_ = 0;
 
   // ---- inode attribute cache (inodes homed elsewhere) ----
   /** A cached stat of an inode homed on another container. */
@@ -455,6 +475,13 @@ class Runtime : public clio::run::Container {
   // ---- ownership + transport (fs_namespace.cc) ----
   /** @return number of containers in this pool (== nodes). */
   clio::run::u32 NumContainers();
+  /**
+   * An inode's home container, before failover (its id's home bits, else
+   * its hash).
+   * @param packed inode id
+   * @return the home container id
+   */
+  clio::run::u32 InodeHome(clio::run::u64 packed);
   /** @return container that is home for inode `packed`. */
   clio::run::u32 InodeOwner(clio::run::u64 packed);
   /**
@@ -529,6 +556,89 @@ class Runtime : public clio::run::Container {
    */
   clio::run::TaskResume WriteBlockBlob(clio::run::u64 dir, clio::run::u32 k,
                                        const std::string &image, int &rc);
+  /**
+   * Open this container's directory journal, then replay it (restart) or
+   * empty it (fresh start). Leaves dir_journal_ false when `path` is empty
+   * or cannot be opened, so blocks stay in CTE blobs.
+   * @param path journal file (metadata_log_path + ".dirs." + container id)
+   */
+  void OpenDirJournal(const std::string &path);
+  /**
+   * Rebuild journaled_ from the journal: images, then each block's deltas
+   * in order, then the durable form (pending entries dropped, leaving ones
+   * live, unsealed), as a crash aborts the operations that set them.
+   * @return number of records replayed
+   */
+  size_t ReplayDirJournal();
+  /**
+   * Rewrite the journal as one image per block this container is home for.
+   * Caller holds dir_log_mu_ and not ns_mu_.
+   */
+  void CompactDirJournalLocked();
+  /**
+   * Append one record to the directory journal, compacting it when it has
+   * grown past kDirJournalCompactBytes. Never call with ns_mu_ held.
+   * @param type record type
+   * @param payload encoded record
+   * @return 0, ENOSPC or EIO
+   */
+  int JournalAppend(FsLogRec type, const std::string &payload);
+  /** Blocks rebuilt while replaying the directory journal. */
+  using BlockState = std::unordered_map<BlockKey, DirBlock, BlockKeyHash>;
+  /**
+   * Apply one kBlockDeltas record during replay.
+   * @param p payload (EncodeDirDeltas)
+   * @param state blocks replayed so far
+   * @return number of deltas that could not be applied
+   */
+  static size_t ReplayBlockDeltas(const std::string &p, BlockState *state);
+  /**
+   * Journal the deletion of block (dir, k) (rmdir) and, in the same step,
+   * forget its replayed image and its sealed slot.
+   * @param dir packed directory id
+   * @param k block index
+   * @return 0, ENOSPC or EIO
+   */
+  int JournalDropBlock(clio::run::u64 dir, clio::run::u32 k);
+  /**
+   * At the start of a commit (ns_mu_ held): take what this commit must make
+   * durable. CTE blobs: the image when the block changed durably. Journal:
+   * the whole image for a block with none journaled yet, else the deltas.
+   * @param slot the block (home)
+   * @param deltas the changes this commit pushes
+   * @param image receives the CTE blob image (empty: none)
+   * @param jtype receives the journal record type
+   * @param jrec receives the journal record (empty: none)
+   */
+  void TakePersistLocked(BlockSlot &slot, const std::vector<DirDelta> &deltas,
+                         std::string *image, FsLogRec *jtype,
+                         std::string *jrec);
+  /**
+   * Hand the replayed image of block (dir, k) to its home's first load.
+   * @param dir packed directory id
+   * @param k block index
+   * @param out receives the block
+   * @return 0, ENOENT (no such block) or EIO (undecodable image)
+   */
+  int TakeJournaledBlock(clio::run::u64 dir, clio::run::u32 k, DirBlock *out);
+  /**
+   * fsync the directory journal.
+   * @return 0 or EIO
+   */
+  int SyncDirJournal();
+  /** fsync the directory journal if it has unsynced records and the last
+   *  sync is older than kDirJournalSyncMs (called from the drain tick). */
+  void SyncDirJournalIfDue();
+  /**
+   * Blocks this container is home for according to its journal: replayed
+   * but not loaded, and loaded home slots.
+   * @param out receives the keys
+   */
+  void JournaledHomeKeys(std::vector<BlockKey> *out);
+  /** Journal size that triggers a compaction (bytes). */
+  static constexpr clio::run::u64 kDirJournalCompactBytes = 64ull << 20;
+  /** Longest a journal record waits for its fsync on the drain tick (ms). */
+  static constexpr clio::run::u64 kDirJournalSyncMs = 1000;
   /**
    * Home side of a fetch: register the caller as a holder and return the
    * block (req.dir_id_, req.block_; req.a_ = the caller's container).
@@ -854,6 +964,15 @@ class Runtime : public clio::run::Container {
   std::shared_ptr<FileInfo> FindInode(clio::run::u64 packed);
   /** Fill `attr` from an inode (meta_mu_ held). */
   void InodeAttrLocked(const FileInfo &fi, FsAttr *attr);
+
+  /**
+   * Set a file's mtime/ctime for a size push (AdvanceSize): the client's
+   * write time when it sent one (never moving mtime backwards), else the
+   * current time if the push grew the file or reserved an append.
+   * @param task the push, after its size op ran (old_size_ is set)
+   * @param fi the file, under meta_mu_
+   */
+  void StampSizePush(const AdvanceSizeTask &task, FileInfo *fi);
   /** Open inode: allocate a handle (O_TRUNC is applied by the caller). */
   int InodeOpenLocal(const FsReq &req, FsResp &resp);
   /**
@@ -951,7 +1070,7 @@ class Runtime : public clio::run::Container {
                                    clio::run::u64 *new_size, clio::run::u32 *rc);
 
   // ---- inode records in CTE + the attribute cache (fs_inode.cc) ----
-  // Each inode's persistent attributes live in a small blob (kInodeBlob) of
+  // Each inode's persistent attributes live in one xattr key (kInodeKey) of
   // the file's own tag: CTE persists and replicates it. The inode's home is
   // the only writer; every other container that stats the inode caches its
   // attributes and receives each change as a push before it is acknowledged.

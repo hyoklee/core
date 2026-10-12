@@ -33,9 +33,11 @@
 
 /**
  * Filesystem runtime: inode records in CTE. Each inode's persistent
- * attributes are one small blob (kInodeBlob) in the file's own tag, written
- * by the inode's home before it acknowledges a change and read by any
- * container (through the cache chain) to stat the file.
+ * attributes are one key (kInodeKey) of the xattr section of the file's own
+ * tag, held by the CTE container on the inode's home node: the home writes
+ * it before it acknowledges a change and reads it back after a restart.
+ * Other containers get attributes from the home (stat, pushes), never from
+ * the record.
  */
 
 #include <algorithm>
@@ -45,8 +47,8 @@
 namespace clio::cte::filesystem {
 
 namespace {
-/** Blob holding an inode's record, in the file's tag (never a page name). */
-constexpr const char *kInodeBlob = "~i";
+/** Xattr key of an inode's record in the file's tag section. */
+constexpr const char *kInodeKey = "~i";
 /** Record format tag. */
 constexpr clio::run::u32 kInodeRecMagic = 0x31494643u;  // "CFI1"
 /** Wait between checks while another task stores the same inode (us). */
@@ -135,7 +137,8 @@ clio::run::TaskResume Runtime::DiscardInodeRecord(
     inode_dirty_.erase(packed);
     inode_dirty_seq_.erase(packed);
   }
-  auto d = cte_.AsyncDelBlob(id, kInodeBlob, clio::run::PoolQuery::Dynamic());
+  auto d = cte_.AsyncTagDelXattr(id, kInodeKey, 0,
+                                 clio::run::PoolQuery::Local());
   CLIO_CO_AWAIT(d);  // best effort: a leftover record names nothing
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -222,27 +225,12 @@ clio::run::TaskResume Runtime::StoreInodeRec(clio::run::u64 packed,
       CLIO_CO_RETURN;
     }
   }
-  // kMetaBlob: storing the record is not a change to the file (no ctime
-  // bump); a non-volatile tier keeps it across a restart.
-  clio::cte::core::Context meta_ctx;
-  meta_ctx.op_flags_ |= clio::cte::core::Context::kMetaBlob;
-  meta_ctx.min_persistence_level_ = inode_volatile_only_ ? 0 : 1;
-  auto p = cte_.AsyncPutBlob(FsUnpack(packed), kInodeBlob, 0,
-                             rec.size(), rec.data(), -1.0f, meta_ctx,
-                             0u, clio::run::PoolQuery::Dynamic());
+  // The home's own CTE container holds the record: one in-memory update and
+  // a WAL append there, no blob placement or device write. Only this home
+  // writes or reads it (a dead home's records are on its own node, #1263).
+  auto p = cte_.AsyncTagSetXattr(FsUnpack(packed), kInodeKey, rec, 0,
+                                 clio::run::PoolQuery::Local());
   CLIO_CO_AWAIT(p);
-  if (p->GetReturnCode() != 0 && !inode_volatile_only_) {
-    meta_ctx.min_persistence_level_ = 0;
-    p = cte_.AsyncPutBlob(FsUnpack(packed), kInodeBlob, 0, rec.size(),
-                          rec.data(), -1.0f, meta_ctx, 0u,
-                          clio::run::PoolQuery::Dynamic());
-    CLIO_CO_AWAIT(p);
-    if (p->GetReturnCode() == 0) {
-      HLOG(kWarning, "filesystem: no non-volatile CTE tier accepts inode "
-           "records; they stay in RAM and do not survive a restart");
-      inode_volatile_only_ = true;
-    }
-  }
   rc = static_cast<int>(p->GetReturnCode());
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -526,25 +514,28 @@ clio::run::TaskResume Runtime::EnsureInode(clio::run::u64 packed, int *err) {
     if (!ready) CLIO_CO_RETURN;
   }
   const clio::cte::core::TagId tag = FsUnpack(packed);
-  auto sz = cte_.AsyncGetBlobSize(tag, kInodeBlob);
-  CLIO_CO_AWAIT(sz);
-  // Only "no such blob" means there is no record. Anything else (the
-  // record's owner down with no copy reachable, #1166; a lost block) is a
-  // read failure: the inode may well exist, and the caller must say EIO.
-  if (sz->GetReturnCode() != 0 && sz->GetReturnCode() != kCteBlobNotFoundRc) {
+  auto g = cte_.AsyncTagGetXattr(tag, kInodeKey,
+                                 clio::run::PoolQuery::Local());
+  CLIO_CO_AWAIT(g);
+  if (g->GetReturnCode() != 0) {
     if (err != nullptr) *err = EIO;
     CLIO_CO_RETURN;
   }
-  if (sz->GetReturnCode() != 0 || sz->size_ == 0) CLIO_CO_RETURN;
-  std::string rec(sz->size_, '\0');
-  auto g = cte_.AsyncGetBlob(tag, kInodeBlob, 0, rec.size(), 0u, rec.data());
-  CLIO_CO_AWAIT(g);
+  if (!g->found_) {
+    // Serving a dead home's inode: its record is in that node's CTE, not
+    // here (#1263). Not "no such file", which would let a create replace it.
+    if (NumContainers() > 1 && InodeHome(packed) != container_id_ &&
+        err != nullptr) {
+      *err = EIO;
+    }
+    CLIO_CO_RETURN;
+  }
+  const std::string rec = g->value_.str();
   auto fi = std::make_shared<FileInfo>();
   clio::run::u64 size = 0;
   clio::run::u32 writer = kNoRecWriter;
   bool fresh = false;
-  if (g->GetReturnCode() != 0 ||
-      !DecInodeRec(rec, fi.get(), &size, &writer, &fresh)) {
+  if (!DecInodeRec(rec, fi.get(), &size, &writer, &fresh)) {
     HLOG(kError, "filesystem: inode record {} unreadable", packed);
     if (err != nullptr) *err = EIO;
     CLIO_CO_RETURN;

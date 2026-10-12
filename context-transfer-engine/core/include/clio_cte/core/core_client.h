@@ -4003,6 +4003,93 @@ class Client : public clio::run::ContainerClient {
   }
 
   /**
+   * One operation on a tag's xattr section - asynchronous. See TagXattrTask
+   * for the ops, flags and return codes.
+   * @param tag_id tag whose section is addressed
+   * @param op kTagXattrSet / kTagXattrGet / kTagXattrDel / kTagXattrList
+   * @param flags kTagXattrCreate / kTagXattrReplace / kTagXattrMustExist
+   * @param key the key (List: the cursor; keys after it are returned)
+   * @param value the value to store (Set only)
+   * @param max_keys List page size (0 = all)
+   * @param pool_query routing (default: Dynamic, the tag id's hashed owner)
+   * @return future for the TagXattrTask
+   */
+  clio::run::Future<TagXattrTask> AsyncTagXattr(
+      const TagId &tag_id, clio::run::u32 op, clio::run::u32 flags,
+      const std::string &key, const std::string &value = std::string(),
+      clio::run::u32 max_keys = 0,
+      const clio::run::PoolQuery &pool_query = clio::run::PoolQuery::Dynamic()) {
+    auto *ipc_manager = CLIO_CPU_IPC;
+    auto task = ipc_manager->NewTask<TagXattrTask>(
+        clio::run::CreateTaskId(), pool_id_, pool_query, tag_id, op, flags,
+        key, value, max_keys);
+    return ipc_manager->Send(task);
+  }
+
+  /**
+   * Insert or replace one key of a tag's xattr section - asynchronous.
+   * @param tag_id the tag
+   * @param key the key
+   * @param value the value
+   * @param flags kTagXattrCreate / kTagXattrReplace (0 = upsert)
+   * @param pool_query routing (default: Dynamic)
+   * @return future for the TagXattrTask (rc 0 on success)
+   */
+  clio::run::Future<TagXattrTask> AsyncTagSetXattr(
+      const TagId &tag_id, const std::string &key, const std::string &value,
+      clio::run::u32 flags = 0,
+      const clio::run::PoolQuery &pool_query = clio::run::PoolQuery::Dynamic()) {
+    return AsyncTagXattr(tag_id, kTagXattrSet, flags, key, value, 0,
+                         pool_query);
+  }
+
+  /**
+   * Read one key of a tag's xattr section - asynchronous.
+   * @param tag_id the tag
+   * @param key the key
+   * @param pool_query routing (default: Dynamic)
+   * @return future for the TagXattrTask (found_, value_)
+   */
+  clio::run::Future<TagXattrTask> AsyncTagGetXattr(
+      const TagId &tag_id, const std::string &key,
+      const clio::run::PoolQuery &pool_query = clio::run::PoolQuery::Dynamic()) {
+    return AsyncTagXattr(tag_id, kTagXattrGet, 0, key, std::string(), 0,
+                         pool_query);
+  }
+
+  /**
+   * Remove one key of a tag's xattr section, or every key when `key` is
+   * empty - asynchronous.
+   * @param tag_id the tag
+   * @param key the key (empty = all)
+   * @param flags kTagXattrMustExist (0 = absent is fine)
+   * @param pool_query routing (default: Dynamic)
+   * @return future for the TagXattrTask
+   */
+  clio::run::Future<TagXattrTask> AsyncTagDelXattr(
+      const TagId &tag_id, const std::string &key, clio::run::u32 flags = 0,
+      const clio::run::PoolQuery &pool_query = clio::run::PoolQuery::Dynamic()) {
+    return AsyncTagXattr(tag_id, kTagXattrDel, flags, key, std::string(), 0,
+                         pool_query);
+  }
+
+  /**
+   * List the keys of a tag's xattr section in order - asynchronous.
+   * @param tag_id the tag
+   * @param cursor return keys strictly after this one (empty = from start)
+   * @param max_keys page size (0 = all)
+   * @param pool_query routing (default: Dynamic)
+   * @return future for the TagXattrTask (keys_; found_ = 1 if more remain)
+   */
+  clio::run::Future<TagXattrTask> AsyncTagListXattr(
+      const TagId &tag_id, const std::string &cursor = std::string(),
+      clio::run::u32 max_keys = 0,
+      const clio::run::PoolQuery &pool_query = clio::run::PoolQuery::Dynamic()) {
+    return AsyncTagXattr(tag_id, kTagXattrList, 0, cursor, std::string(),
+                         max_keys, pool_query);
+  }
+
+  /**
    * fsync(2) for one tag - asynchronous. Broadcast by default so every
    * container makes the blobs it holds durable (see SyncTagTask).
    * @param tag_id tag whose blobs must become durable
