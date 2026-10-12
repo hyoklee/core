@@ -1664,9 +1664,17 @@ clio::run::TaskResume Runtime::ReconstructStripeAsBefore(
     std::vector<std::vector<uint8_t>> &out, bool &ok) {
   CLIO_TASK_BODY_BEGIN
   ok = false;
-  if (old_bytes.size() != pieces.size() || stripe.empty()) CLIO_CO_RETURN;
+  if (old_bytes.size() != pieces.size() || stripe.empty()) {
+    HLOG(kWarning, "safe_bdev Write: slot {}: cannot rewind ({} old-byte "
+         "entries for {} pieces)", s, old_bytes.size(), pieces.size());
+    CLIO_CO_RETURN;
+  }
   for (size_t i = 0; i < pieces.size(); ++i) {
-    if (pieces[i].slot == s && old_bytes[i].size() != pieces[i].len) {
+    // A down member's column is decoded, not rewound: its bytes are moot.
+    if (pieces[i].slot == s && DataActive(pieces[i].member) &&
+        old_bytes[i].size() != pieces[i].len) {
+      HLOG(kWarning, "safe_bdev Write: slot {}: cannot rewind, the bytes "
+           "member {} replaced were not captured", s, pieces[i].member);
       CLIO_CO_RETURN;  // a replaced range was not captured: cannot rewind
     }
   }
@@ -1676,7 +1684,11 @@ clio::run::TaskResume Runtime::ReconstructStripeAsBefore(
   std::vector<std::vector<uint8_t>> bufs;
   const std::vector<int> none;
   CLIO_CO_AWAIT(GatherSurvivors(s, code, none, idx, bufs));
-  if (static_cast<int>(idx.size()) < k) CLIO_CO_RETURN;
+  if (static_cast<int>(idx.size()) < k) {
+    HLOG(kWarning, "safe_bdev Write: slot {}: cannot rewind, {} of {} "
+         "columns readable", s, idx.size(), k);
+    CLIO_CO_RETURN;
+  }
   // Rewind each data survivor to the bytes the parity still encodes.
   for (size_t si = 0; si < idx.size(); ++si) {
     if (idx[si] >= k) continue;  // a parity shard: untouched by the write
@@ -2014,10 +2026,15 @@ clio::run::TaskResume Runtime::WriteStripes(
   std::vector<std::vector<uint8_t>> old_bytes;
   const std::set<clio::run::u64> full_slots =
       degraded.empty() ? FullStripes(pieces) : std::set<clio::run::u64>();
-  if (degraded.empty()) {
+  {
+    // Degraded stripes keep their own old bytes (CaptureDegradedOld); skip
+    // them and the whole-stripe writes here.
+    std::set<clio::run::u64> skip =
+        degraded.empty() ? full_slots : FullStripes(pieces);
+    for (const auto &kv : degraded) skip.insert(kv.first);
     const auto read_t0 = std::chrono::steady_clock::now();
-    CLIO_CO_AWAIT(ReadReplacedBytes(pieces, full_slots, delta_slots,
-                                    old_bytes));
+    CLIO_CO_AWAIT(ReadReplacedBytes(pieces, skip, delta_slots, old_bytes));
+    if (!degraded.empty()) delta_slots.clear();  // full encode, as before
     if (phases != nullptr) phases->read_old_ms = MsSince(read_t0);
   }
 
@@ -3609,19 +3626,27 @@ clio::run::TaskResume Runtime::ReadReplacedBytes(
   CLIO_TASK_BODY_BEGIN
   slots.clear();
   old_bytes.assign(pieces.size(), std::vector<uint8_t>());
+  // Capture the replaced bytes of EVERY stripe this write changes only in
+  // part, not just the delta-eligible ones: a member that dies mid-write
+  // leaves the stripe decodable only by rewinding what already landed, and
+  // a stripe without them was refused ("changed bytes its parity decode
+  // needs"). The delta set keeps its own rule.
+  std::set<clio::run::u64> capture;
   std::set<clio::run::u64> seen;
   for (const WritePiece &p : pieces) {
-    if (seen.insert(p.slot).second && skip.count(p.slot) == 0 &&
-        DeltaEligible(p.slot)) {
-      slots.insert(p.slot);
+    if (seen.insert(p.slot).second && skip.count(p.slot) == 0) {
+      if (parity_level_ != 0) capture.insert(p.slot);
+      if (DeltaEligible(p.slot)) slots.insert(p.slot);
     }
   }
+  for (clio::run::u64 s : slots) capture.insert(s);
   // Every piece's old bytes in one round trip (#1160).
   std::vector<SegRead> reads;
   std::vector<size_t> piece_of;
   for (size_t i = 0; i < pieces.size(); ++i) {
     const WritePiece &p = pieces[i];
-    if (slots.count(p.slot) == 0) continue;
+    if (capture.count(p.slot) == 0) continue;
+    if (!DataActive(p.member)) continue;  // a down column decodes from parity
     old_bytes[i].assign(p.len, 0);
     SegRead r;
     r.d = p.member;
@@ -3638,8 +3663,12 @@ clio::run::TaskResume Runtime::ReadReplacedBytes(
   }
   CLIO_CO_AWAIT(AwaitDataReads(reads, batch));
   for (size_t i = 0; i < reads.size(); ++i) {
-    // A piece that could not be read: full encode for its stripe instead.
-    if (!reads[i].ok) slots.erase(pieces[piece_of[i]].slot);
+    // A piece that could not be read: full encode for its stripe instead,
+    // and no old bytes for it (zeros would rewind it to garbage).
+    if (!reads[i].ok) {
+      slots.erase(pieces[piece_of[i]].slot);
+      old_bytes[piece_of[i]].clear();
+    }
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END

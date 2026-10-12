@@ -179,6 +179,16 @@ void WorkOrchestrator::AwakenAllWorkers() {
   }
 }
 
+namespace {
+/** Steady-clock microseconds, the clock worker exec start times use. */
+double NowUsForJoin() {
+  return static_cast<double>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count());
+}
+}  // namespace
+
 void WorkOrchestrator::StopWorkers() {
   if (!workers_running_) {
     return;
@@ -195,11 +205,15 @@ void WorkOrchestrator::StopWorkers() {
       worker->Stop();
       // Wake worker from epoll_wait so it can observe is_running_ == false
       TaskLane *lane = worker->GetLane();
-      if (lane) {
-        int tid = lane->GetTid();
-        if (tid > 0) {
-          ctp::lbm::EventManager::Signal(runtime_pid, tid);
-        }
+      const int lane_tid = lane != nullptr ? lane->GetTid() : 0;
+      if (lane_tid > 0) {
+        ctp::lbm::EventManager::Signal(runtime_pid, lane_tid);
+      }
+      // An elastic worker's lane can carry another thread's tid (a lane
+      // handed over in a rescue): wake the worker's own thread as well.
+      const int own_tid = static_cast<int>(worker->GetTid());
+      if (own_tid > 0 && own_tid != lane_tid) {
+        ctp::lbm::EventManager::Signal(runtime_pid, own_tid);
       }
     }
   }
@@ -212,11 +226,20 @@ void WorkOrchestrator::StopWorkers() {
   auto thread_model = CTP_THREAD_MODEL;
   size_t joined_count = 0;
   constexpr uint64_t kJoinTimeoutMs = 5000;
-  for (auto &thread : worker_threads_) {
-    if (thread_model->TimedJoinOrDetach(thread, kJoinTimeoutMs)) {
+  for (size_t i = 0; i < worker_threads_.size(); ++i) {
+    if (thread_model->TimedJoinOrDetach(worker_threads_[i], kJoinTimeoutMs)) {
       ++joined_count;
     } else {
-      HLOG(kError, "StopWorkers: thread join timed out, detached");
+      // Which worker, and what it was running: a worker still inside a task
+      // cannot see the stop.
+      Worker *w = i < all_workers_.size() ? all_workers_[i] : nullptr;
+      HLOG(kError, "StopWorkers: thread join timed out, detached (worker {} "
+           "executing={} pool {} method {} for {} ms)",
+           w != nullptr ? static_cast<long long>(w->GetId()) : -1LL,
+           w != nullptr && w->IsExecuting(),
+           w != nullptr ? w->CurrentPoolMajor() : 0u,
+           w != nullptr ? w->CurrentMethod() : 0u,
+           w != nullptr ? w->CurrentTaskAgeMs(NowUsForJoin()) : 0.0);
     }
   }
 
