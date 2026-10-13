@@ -45,6 +45,7 @@
 #include <cstring>
 
 #include "autogen/admin_methods.h"
+#include "ownership_tasks.h"
 
 /**
  * Task struct definitions for Admin ChiMod

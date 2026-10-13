@@ -42,6 +42,7 @@
 
 #include <clio_cte/core/core_client.h>
 #include <clio_cte/core/core_tasks.h>
+#include "ownership_python.h"
 #include <clio_runtime/clio_runtime.h>
 #include <clio_runtime/bdev/bdev_tasks.h>
 #include <mutex>
@@ -895,6 +896,8 @@ NB_MODULE(clio_cte_core_ext, m) {
 
   // CTE-specific initialization
   // Note: Lambda wrapper used to avoid clio::run::PoolQuery::Dynamic() evaluation at import
+  clio::run::admin::RegisterOwnershipBindings(m);
+
   m.def("initialize_cte",
         [](const std::string &config_path, const clio::run::PoolQuery &pool_query) -> bool {
           bool result;

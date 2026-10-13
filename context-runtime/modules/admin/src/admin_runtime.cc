@@ -51,6 +51,7 @@
 
 #include "clio_ctp/data_structures/serialization/global_serialize.h"
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <climits>
 #include <filesystem>
@@ -2606,6 +2607,97 @@ clio::run::TaskResume Runtime::RegisterGpuContainer(
 //===========================================================================
 // Task Serialization Method Implementations
 //===========================================================================
+
+OwnershipLedger& Runtime::OwnershipAuthority(clio::run::u64 requested_node) {
+  std::lock_guard<std::mutex> lock(ownership_init_mutex_);
+  auto* ipc = CLIO_CPU_IPC;
+  if (ipc == nullptr || !ipc->IsInitialized() ||
+      requested_node > std::numeric_limits<clio::run::u32>::max() ||
+      ipc->GetNodeId() != requested_node) {
+    throw std::runtime_error("ownership request did not reach its physical authority");
+  }
+  if (ownership_failed_) {
+    throw std::runtime_error("ownership authority requires operator recovery and restart");
+  }
+  const char* node_config = std::getenv("CLIO_OWNERSHIP_AUTHORITY_NODE");
+  const char* root_config = std::getenv("CLIO_OWNERSHIP_STORAGE_ROOT");
+  if (node_config == nullptr || root_config == nullptr || *root_config == '\0') {
+    throw std::runtime_error("explicit ownership authority node and local storage are required");
+  }
+  const std::string node(node_config);
+  clio::run::u32 configured_node = 0;
+  const auto parsed = std::from_chars(node.data(), node.data() + node.size(), configured_node);
+  if (parsed.ec != std::errc() || parsed.ptr != node.data() + node.size() ||
+      configured_node != requested_node) {
+    throw std::runtime_error("configured ownership authority node does not match this node");
+  }
+  const auto path = (std::filesystem::path(root_config) / "ownership-v1.ledger").string();
+  if (ownership_ledger_ && ownership_storage_path_ != path) {
+    throw std::runtime_error("ownership authority storage configuration changed");
+  }
+  if (!ownership_ledger_) {
+    try {
+      ownership_ledger_ = std::make_unique<OwnershipLedger>(path);
+      ownership_storage_path_ = path;
+    } catch (...) {
+      ownership_failed_ = true;
+      throw;
+    }
+  }
+  return *ownership_ledger_;
+}
+
+clio::run::TaskResume Runtime::OwnershipAcquire(
+    clio::run::shared_ptr<OwnershipAcquireTask>& task) {
+  CLIO_TASK_BODY_BEGIN
+  try {
+    auto& authority = OwnershipAuthority(task->authority_node_);
+    const auto result = authority.Acquire(
+        task->resource_.str(), task->owner_nonce_.str(),
+        task->owner_label_input_.str(), task->expected_authority_uuid_.str(),
+        task->holder_metadata_input_.str());
+    SetOwnershipResult(*task, result);
+  } catch (const std::exception& error) {
+    task->outcome_ = "error";
+    task->error_message_ = error.what();
+    task->SetReturnCode(1);
+  }
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
+clio::run::TaskResume Runtime::OwnershipRelease(
+    clio::run::shared_ptr<OwnershipReleaseTask>& task) {
+  CLIO_TASK_BODY_BEGIN
+  try {
+    const auto result = OwnershipAuthority(task->authority_node_).Release(
+        task->resource_.str(), task->expected_authority_uuid_.str(),
+        task->token_revision_, task->owner_nonce_.str());
+    SetOwnershipResult(*task, result);
+  } catch (const std::exception& error) {
+    task->outcome_ = "error";
+    task->error_message_ = error.what();
+    task->SetReturnCode(1);
+  }
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
+clio::run::TaskResume Runtime::OwnershipInspect(
+    clio::run::shared_ptr<OwnershipInspectTask>& task) {
+  CLIO_TASK_BODY_BEGIN
+  try {
+    const auto result = OwnershipAuthority(task->authority_node_).Inspect(
+        task->resource_.str());
+    SetOwnershipResult(*task, result);
+  } catch (const std::exception& error) {
+    task->outcome_ = "error";
+    task->error_message_ = error.what();
+    task->SetReturnCode(1);
+  }
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
 
 // Task Serialization Method Implementations now in autogen/admin_lib_exec.cc
 

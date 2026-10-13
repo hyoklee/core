@@ -134,8 +134,68 @@ set_target_properties(${CREATE_POOL_FIELDS_TEST_TARGET} PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
 )
 
+# The ownership ledger uses real private filesystem I/O without a daemon.
+add_executable(test_admin_ownership_ledger test_ownership_ledger.cc)
+target_include_directories(test_admin_ownership_ledger PRIVATE
+  ${CLIO_RUN_ROOT}/test
+  ${CLIO_RUN_ROOT}/modules/admin/include
+)
+target_link_libraries(test_admin_ownership_ledger PRIVATE
+  ctp::cxx
+  ${CMAKE_THREAD_LIBS_INIT}
+)
+set_target_properties(test_admin_ownership_ledger PROPERTIES
+  CXX_STANDARD 20
+  CXX_STANDARD_REQUIRED ON
+  RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
+# Exercise real Admin serialization and dispatch with independent clients.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(test_admin_ownership_rpc test_ownership_rpc.cc)
+  target_include_directories(test_admin_ownership_rpc PRIVATE
+    ${CLIO_RUN_ROOT}/include
+    ${CLIO_RUN_ROOT}/test
+    ${CLIO_RUN_ROOT}/modules/admin/include
+  )
+  target_link_libraries(test_admin_ownership_rpc PRIVATE
+    clio_run_cxx
+    clio_admin_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+  )
+  add_dependencies(test_admin_ownership_rpc clio_run)
+  target_compile_definitions(test_admin_ownership_rpc PRIVATE
+    CLIO_RUN_EXE="$<TARGET_FILE:clio_run>"
+    CLIO_OWNERSHIP_TEST_EXE="$<TARGET_FILE:test_admin_ownership_rpc>"
+  )
+  set_target_properties(test_admin_ownership_rpc PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+  )
+  install(TARGETS test_admin_ownership_rpc RUNTIME DESTINATION bin)
+endif()
+
 # Enable CTest integration if testing is enabled
 if(CLIO_CORE_ENABLE_TESTS)
+  add_test(NAME cr_ownership_ledger COMMAND test_admin_ownership_ledger)
+  set_tests_properties(cr_ownership_ledger PROPERTIES
+    TIMEOUT 60
+    LABELS "unit;ownership"
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    ENVIRONMENT "CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR}"
+  )
+  if(TARGET test_admin_ownership_rpc)
+    add_test(NAME cr_ownership_rpc COMMAND test_admin_ownership_rpc)
+    set_tests_properties(cr_ownership_rpc PROPERTIES
+      TIMEOUT 90
+      LABELS "ownership;integration"
+      RUN_SERIAL TRUE
+      WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+      ENVIRONMENT "CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+    )
+  endif()
   # CreatePoolFields aggregation rules (no daemon — runs in milliseconds)
   add_test(
     NAME cr_create_pool_fields_tests
@@ -357,7 +417,7 @@ add_custom_target(test_task_archive_performance
 
 # Install test executables
 install(TARGETS ${TASK_ARCHIVE_TEST_TARGET} ${COMPOSE_TEST_TARGET} ${SUBMIT_BATCH_TEST_TARGET}
-                ${CREATE_POOL_FIELDS_TEST_TARGET}
+                ${CREATE_POOL_FIELDS_TEST_TARGET} test_admin_ownership_ledger
   RUNTIME DESTINATION bin
 )
 
