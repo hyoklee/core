@@ -200,7 +200,8 @@ class Client : public clio::cte::core::Client {
     if (shm_fs_root_ == nullptr || out == nullptr) {
       return false;
     }
-    if (!shm_fs_root_->path_to_file_.TryGetBytes(path.data(), path.size(),
+    const std::string key = shm_fs_root_->Key(path);
+    if (!shm_fs_root_->path_to_file_.TryGetBytes(key.data(), key.size(),
                                                  out, 16, absent)) {
       return false;
     }

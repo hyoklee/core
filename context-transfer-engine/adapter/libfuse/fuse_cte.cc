@@ -70,6 +70,7 @@
 #include "clio_cte/core/content_transfer_engine.h"
 #include "clio_cte/core/core_client.h"  // CLIO_CTE_CLIENT + GetCapacity
 #include "clio_cte/filesystem/filesystem_client.h"
+#include "clio_cte/filesystem/fs_inode.h"
 #include "clio_cte/filesystem/fs_shard.h"
 #include "clio_cte/stream/stream_client.h"  // deferred O_APPEND
 #include "clio_cte/replication/replication_tasks.h"  // FlushTagTask (fsync barrier)
@@ -170,6 +171,77 @@ struct CfsHandle {
   std::atomic<clio::run::u64> nospace_seen{0};
 };
 
+// ---------------------------------------------------------------------------
+// Case policy. On a case-insensitive volume every spelling of a path is one
+// file, so every path-keyed cache below keys on the canonical path (the
+// volume reports its policy at mount, cte_fuse_init). Values keep the
+// spelling wherever a name goes back to the kernel or the runtime.
+// ---------------------------------------------------------------------------
+std::atomic<bool> g_case_insensitive{false};
+
+/**
+ * The key a path is cached under on this mount.
+ * @param p path as spelled
+ * @return its canonical form (the path itself on a case-sensitive volume)
+ */
+std::string CacheKey(const std::string &p) {
+  return clio::cte::filesystem::FsCanonicalPath(
+      p, g_case_insensitive.load(std::memory_order_relaxed));
+}
+
+/**
+ * A map keyed by path that treats every spelling of a path as one key
+ * (CacheKey). Iteration yields canonical keys.
+ */
+template <typename V>
+class PathMap {
+ public:
+  using Map = std::unordered_map<std::string, V>;
+  using iterator = typename Map::iterator;
+  /** @return the value for `p`, default-constructed if absent */
+  V &operator[](const std::string &p) { return m_[CacheKey(p)]; }
+  /** @return the entry for `p`, or end() */
+  iterator find(const std::string &p) { return m_.find(CacheKey(p)); }
+  /** Insert unless present. @return (entry, inserted) */
+  std::pair<iterator, bool> emplace(const std::string &p, const V &v) {
+    return m_.emplace(CacheKey(p), v);
+  }
+  /** Erase `p`. @return entries erased (0 or 1) */
+  size_t erase(const std::string &p) { return m_.erase(CacheKey(p)); }
+  /** Erase at an iterator. @return the next iterator */
+  iterator erase(iterator it) { return m_.erase(it); }
+  iterator begin() { return m_.begin(); }
+  iterator end() { return m_.end(); }
+  size_t size() const { return m_.size(); }
+  bool empty() const { return m_.empty(); }
+  void clear() { m_.clear(); }
+
+ private:
+  Map m_;
+};
+
+/** A set of paths with the same key rule as PathMap. */
+class PathSet {
+ public:
+  /** Add `p`. */
+  void insert(const std::string &p) { s_.insert(CacheKey(p)); }
+  /** Remove `p`. @return entries removed (0 or 1) */
+  size_t erase(const std::string &p) { return s_.erase(CacheKey(p)); }
+  /** @return 1 if `p` is present, else 0 */
+  size_t count(const std::string &p) const { return s_.count(CacheKey(p)); }
+
+ private:
+  std::unordered_set<std::string> s_;
+};
+
+/** Orders spellings by their canonical form (hard-link groups, where one
+ *  name may be named again by another spelling of it). */
+struct CacheKeyLess {
+  bool operator()(const std::string &a, const std::string &b) const {
+    return CacheKey(a) < CacheKey(b);
+  }
+};
+
 /** The files open on one libfuse node -- one kernel inode, one page cache. */
 struct OpenNode {
   std::string path;  ///< the node's current path (follows renames)
@@ -191,10 +263,10 @@ struct OpenNode {
 // nodes through renames (OpenFilesRenamed), so every open of a node sees the
 // files already open on it.
 std::mutex g_open_files_mu;
-std::unordered_map<std::string, std::shared_ptr<OpenNode>> g_open_files;
+PathMap<std::shared_ptr<OpenNode>> g_open_files;
 // Hidden names that DO exist on the server: hides that fell back to a
 // server rename (HideOpenFile). Guarded by g_open_files_mu.
-std::unordered_set<std::string> g_server_hidden;
+PathSet g_server_hidden;
 
 /**
  * Register a new open of `h` on its node and keep the page cache from mixing
@@ -255,20 +327,31 @@ static void UnregisterOpenFile(CfsHandle *h) {
  */
 static void OpenFilesRenamed(const std::string &from, const std::string &to) {
   std::lock_guard<std::mutex> g(g_open_files_mu);
-  std::vector<std::pair<std::string, std::shared_ptr<OpenNode>>> moved;
-  const std::string dir_prefix = from + "/";
+  std::vector<std::shared_ptr<OpenNode>> moved;
+  const std::string from_key = CacheKey(from);
+  const std::string dir_prefix = from_key + "/";
   for (auto it = g_open_files.begin(); it != g_open_files.end();) {
-    const std::string &k = it->first;
-    if (k == from || k.compare(0, dir_prefix.size(), dir_prefix) == 0) {
-      moved.emplace_back(to + k.substr(from.size()), it->second);
+    const std::string &k = it->first;  // canonical
+    if (k == from_key || k.compare(0, dir_prefix.size(), dir_prefix) == 0) {
+      moved.push_back(it->second);
       it = g_open_files.erase(it);
     } else {
       ++it;
     }
   }
-  for (auto &kv : moved) {
-    kv.second->path = kv.first;
-    g_open_files[kv.first] = kv.second;
+  // A node's path keeps its own spelling below the moved prefix. Count
+  // components, not bytes: folding can change a name's length.
+  const size_t depth =
+      static_cast<size_t>(std::count(from.begin(), from.end(), '/'));
+  for (auto &node : moved) {
+    size_t cut = 0, seen = 0;
+    while (seen <= depth && cut != std::string::npos) {
+      cut = node->path.find('/', cut + (seen == 0 ? 0 : 1));
+      if (cut != std::string::npos) ++seen;
+    }
+    node->path = to + (cut == std::string::npos ? std::string()
+                                                : node->path.substr(cut));
+    g_open_files[node->path] = node;
   }
 }
 
@@ -637,12 +720,12 @@ bool SieveCreateEnabled() {
 // read-clamping consult this in the meantime. Path-keyed; renames move the
 // entry, the closer erases it once the size-carrying close has been sent.
 std::mutex g_hw_mtx;
-std::unordered_map<std::string, clio::run::u64> g_hiwater;
+PathMap<clio::run::u64> g_hiwater;
 // Wall-clock time (ns) of the last write(2) this mount accepted per path,
 // kept alongside the hiwater: sieved bytes reach the chimod -- and so the
 // tag's mtime -- only when their page ships, so a stat right after write(2)
 // reported the PRE-write mtime (make and rsync compare exactly that).
-std::unordered_map<std::string, clio::run::u64> g_wtime;
+PathMap<clio::run::u64> g_wtime;
 
 /** Current wall-clock time in nanoseconds since the epoch. */
 static clio::run::u64 WallNowNs() {
@@ -667,7 +750,7 @@ struct DirAttrEntry {
   std::chrono::steady_clock::time_point expiry;
 };
 std::mutex g_dir_attr_mtx;
-std::unordered_map<std::string, DirAttrEntry> g_dir_attr;
+PathMap<DirAttrEntry> g_dir_attr;
 double g_dir_attr_ttl_s = 0.0;  ///< set at init; 0 disables the cache
 
 /**
@@ -928,7 +1011,7 @@ struct PendingCreate {
 };
 std::mutex g_pc_mtx;
 std::mutex g_flush_mtx;  // held across an ENTIRE flush (swap + Wait + retire)
-std::unordered_map<std::string, PendingCreate> g_pending_creates;
+PathMap<PendingCreate> g_pending_creates;
 std::vector<clio::cte::filesystem::MultiCreateEnt> g_create_queue;
 
 /**
@@ -982,14 +1065,15 @@ static inline int FsErrno(int rc) {
 // Links made by OTHER mounts stay subject to plain TTL staleness.
 // ---------------------------------------------------------------------------
 std::mutex g_lg_mtx;
-std::unordered_map<std::string, std::shared_ptr<std::set<std::string>>>
-    g_link_groups;
+/** One hard-link group: its names as spelled, one per canonical name. */
+using LinkGroup = std::set<std::string, CacheKeyLess>;
+PathMap<std::shared_ptr<LinkGroup>> g_link_groups;
 
 void LinkGroupJoin(const std::string &a, const std::string &b) {
   std::lock_guard<std::mutex> lk(g_lg_mtx);
   auto ita = g_link_groups.find(a);
   auto itb = g_link_groups.find(b);
-  std::shared_ptr<std::set<std::string>> g;
+  std::shared_ptr<LinkGroup> g;
   if (ita != g_link_groups.end() && itb != g_link_groups.end()) {
     g = ita->second;
     for (const auto &m : *itb->second) g->insert(m);
@@ -998,7 +1082,7 @@ void LinkGroupJoin(const std::string &a, const std::string &b) {
   } else if (itb != g_link_groups.end()) {
     g = itb->second;
   } else {
-    g = std::make_shared<std::set<std::string>>();
+    g = std::make_shared<LinkGroup>();
   }
   g->insert(a);
   g->insert(b);
@@ -1032,7 +1116,7 @@ std::vector<std::string> LinkGroupSiblings(const std::string &p) {
   auto it = g_link_groups.find(p);
   if (it == g_link_groups.end()) return out;
   for (const auto &m : *it->second) {
-    if (m != p) out.push_back(m);
+    if (CacheKey(m) != CacheKey(p)) out.push_back(m);
   }
   return out;
 }
@@ -1099,7 +1183,7 @@ struct TimesOverlay {
   std::chrono::steady_clock::time_point at;
 };
 std::mutex g_to_mtx;
-std::unordered_map<std::string, TimesOverlay> g_times_overlay;
+PathMap<TimesOverlay> g_times_overlay;
 
 void TimesOverlaySet(const std::string &p, clio::run::u64 a,
                      clio::run::u64 m, clio::run::u64 c) {
@@ -1142,7 +1226,7 @@ bool PendingCreateLookup(const std::string &path, PendingCreate *out) {
 // path -> errno. The open() that "created" such a file already returned, so
 // the failure is owed to that file's fsync/close, like a failed write-back.
 std::mutex g_create_err_mtx;
-std::unordered_map<std::string, int> g_create_errors;
+PathMap<int> g_create_errors;
 
 /**
  * Record the entries of a MultiCreate batch that failed (the task's failed_
@@ -1286,7 +1370,7 @@ bool AnyCreateUnretired() {
 // fsync of the path reports them, as a write-back error surfaces at fsync on
 // a local filesystem.
 std::mutex g_publish_err_mtx;
-std::unordered_map<std::string, int> g_publish_err;
+PathMap<int> g_publish_err;
 
 /** Record a background publish failure for `path` (first one wins). */
 void LatchPublishError(const std::string &path, int err) {
@@ -1525,6 +1609,42 @@ void cte_fuse_mark_session_live() {
 // FUSE lifecycle
 // ============================================================================
 
+/**
+ * Ask the mounted volume for its case policy (its root reports it) and
+ * adopt it for every path cache (CacheKey).
+ * @return true for a case-insensitive volume
+ */
+static bool QueryVolumeCasePolicy() {
+  auto t = CLIO_CFS_CLIENT->AsyncGetattr("/");
+  t.Wait();
+  const bool ci =
+      t->GetReturnCode() == 0 &&
+      (t->volume_flags_ & clio::cte::filesystem::kVolumeCaseInsensitive) != 0;
+  g_case_insensitive.store(ci, std::memory_order_relaxed);
+  return ci;
+}
+
+/**
+ * Adopt the mounted volume's case policy. On a case-insensitive volume every
+ * path cache keys on the canonical path (CacheKey), WinFsp treats the
+ * spellings of a name as one file (one open node, one cache), and no
+ * negative lookup is cached: creating "Foo" cannot invalidate a cached miss
+ * on "foo".
+ * @param conn the FUSE connection being initialized
+ * @param cfg the FUSE configuration being initialized
+ */
+static void ApplyVolumeCasePolicy(struct fuse_conn_info *conn,
+                                  struct fuse_config *cfg) {
+  if (!QueryVolumeCasePolicy()) return;
+  cfg->negative_timeout = 0;
+#ifdef FUSE_CAP_CASE_INSENSITIVE
+  conn->want |= FUSE_CAP_CASE_INSENSITIVE;
+#else
+  (void)conn;
+#endif
+  fprintf(stderr, "clio_cte_fuse: case-insensitive volume\n");
+}
+
 static void *cte_fuse_init(struct fuse_conn_info *conn,
                            struct fuse_config *cfg) {
   (void)conn;
@@ -1660,6 +1780,7 @@ static void *cte_fuse_init(struct fuse_conn_info *conn,
       cte_c->pool_id_ = data_pool;
     }
   }
+  ApplyVolumeCasePolicy(conn, cfg);
   return nullptr;
 }
 
@@ -1681,7 +1802,18 @@ int cte_fuse_bootstrap_clients() {
   if (!clio::cte::core::CLIO_CTE_CLIENT_INIT()) {
     fprintf(stderr, "WARNING: CTE core client init failed; statfs capacity=0\n");
   }
+  if (QueryVolumeCasePolicy()) {
+    fprintf(stderr, "clio_cte_fuse: case-insensitive volume\n");
+  }
   return 0;
+}
+
+std::string cte_fuse_cache_key(const std::string &path) {
+  return CacheKey(path);
+}
+
+bool cte_fuse_case_insensitive() {
+  return g_case_insensitive.load(std::memory_order_relaxed);
 }
 #endif  // !_WIN32
 
@@ -2648,6 +2780,19 @@ int cte_fuse_create(const char *path, cte_mode_t mode,
   // holds without asking the chimod.
   if (SieveCreateEnabled() && (fi->flags & O_EXCL) &&
       CLIO_CTE_CLIENT != nullptr) {
+#ifdef _WIN32
+    {
+      // WinFsp sends an exclusive create without looking the name up first
+      // (on Linux the kernel's negative lookup is what makes this path
+      // exclusive). Unchecked, a second create of an existing name
+      // "succeeded" and its data was dropped when the batched create failed.
+      // A miss under a complete directory is answered locally.
+      cte_stat_t st;
+      const int grc = cte_fuse_getattr_stat(path, &st, nullptr);
+      if (grc == 0) return -EEXIST;
+      if (grc != -ENOENT) return grc;
+    }
+#endif
     auto *handle = new CfsHandle();
     handle->fh = 0;  // no server handle; data ops key off the tag
     handle->path = p;
