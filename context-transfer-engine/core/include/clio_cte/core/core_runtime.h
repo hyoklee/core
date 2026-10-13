@@ -957,6 +957,12 @@ private:
    */
   void EraseTagXattrs(const TagId &tag_id);
   /**
+   * Whether a tag has a non-empty xattr section.
+   * @param tag_id the tag
+   * @return true if at least one key is set
+   */
+  bool HasTagXattrs(const TagId &tag_id);
+  /**
    * Write every xattr section to a FlushMetadata snapshot, one
    * kSnapTagXattrEntry record per tag.
    * @param ofs the snapshot being written

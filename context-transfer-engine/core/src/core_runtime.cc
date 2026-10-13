@@ -2073,6 +2073,8 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
     static const bool put_prof = getenv("CLIO_PUT_PROF") != nullptr;
     const auto pi_t0 = std::chrono::steady_clock::now();
     auto pi_t1 = pi_t0, pi_t2 = pi_t0;
+    // Inside "pre": the reader drain and the hole zero-fill (see SLOW-PUT).
+    auto pi_dr0 = pi_t0, pi_dr1 = pi_t0, pi_z0 = pi_t0, pi_z1 = pi_t0;
     TagId tag_id = task->tag_id_;
     std::string blob_name = task->GetBlobName();
     // Append the per-page suffix when a GPU client (gpu_vector::Vector)
@@ -2271,9 +2273,11 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
     // exit below.
     blob_info_ptr->BeginDrainReaders();
     BlobReaderDrainGuard reader_drain_guard(blob_info_ptr.get());
+    pi_dr0 = std::chrono::steady_clock::now();
     while (blob_info_ptr->HasReadPins()) {
       CLIO_CO_AWAIT(clio::run::yield(BlobWriteLockPollUs()));
     }
+    pi_dr1 = std::chrono::steady_clock::now();
 
     // Content seqlock, writer half (BlobInfo::content_seq_). The drain above
     // covers readers that come through this runtime; a zero-IPC client copies
@@ -2461,6 +2465,7 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
       // Only the gap [old_blob_size, offset) needs it; sequential appends
       // (offset == old_blob_size) and overwrites (offset < old_blob_size)
       // create no hole.
+      pi_z0 = std::chrono::steady_clock::now();
       if (offset > old_blob_size) {
         if (TracePutEnv()) {
           HLOG(kInfo, "[TRACE-PUT] zero blob='{}' from={} to={} hint_idx={} hint_off={} nblocks={} tok={}",
@@ -2558,6 +2563,7 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
 
       // Step 3: ModifyExistingData — write data to blocks.
       pi_t2 = std::chrono::steady_clock::now();
+      pi_z1 = pi_t2;
       clio::run::u32 write_result = 0;
       if constexpr (TaskT::kSupportsVectored) {
        if (vectored) {
@@ -2671,9 +2677,11 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
       if (put_ms > kSlowPutMs) {
         HLOG(kWarning,
              "[SLOW-PUT] blob='{}' off={} size={} took {} ms: token {} ms, "
-             "pre {} ms, extend {} ms, modify {} ms",
+             "pre {} ms (reader drain {} ms, extend {} ms, hole zero {} ms), "
+             "modify {} ms",
              blob_name, offset, size, put_ms, us(pi_t0, pi_t1) / 1000.0,
-             us(pi_t1, pi_t2) / 1000.0, us(pi_ext0, pi_ext1) / 1000.0,
+             us(pi_t1, pi_t2) / 1000.0, us(pi_dr0, pi_dr1) / 1000.0,
+             us(pi_ext0, pi_ext1) / 1000.0, us(pi_z0, pi_z1) / 1000.0,
              us(pi_t2, pi_t3) / 1000.0);
       }
     }
@@ -6209,6 +6217,14 @@ clio::run::TaskResume Runtime::DelTag(clio::run::shared_ptr<DelTagTask> &task) {
         if (!tag_id_to_info_.contains(anc)) {
           continue;  // already removed (e.g. part of the deleted subtree)
         }
+        // A parent holding state -- an xattr section or blobs -- was made on
+        // purpose, not materialized for a path: it is not empty, so it and
+        // everything above it stay. Pruning one dropped only its TagInfo
+        // here, but the kDelTag record below erases its xattrs and blobs on
+        // replay: a filesystem directory's inode record survived the delete
+        // of its last child and vanished at the next restart, leaving its
+        // row naming an inode with no state.
+        if (HasTagXattrs(anc) || !BlobIndexNames(anc).empty()) break;
         tag_id_to_info_.for_each([&](const TagId &id, const std::shared_ptr<TagInfo> &info_sp) { const TagInfo &info = *info_sp; (void)info;
           (void)id;
           if (has_child) return;
