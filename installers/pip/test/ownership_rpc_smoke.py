@@ -79,6 +79,7 @@ def _configure(root: Path, port: int) -> None:
     os.environ.update(
         CLIO_OWNERSHIP_AUTHORITY_NODE="0",
         CLIO_OWNERSHIP_STORAGE_ROOT=str(root),
+        CLIO_OWNERSHIP_TEST_TOKEN_FILE=str(root / "retained-token.json"),
         CLIO_STORAGE_ROOT=str(runtime_root),
         CLIO_SERVER_CONF=str(config),
         CLIO_PORT=str(port),
@@ -121,6 +122,22 @@ def _require_wheel_libraries(pid: int, library_dir: Path, names: tuple[str, ...]
             all(path.resolve().parent == library_dir.resolve() for path in paths),
             f"Owned process loaded {name} outside the installed wheel: {paths}",
         )
+
+
+def _persist_token(record: dict[str, object]) -> None:
+    """Durably retain an acknowledged token privately before its owner exits."""
+    path = Path(os.environ["CLIO_OWNERSHIP_TEST_TOKEN_FILE"])
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+        json.dump(record, output, sort_keys=True)
+        output.flush()
+        os.fsync(output.fileno())
+    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    _require(path.stat().st_mode & 0o777 == 0o600, "Retained token is not private mode 0600")
 
 
 def _client_smoke() -> None:
@@ -173,9 +190,94 @@ def _client_smoke() -> None:
     _require(
         not free.held and free.revision > second_token.revision, "Release was not confirmed FREE"
     )
-    print(
-        "Real installed-wheel ownership RPC passed: acquire, busy, inspect, stale rejection, release"
+    metadata = {"pid": os.getpid(), "phase": "before authority crash"}
+    survivor = client.try_acquire(resource, secrets.token_hex(32), "crash survivor", metadata)
+    retained = survivor.token
+    _require(survivor.acquired and retained is not None, "Crash survivor did not acquire")
+    if retained is None:
+        raise AssertionError("Crash recovery requires an acknowledged exact token")
+    _persist_token(
+        {
+            "resource_key": retained.resource_key,
+            "authority_node_id": retained.authority_node_id,
+            "authority_uuid": retained.authority_uuid,
+            "revision": retained.revision,
+            "owner_nonce": retained.owner_nonce,
+            "owner_label": survivor.holder.owner_label,
+            "holder_metadata": survivor.holder.holder_metadata,
+        }
     )
+    print("Real installed-wheel ownership RPC passed; acknowledged HELD token fsynced for restart")
+
+
+def _recovery_client() -> None:
+    """Require persisted identity and ownership after a real authority process crash."""
+    from iowarp_core import clio_cte_core_ext as native
+    from iowarp_core import get_lib_dir
+    from iowarp_core.ownership import OwnershipClient, OwnershipToken
+
+    path = Path(os.environ["CLIO_OWNERSHIP_TEST_TOKEN_FILE"])
+    status = path.stat()
+    _require(
+        status.st_uid == os.getuid() and status.st_mode & 0o777 == 0o600,
+        "Retained token is not private and owned",
+    )
+    record = json.loads(path.read_text(encoding="utf-8"))
+    token = OwnershipToken(
+        resource_key=record["resource_key"],
+        authority_node_id=record["authority_node_id"],
+        authority_uuid=record["authority_uuid"],
+        revision=record["revision"],
+        owner_nonce=record["owner_nonce"],
+    )
+    _require(native.clio_init(native.RuntimeMode.kClient, False), "Recovery client attach failed")
+    _require_wheel_libraries(
+        os.getpid(), Path(get_lib_dir()), ("libclio_run_cxx.so", "libclio_admin_client.so")
+    )
+    # Bind only the UUID retained before the crash; never inspect and adopt one.
+    client = OwnershipClient(token.authority_node_id, token.authority_uuid)
+    holder = client.inspect(token.resource_key)
+    _require(holder.authority_uuid == token.authority_uuid, "Restart changed the authority UUID")
+    _require(
+        holder.held and holder.revision == token.revision,
+        "Restart lost acknowledged HELD ownership",
+    )
+    _require(holder.owner_label == record["owner_label"], "Restart changed the acknowledged holder")
+    _require(holder.holder_metadata == record["holder_metadata"], "Restart changed holder metadata")
+    busy = client.try_acquire(
+        token.resource_key, secrets.token_hex(32), "post-crash competitor", {}
+    )
+    _require(not busy.acquired and busy.token is None, "Restart admitted a competing owner")
+    _require(busy.holder == holder, "Rejected post-crash acquisition changed the held state")
+    client.release(token)
+    free = client.inspect(token.resource_key)
+    _require(
+        not free.held and free.revision > token.revision,
+        "Exact recovery release was not confirmed FREE",
+    )
+    print(
+        "Real installed-wheel authority crash/restart RPC passed: same UUID, HELD revision, exact release"
+    )
+
+
+def _start_owned_daemon(executable: Path, root: Path, log: Path) -> subprocess.Popen[bytes]:
+    """Start the installed daemon with recovery enabled, never clearing its ledger."""
+    with log.open("wb") as output:
+        return subprocess.Popen(
+            [str(executable), "start", "--no-viz"],
+            cwd=root,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+
+def _crash_owned_daemon(daemon: subprocess.Popen[bytes]) -> None:
+    """Intentionally SIGKILL and reap only the test authority after client exit."""
+    _require(daemon.poll() is None, "Owned runtime exited before the intentional crash")
+    daemon.kill()
+    status = daemon.wait(timeout=10)
+    _require(status == -signal.SIGKILL, f"Intentional authority crash returned status {status}")
 
 
 def _stop_owned_daemon(daemon: subprocess.Popen[bytes]) -> None:
@@ -210,30 +312,36 @@ def _run_smoke() -> None:
     executable = Path(get_bin_dir()) / "clio_run"
     library_dir = Path(get_lib_dir())
     os.environ["CLIO_REPO_PATH"] = str(library_dir)
-    log = root / "runtime.log"
+    logs = (root / "runtime-initial.log", root / "runtime-restarted.log")
     daemon: subprocess.Popen[bytes] | None = None
     succeeded = False
     try:
-        with log.open("wb") as output:
-            daemon = subprocess.Popen(
-                [str(executable), "start", "--fresh", "--no-viz"],
-                cwd=root,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-            _wait_ready(daemon, log)
-            _require_wheel_libraries(
-                daemon.pid, library_dir, ("libclio_run_cxx.so", "libclio_admin_runtime.so")
-            )
-            subprocess.run(
-                [sys.executable, str(Path(__file__).resolve()), "--client"], check=True, timeout=120
-            )
-            _require(daemon.poll() is None, "Owned runtime exited during the client smoke")
-            _require(
-                (root / "ownership-v1.ledger").is_file(), "Authority did not persist its ledger"
-            )
-            succeeded = True
+        daemon = _start_owned_daemon(executable, root, logs[0])
+        _wait_ready(daemon, logs[0])
+        _require_wheel_libraries(
+            daemon.pid, library_dir, ("libclio_run_cxx.so", "libclio_admin_runtime.so")
+        )
+        subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--client"], check=True, timeout=120
+        )
+        _require(daemon.poll() is None, "Owned runtime exited during the client smoke")
+        _require((root / "ownership-v1.ledger").is_file(), "Authority did not persist its ledger")
+        _require((root / "retained-token.json").is_file(), "Client did not retain its exact token")
+        # subprocess.run reaped the owner before this intentional authority crash.
+        _crash_owned_daemon(daemon)
+        daemon = None
+        daemon = _start_owned_daemon(executable, root, logs[1])
+        _wait_ready(daemon, logs[1])
+        _require_wheel_libraries(
+            daemon.pid, library_dir, ("libclio_run_cxx.so", "libclio_admin_runtime.so")
+        )
+        subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--recover-client"],
+            check=True,
+            timeout=120,
+        )
+        _require(daemon.poll() is None, "Owned runtime exited during recovery validation")
+        succeeded = True
     finally:
         try:
             if daemon is not None:
@@ -244,14 +352,18 @@ def _run_smoke() -> None:
         finally:
             if not succeeded:
                 print(f"Ownership RPC failure evidence retained at {root}", file=sys.stderr)
-                if log.exists():
-                    print(log.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
+                for log in logs:
+                    if log.exists():
+                        print(f"=== {log.name} ===", file=sys.stderr)
+                        print(log.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
     shutil.rmtree(root)
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--client"]:
         _client_smoke()
+    elif sys.argv[1:] == ["--recover-client"]:
+        _recovery_client()
     elif not sys.argv[1:]:
         _run_smoke()
     else:
