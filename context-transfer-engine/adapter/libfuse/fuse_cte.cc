@@ -74,6 +74,7 @@
 #include "clio_cte/filesystem/fs_shard.h"
 #include "clio_cte/stream/stream_client.h"  // deferred O_APPEND
 #include "clio_cte/replication/replication_tasks.h"  // FlushTagTask (fsync barrier)
+#include "fuse_cte_profile.h"  // CLIO_FUSE_PROFILE: per-callback timing
 
 // Bridge the POSIX type spellings the callbacks use to the concrete types
 // each platform's FUSE layer expects in `struct fuse_operations`. On Linux
@@ -457,6 +458,27 @@ bool SieveDataEnabled() {
   static const bool v = [] {
     const char *e = getenv("CLIO_FUSE_SIEVE");
     return e == nullptr || *e != '0';
+  }();
+  return v;
+}
+
+/**
+ * Write data that may be in flight to the store at once (bytes).
+ *
+ * Writes are copied into client shared memory and shipped as deferred puts;
+ * with no window a burst of writes queued there as fast as applications
+ * wrote, and client shared-memory segments are never released: a Steam
+ * install (48 GB, ~9 writers) grew the adapter to 64 segments / 8 GB.
+ * Past the window a write first awaits the oldest puts.
+ * CLIO_FUSE_WRITE_INFLIGHT_MB overrides the 256 MiB default; 0 = no window.
+ * @return the window in bytes (0 = unbounded)
+ */
+clio::run::u64 WriteInflightBytes() {
+  static const clio::run::u64 v = [] {
+    const char *e = getenv("CLIO_FUSE_WRITE_INFLIGHT_MB");
+    const clio::run::u64 mb =
+        e != nullptr && e[0] != 0 ? std::strtoull(e, nullptr, 10) : 256;
+    return mb << 20;
   }();
   return v;
 }
@@ -1648,6 +1670,7 @@ static void ApplyVolumeCasePolicy(struct fuse_conn_info *conn,
 static void *cte_fuse_init(struct fuse_conn_info *conn,
                            struct fuse_config *cfg) {
   (void)conn;
+  clio::cte::fuse_profile::Start();
   // Trust the inode numbers we report (st_ino in getattr, d_ino in readdir),
   // both derived from the tag id, instead of letting FUSE auto-generate them.
   // This makes stat and readdir agree on d_ino/st_ino (generic/637), and gives
@@ -3562,7 +3585,8 @@ int cte_fuse_write(const char *path, const char *buf, size_t size,
           clio::cte::filesystem::kFsPageSize - page_off, size - done);
       int rc = cte->AsyncPutBlobDefer(
           handle->tag, clio::cte::filesystem::PageName(cur), page_off, n,
-          buf + done);
+          buf + done, -1.0f, clio::cte::core::Context(), 0,
+          clio::run::PoolQuery::Dynamic(), WriteInflightBytes());
       if (rc != 0) {
         // A full store is ENOSPC (as on ext4); anything else is EIO.
         return (rc > 0 && clio::cte::core::PutRcIsNoSpace(
@@ -4126,6 +4150,84 @@ int cte_fuse_rename(const char *from, const char *to,
 // Reporting a non-zero capacity also matters operationally: a 0-block fs is
 // hidden by `df` (which lists no path), which breaks tools that probe free
 // space and xfstests' mount detection.
+namespace {
+/** The store's capacity as statfs last reported it (see StatfsCapacity). */
+struct StatfsCache {
+  std::mutex mu;
+  bool valid = false;        ///< an answer has been fetched
+  bool refreshing = false;   ///< a caller is fetching a new one
+  std::chrono::steady_clock::time_point at;  ///< when the answer was fetched
+  clio::run::u64 total = 0;
+  clio::run::u64 remaining = 0;
+};
+StatfsCache g_statfs_cache;
+
+/**
+ * How long a capacity answer serves statfs (ms). CLIO_FUSE_STATFS_TTL_MS
+ * overrides the 1000 ms default; 0 asks the store on every call.
+ * @return the time to live in milliseconds
+ */
+clio::run::u64 StatfsTtlMs() {
+  static const clio::run::u64 v = [] {
+    const char *e = getenv("CLIO_FUSE_STATFS_TTL_MS");
+    return e != nullptr && e[0] != 0 ? std::strtoull(e, nullptr, 10) : 1000;
+  }();
+  return v;
+}
+
+/**
+ * The store's total and remaining capacity for statfs, at most
+ * StatfsTtlMs() old.
+ *
+ * Windows queries volume information about once per file written (a
+ * Steam-style install of 15k files sent 9,100 queries), and each answer was
+ * a capacity broadcast to every node (~120 us here). WinFsp's own volume
+ * cache (VolumeInfoTimeout) does not absorb them -- writes invalidate it.
+ * One caller refreshes an expired answer; the others keep serving the old
+ * one meanwhile. fallocate's space check asks the store directly
+ * (StoreRemainingBytes), where a stale "enough" would matter.
+ * @param total receives the total capacity (bytes)
+ * @param remaining receives the remaining capacity (bytes)
+ */
+void StatfsCapacity(clio::run::u64 *total, clio::run::u64 *remaining) {
+  const auto now = std::chrono::steady_clock::now();
+  const auto ttl = std::chrono::milliseconds(StatfsTtlMs());
+  {
+    std::lock_guard<std::mutex> g(g_statfs_cache.mu);
+    const bool fresh = g_statfs_cache.valid && now - g_statfs_cache.at < ttl;
+    if (fresh || (g_statfs_cache.valid && g_statfs_cache.refreshing)) {
+      *total = g_statfs_cache.total;
+      *remaining = g_statfs_cache.remaining;
+      return;
+    }
+    g_statfs_cache.refreshing = true;
+  }
+  clio::run::u64 t_bytes = 0, r_bytes = 0;
+  bool ok = false;
+  auto *cte = CLIO_CTE_CLIENT;
+  if (cte != nullptr) {
+    // Broadcast: total + remaining capacity across the whole cluster.
+    auto t = cte->AsyncGetCapacity(clio::run::PoolQuery::Broadcast());
+    t.Wait();
+    if (t->return_code_ == 0) {
+      t_bytes = t->total_capacity_;
+      r_bytes = t->remaining_capacity_;
+      ok = true;
+    }
+  }
+  std::lock_guard<std::mutex> g(g_statfs_cache.mu);
+  g_statfs_cache.refreshing = false;
+  if (ok) {
+    g_statfs_cache.valid = StatfsTtlMs() != 0;
+    g_statfs_cache.at = std::chrono::steady_clock::now();
+    g_statfs_cache.total = t_bytes;
+    g_statfs_cache.remaining = r_bytes;
+  }
+  *total = ok ? t_bytes : g_statfs_cache.total;
+  *remaining = ok ? r_bytes : g_statfs_cache.remaining;
+}
+}  // namespace
+
 int cte_fuse_statfs(const char *path, cte_statvfs_t *stbuf) {
   (void)path;
   std::memset(stbuf, 0, sizeof(*stbuf));
@@ -4133,16 +4235,7 @@ int cte_fuse_statfs(const char *path, cte_statvfs_t *stbuf) {
 
   clio::run::u64 total_bytes = 0;
   clio::run::u64 remaining_bytes = 0;
-  auto *cte = CLIO_CTE_CLIENT;
-  if (cte != nullptr) {
-    // Broadcast: total + remaining capacity across the whole cluster.
-    auto t = cte->AsyncGetCapacity(clio::run::PoolQuery::Broadcast());
-    t.Wait();
-    if (t->return_code_ == 0) {
-      total_bytes = t->total_capacity_;
-      remaining_bytes = t->remaining_capacity_;
-    }
-  }
+  StatfsCapacity(&total_bytes, &remaining_bytes);
   fsblkcnt_t total_blocks = total_bytes / kBlockSize;
   fsblkcnt_t free_blocks = remaining_bytes / kBlockSize;
 
@@ -4170,40 +4263,40 @@ int cte_fuse_statfs(const char *path, cte_statvfs_t *stbuf) {
 // fuse_cte_main.cc points fuse_main()/fuse_new() at this table. The callbacks
 // it references keep internal linkage — their addresses are captured here.
 const struct fuse_operations cte_fuse_ops = {
-    .getattr = cte_fuse_getattr,
-    .readlink = cte_fuse_readlink,
-    .mkdir = cte_fuse_mkdir,
-    .unlink = cte_fuse_unlink,
-    .rmdir = cte_fuse_rmdir,
-    .symlink = cte_fuse_symlink,
-    .rename = cte_fuse_rename,
-    .link = cte_fuse_link,
-    .chmod = cte_fuse_chmod,
-    .chown = cte_fuse_chown,
-    .truncate = cte_fuse_truncate,
-    .open = cte_fuse_open,
-    .read = cte_fuse_read,
-    .write = cte_fuse_write,
-    .statfs = cte_fuse_statfs,
-    .flush = cte_fuse_flush,
-    .release = cte_fuse_release,
-    .fsync = cte_fuse_fsync,
+    .getattr = CLIO_FUSE_TIMED(getattr, cte_fuse_getattr),
+    .readlink = CLIO_FUSE_TIMED(readlink, cte_fuse_readlink),
+    .mkdir = CLIO_FUSE_TIMED(mkdir, cte_fuse_mkdir),
+    .unlink = CLIO_FUSE_TIMED(unlink, cte_fuse_unlink),
+    .rmdir = CLIO_FUSE_TIMED(rmdir, cte_fuse_rmdir),
+    .symlink = CLIO_FUSE_TIMED(symlink, cte_fuse_symlink),
+    .rename = CLIO_FUSE_TIMED(rename, cte_fuse_rename),
+    .link = CLIO_FUSE_TIMED(link, cte_fuse_link),
+    .chmod = CLIO_FUSE_TIMED(chmod, cte_fuse_chmod),
+    .chown = CLIO_FUSE_TIMED(chown, cte_fuse_chown),
+    .truncate = CLIO_FUSE_TIMED(truncate, cte_fuse_truncate),
+    .open = CLIO_FUSE_TIMED(open, cte_fuse_open),
+    .read = CLIO_FUSE_TIMED(read, cte_fuse_read),
+    .write = CLIO_FUSE_TIMED(write, cte_fuse_write),
+    .statfs = CLIO_FUSE_TIMED(statfs, cte_fuse_statfs),
+    .flush = CLIO_FUSE_TIMED(flush, cte_fuse_flush),
+    .release = CLIO_FUSE_TIMED(release, cte_fuse_release),
+    .fsync = CLIO_FUSE_TIMED(fsync, cte_fuse_fsync),
 #ifdef __APPLE__
-    .setxattr = cte_fuse_setxattr_darwin,
-    .getxattr = cte_fuse_getxattr_darwin,
+    .setxattr = CLIO_FUSE_TIMED(setxattr, cte_fuse_setxattr_darwin),
+    .getxattr = CLIO_FUSE_TIMED(getxattr, cte_fuse_getxattr_darwin),
 #else
-    .setxattr = cte_fuse_setxattr,
-    .getxattr = cte_fuse_getxattr,
+    .setxattr = CLIO_FUSE_TIMED(setxattr, cte_fuse_setxattr),
+    .getxattr = CLIO_FUSE_TIMED(getxattr, cte_fuse_getxattr),
 #endif
-    .listxattr = cte_fuse_listxattr,
-    .removexattr = cte_fuse_removexattr,
-    .readdir = cte_fuse_readdir,
-    .fsyncdir = cte_fuse_fsyncdir,
+    .listxattr = CLIO_FUSE_TIMED(listxattr, cte_fuse_listxattr),
+    .removexattr = CLIO_FUSE_TIMED(removexattr, cte_fuse_removexattr),
+    .readdir = CLIO_FUSE_TIMED(readdir, cte_fuse_readdir),
+    .fsyncdir = CLIO_FUSE_TIMED(fsyncdir, cte_fuse_fsyncdir),
     .init = cte_fuse_init,
     .destroy = cte_fuse_destroy,
-    .create = cte_fuse_create,
-    .utimens = cte_fuse_utimens,
+    .create = CLIO_FUSE_TIMED(create, cte_fuse_create),
+    .utimens = CLIO_FUSE_TIMED(utimens, cte_fuse_utimens),
 #ifdef __linux__
-    .fallocate = cte_fuse_fallocate,
+    .fallocate = CLIO_FUSE_TIMED(fallocate, cte_fuse_fallocate),
 #endif
 };
