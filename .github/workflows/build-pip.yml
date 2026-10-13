@@ -406,9 +406,11 @@ jobs:
 
     - name: Test wheel in ${{ matrix.distro }}
       run: |
+        mkdir -p "$PWD/build/ownership-wheel-state"
         docker run --rm \
           -v "$PWD/wheels:/wheels:ro" \
           -v "$PWD/installers/pip/test:/ownership-tests:ro" \
+          -v "$PWD/build/ownership-wheel-state:/ownership-state" \
           ${{ matrix.distro }} \
           bash -c '
             set -e
@@ -468,6 +470,7 @@ jobs:
             echo "Installing built wheel: $WHEEL"
             pip install --quiet --find-links /wheels --no-cache-dir "$WHEEL"
             python -m unittest discover -s /ownership-tests -p test_ownership.py -v
+            CLIO_OWNERSHIP_TEST_STORAGE_ROOT=/ownership-state python /ownership-tests/ownership_rpc_smoke.py
 
             echo "=== Import test ==="
             python -c "import iowarp_core; print(\"Version:\", iowarp_core.get_version())"
