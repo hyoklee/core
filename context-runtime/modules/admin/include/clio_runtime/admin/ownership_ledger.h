@@ -66,6 +66,18 @@
 
 namespace clio::run::admin {
 
+namespace detail {
+
+/** Allow only explicitly supported persistent local Linux filesystem types. */
+inline bool IsOwnershipFilesystemSupported(unsigned long type) {
+  // ext2/3/4, XFS, btrfs, ZFS, and F2FS, respectively. Unknown,
+  // network, FUSE, overlay, cluster, and volatile filesystems are unsupported.
+  return type == 0xef53UL || type == 0x58465342UL || type == 0x9123683eUL ||
+         type == 0x2fc12fc1UL || type == 0xf2f52010UL;
+}
+
+}  // namespace detail
+
 /** Public holder information. Secret owner nonces never leave the ledger. */
 struct OwnershipRecord {
   std::string authority_uuid;
@@ -98,7 +110,9 @@ class OwnershipLedger {
     throw std::runtime_error("ownership authority requires qualified Linux local storage");
 #endif
     const auto file = std::filesystem::path(path);
-    if (!file.is_absolute() || file.filename().empty()) {
+    if (!file.is_absolute() || file.filename().empty() ||
+        path.find('\0') != std::string::npos || path.rfind("//", 0) == 0 ||
+        file.filename() == "." || file.filename() == "..") {
       throw std::invalid_argument("ownership ledger requires an absolute file path");
     }
     try {
@@ -109,7 +123,7 @@ class OwnershipLedger {
       } else {
         Recover();
       }
-      SyncDirectory(file.parent_path());
+      SyncDirectory();
     } catch (...) {
       Close();
       throw;
@@ -194,6 +208,7 @@ class OwnershipLedger {
   HANDLE handle_ = INVALID_HANDLE_VALUE;
 #else
   int fd_ = -1;
+  int parent_fd_ = -1;
 #endif
 
   /** Generate a persistent authority UUID; it is an identity, not a secret. */
@@ -432,36 +447,84 @@ class OwnershipLedger {
     }
     return created;
 #else
-    fd_ = open(file.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    OpenParent(file.parent_path());
+    const auto name = file.filename().string();
+    fd_ = openat(parent_fd_, name.c_str(),
+                 O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
     const bool created = fd_ >= 0;
     if (!created && errno == EEXIST) {
-      fd_ = open(file.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+      fd_ = openat(parent_fd_, name.c_str(), O_RDWR | O_CLOEXEC | O_NOFOLLOW);
     }
     if (fd_ < 0 || flock(fd_, LOCK_EX | LOCK_NB) != 0) {
       throw std::runtime_error("cannot exclusively open ownership authority ledger");
     }
     struct stat status {};
     if (fstat(fd_, &status) != 0 || !S_ISREG(status.st_mode) ||
-        status.st_uid != geteuid() || (status.st_mode & 0077) != 0) {
-      throw std::runtime_error("ownership ledger must be a private, owned regular file");
+        status.st_uid != geteuid() || (status.st_mode & 07777) != 0600) {
+      throw std::runtime_error(
+          "ownership ledger must be an owned regular file with mode 0600");
     }
-    CheckLocalFilesystem();
+    CheckLocalFilesystem(fd_);
     return created;
 #endif
   }
 
-  void CheckLocalFilesystem() const {
+  /** Pin the private root through nonsymlink components before touching state.
+   */
+  void OpenParent(const std::filesystem::path& directory) {
+#ifdef _WIN32
+    static_cast<void>(directory);
+    throw std::runtime_error(
+        "ownership authority requires qualified Linux local storage");
+#else
+    parent_fd_ = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (parent_fd_ < 0) {
+      throw std::runtime_error("cannot open ownership authority path root");
+    }
+    for (const auto& component : directory.relative_path()) {
+      const auto name = component.string();
+      if (name.empty() || name == "." || name == "..") {
+        throw std::invalid_argument(
+            "ownership authority path must not contain dot components");
+      }
+      const int next = openat(parent_fd_, name.c_str(),
+                              O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+      if (next < 0) {
+        throw std::runtime_error(
+            "ownership authority path must contain real accessible "
+            "directories");
+      }
+      const int previous = parent_fd_;
+      parent_fd_ = next;
+      close(previous);
+    }
+    struct stat status{};
+    if (fstat(parent_fd_, &status) != 0 || !S_ISDIR(status.st_mode) ||
+        status.st_uid != geteuid() || (status.st_mode & 0077) != 0) {
+      throw std::runtime_error(
+          "ownership authority root must be an owned private directory");
+    }
+    CheckLocalFilesystem(parent_fd_);
+#endif
+  }
+
+  /** Check the opened inode instead of reopening a redirectable pathname. */
+  static void CheckLocalFilesystem(int descriptor) {
 #ifdef __linux__
     struct statfs status {};
-    if (fstatfs(fd_, &status) != 0) {
+    if (fstatfs(descriptor, &status) != 0) {
       throw std::runtime_error("cannot inspect ownership authority filesystem");
     }
-    // NFS, SMB/CIFS, SMB2, and volatile tmpfs/ramfs cannot host this authority.
     const auto type = static_cast<unsigned long>(status.f_type);
-    if (type == 0x6969UL || type == 0xff534d42UL || type == 0xfe534d42UL ||
-        type == 0x01021994UL || type == 0x858458f6UL) {
-      throw std::runtime_error("ownership authority requires private persistent local storage");
+    if (!detail::IsOwnershipFilesystemSupported(type)) {
+      throw std::runtime_error(
+          "unsupported ownership authority filesystem; "
+          "supported private local storage required");
     }
+#else
+    static_cast<void>(descriptor);
+    throw std::runtime_error(
+        "ownership authority requires qualified Linux local storage");
 #endif
   }
 
@@ -518,23 +581,13 @@ class OwnershipLedger {
     }
   }
 
-  static void SyncDirectory(const std::filesystem::path& directory) {
+  /** Persist the ledger entry in the same private directory used to open it. */
+  void SyncDirectory() const {
 #ifdef _WIN32
-    // CREATE_NEW + FILE_FLAG_WRITE_THROUGH and FlushFileBuffers persist the
-    // file. Windows does not expose POSIX directory fsync through this API.
-    HANDLE parent = CreateFileW(directory.c_str(), GENERIC_READ,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
-    if (parent == INVALID_HANDLE_VALUE) {
-      throw std::runtime_error("cannot verify ownership ledger parent directory");
-    }
-    CloseHandle(parent);
+    throw std::runtime_error(
+        "ownership authority requires qualified Linux local storage");
 #else
-    const int parent = open(directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (parent < 0) throw std::runtime_error("cannot open ownership ledger parent directory");
-    const int result = fsync(parent);
-    const int closed = close(parent);
-    if (result != 0 || closed != 0) {
+    if (parent_fd_ < 0 || fsync(parent_fd_) != 0) {
       throw std::runtime_error("ownership ledger directory durability barrier failed");
     }
 #endif
@@ -547,6 +600,8 @@ class OwnershipLedger {
 #else
     if (fd_ >= 0) close(fd_);
     fd_ = -1;
+    if (parent_fd_ >= 0) close(parent_fd_);
+    parent_fd_ = -1;
 #endif
   }
 };

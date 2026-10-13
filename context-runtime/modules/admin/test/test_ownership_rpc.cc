@@ -32,26 +32,28 @@
  */
 
 /** @file Test ownership through real Admin RPC and independent client exits. */
-#include "runtime_server.h"
-#include "simple_test.h"
-
 #include <clio_runtime/admin/admin_client.h>
 #include <clio_runtime/clio_runtime.h>
 #include <clio_runtime/ipc_manager.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <optional>
-#include <spawn.h>
 #include <stdexcept>
 #include <string>
-#include <sys/wait.h>
-#include <unistd.h>
+#include <thread>
 #include <utility>
 #include <vector>
+
+#include "runtime_server.h"
+#include "simple_test.h"
 
 #if !defined(__linux__)
 #error "The native ownership authority RPC test requires Linux"
@@ -125,6 +127,25 @@ class EnvironmentValue {
   std::string name_;
   std::optional<std::string> previous_;
 };
+
+/** Wait for this namespaced TCP daemon's real Admin-pool readiness marker. */
+void RequireAuthorityReady(clio::run::test::RuntimeServer& server,
+                           const std::string& log_path) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  while (std::chrono::steady_clock::now() < deadline) {
+    if (!server.IsRunning()) {
+      FAIL("ownership authority exited during startup\n"
+           << clio::run::test::RuntimeServer::LogTail(80));
+    }
+    if (clio::run::test::RuntimeServer::ServerLogHasAdminPool(log_path)) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  FAIL("ownership authority readiness timed out\n"
+       << clio::run::test::RuntimeServer::LogTail(80));
+}
 
 /** Require a completed real RPC before reading its response fields. */
 template <typename Future>
@@ -201,9 +222,14 @@ TEST_CASE("Ownership RPC preserves claims after an independent client exits",
                                    "ownership-rpc-" + std::to_string(::getpid()));
   EnvironmentValue client_mode("CLIO_WITH_RUNTIME", "0");
   EnvironmentValue transport("CLIO_IPC_MODE", "TCP");
+  const std::string log_path = directory.path() + "/authority.log";
+  EnvironmentValue server_log("CLIO_TEST_SERVER_LOG", log_path);
+  EnvironmentValue log_level("CTP_LOG_LEVEL", "info");
   clio::run::test::RuntimeServer server;
   REQUIRE(server.Start(kOwnershipRpcPort));
-  REQUIRE(server.WaitForReady());
+  // RuntimeServer::WaitForReady probes an unnamespaced shared-memory name.
+  // This client uses TCP and must keep its explicitly isolated namespace.
+  RequireAuthorityReady(server, log_path);
   REQUIRE(clio::run::CLIO_INIT(clio::run::RuntimeMode::kClient, false));
   clio::run::admin::Client client;
 

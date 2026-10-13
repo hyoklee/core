@@ -80,10 +80,12 @@ bool Throws(Callable &&callable) {
 class LedgerDirectory {
  public:
   /** Create a distinct directory below CLIO_TEST_DATA_DIR or the working dir. */
-  LedgerDirectory() {
+  explicit LedgerDirectory(const std::filesystem::path &selected_base = {}) {
     static std::atomic<unsigned int> sequence{0};
     const char *configured = std::getenv("CLIO_TEST_DATA_DIR");
-    const auto base = configured != nullptr && configured[0] != '\0'
+    const auto base = !selected_base.empty()
+                          ? std::filesystem::absolute(selected_base)
+                      : configured != nullptr && configured[0] != '\0'
                           ? std::filesystem::absolute(configured)
                           : std::filesystem::current_path();
 #if defined(_WIN32)
@@ -227,6 +229,157 @@ TEST_CASE("Ownership authority fails closed on unsupported non-Linux storage",
 }
 
 #else
+
+TEST_CASE(
+    "Ownership supports only the explicit persistent local filesystem set",
+    "[admin][ownership]") {
+  constexpr std::array<unsigned long, 5> supported = {
+      0xef53UL, 0x58465342UL, 0x9123683eUL, 0x2fc12fc1UL, 0xf2f52010UL};
+  for (const auto type : supported) {
+    REQUIRE(detail::IsOwnershipFilesystemSupported(type));
+  }
+  // Network, volatile, FUSE, overlay, cluster, and unknown filesystem IDs.
+  constexpr std::array<unsigned long, 12> unsupported = {
+      0x6969UL,     0xff534d42UL, 0xfe534d42UL, 0x01021994UL,
+      0x858458f6UL, 0x65735546UL, 0x794c7630UL, 0x00c36400UL,
+      0x47504653UL, 0x0bd00bd0UL, 0UL,          0xffffffffUL};
+  for (const auto type : unsupported) {
+    REQUIRE_FALSE(detail::IsOwnershipFilesystemSupported(type));
+  }
+}
+
+TEST_CASE("Ownership rejects a real volatile authority filesystem",
+          "[admin][ownership]") {
+  struct statfs filesystem{};
+  REQUIRE(statfs("/dev/shm", &filesystem) == 0);
+  REQUIRE(static_cast<unsigned long>(filesystem.f_type) == 0x01021994UL);
+  LedgerDirectory directory("/dev/shm");
+  REQUIRE(Throws<std::runtime_error>(
+      [&] { OwnershipLedger ledger(directory.file()); }));
+  REQUIRE_FALSE(std::filesystem::exists(directory.file()));
+}
+
+TEST_CASE(
+    "Ownership requires a private authority directory before creating state",
+    "[admin][ownership]") {
+  LedgerDirectory directory;
+  const auto root = std::filesystem::path(directory.file()).parent_path();
+  for (const auto permissions :
+       {std::filesystem::perms::owner_all | std::filesystem::perms::group_read,
+        std::filesystem::perms::owner_all | std::filesystem::perms::group_all,
+        std::filesystem::perms::owner_all |
+            std::filesystem::perms::others_all}) {
+    std::filesystem::permissions(root, permissions,
+                                 std::filesystem::perm_options::replace);
+    REQUIRE(Throws<std::runtime_error>(
+        [&] { OwnershipLedger ledger(directory.file()); }));
+    REQUIRE_FALSE(std::filesystem::exists(directory.file()));
+  }
+  std::filesystem::permissions(root, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  OwnershipLedger ledger(directory.file());
+  REQUIRE_FALSE(ledger.Inspect("blueprints").record.authority_uuid.empty());
+}
+
+TEST_CASE("Ownership refuses symlinks in the authority directory ancestry",
+          "[admin][ownership]") {
+  LedgerDirectory directory;
+  const auto root = std::filesystem::path(directory.file()).parent_path();
+  const auto real = root / "real";
+  const auto nested = real / "nested";
+  std::filesystem::create_directories(nested);
+  std::filesystem::permissions(real, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  std::filesystem::permissions(nested, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  const auto alias = root / "alias";
+  std::filesystem::create_directory_symlink(real, alias);
+  for (const auto path :
+       {alias / "authority.ledger", alias / "nested" / "authority.ledger"}) {
+    REQUIRE(Throws<std::runtime_error>(
+        [&] { OwnershipLedger ledger(path.string()); }));
+  }
+  REQUIRE_FALSE(std::filesystem::exists(real / "authority.ledger"));
+  REQUIRE_FALSE(std::filesystem::exists(nested / "authority.ledger"));
+}
+
+TEST_CASE("Ownership rejects symlink and nonprivate existing ledger files",
+          "[admin][ownership]") {
+  LedgerDirectory directory;
+  {
+    OwnershipLedger ledger(directory.file());
+  }
+  const auto original = ReadBytes(directory.file());
+  const auto alias =
+      std::filesystem::path(directory.file()).parent_path() / "alias.ledger";
+  std::filesystem::create_symlink(directory.file(), alias);
+  REQUIRE(Throws<std::runtime_error>(
+      [&] { OwnershipLedger ledger(alias.string()); }));
+  for (const auto permissions : {std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write |
+                                     std::filesystem::perms::group_read,
+                                 std::filesystem::perms::owner_all}) {
+    std::filesystem::permissions(directory.file(), permissions,
+                                 std::filesystem::perm_options::replace);
+    REQUIRE(Throws<std::runtime_error>(
+        [&] { OwnershipLedger ledger(directory.file()); }));
+    REQUIRE(ReadBytes(directory.file()) == original);
+    RequireUnlocked(directory.file());
+  }
+}
+
+TEST_CASE("Ownership rejects ambiguous dot dotdot NUL and double-root paths",
+          "[admin][ownership]") {
+  LedgerDirectory directory;
+  const auto root = std::filesystem::path(directory.file()).parent_path();
+  const std::array<std::string, 5> invalid = {
+      (root / "." / "authority.ledger").string(),
+      (root / ".." / root.filename() / "authority.ledger").string(),
+      directory.file() + std::string("\0ignored", 8), "/" + directory.file(),
+      (root / ".").string()};
+  for (const auto &path : invalid) {
+    REQUIRE(
+        Throws<std::invalid_argument>([&] { OwnershipLedger ledger(path); }));
+  }
+  REQUIRE_FALSE(std::filesystem::exists(directory.file()));
+}
+
+TEST_CASE("Ownership pins its original directory across pathname replacement",
+          "[admin][ownership]") {
+  LedgerDirectory directory;
+  const auto base = std::filesystem::path(directory.file()).parent_path();
+  const auto root = base / "root";
+  const auto moved = base / "moved";
+  std::filesystem::create_directory(root);
+  std::filesystem::permissions(root, std::filesystem::perms::owner_all,
+                               std::filesystem::perm_options::replace);
+  const auto path = root / "authority.ledger";
+  std::string authority;
+  {
+    OwnershipLedger ledger(path.string());
+    authority = ledger.Inspect("blueprints").record.authority_uuid;
+    REQUIRE(ledger.Acquire("blueprints", Nonce(1), "original", authority, "")
+                .outcome == "acquired");
+    std::filesystem::rename(root, moved);
+    std::filesystem::create_directory(root);
+    std::filesystem::permissions(root, std::filesystem::perms::owner_all,
+                                 std::filesystem::perm_options::replace);
+    OwnershipLedger replacement(path.string());
+    REQUIRE(replacement.Inspect("blueprints").record.authority_uuid !=
+            authority);
+    REQUIRE_FALSE(replacement.Inspect("blueprints").record.held);
+    REQUIRE(Throws<std::invalid_argument>([&] {
+      replacement.Acquire("blueprints", Nonce(2), "replacement", authority, "");
+    }));
+    REQUIRE(ledger.Acquire("after-rename", Nonce(3), "original", authority, "")
+                .outcome == "acquired");
+    REQUIRE(ReadBytes(path).find(Nonce(1)) == std::string::npos);
+  }
+  OwnershipLedger recovered((moved / "authority.ledger").string());
+  REQUIRE(recovered.Inspect("blueprints").record.authority_uuid == authority);
+  REQUIRE(recovered.Inspect("blueprints").record.held);
+  REQUIRE(recovered.Inspect("after-rename").record.held);
+}
 
 TEST_CASE("Ownership acquisition has exactly one concurrent winner",
           "[admin][ownership]") {

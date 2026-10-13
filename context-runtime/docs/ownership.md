@@ -31,9 +31,28 @@ volatile memory storage. There is deliberately no default under `$HOME` or
 The authority stores `ownership-v1.ledger` there. Its process-exclusive file
 handle prevents two local daemon instances from writing the same ledger. It is
 not the distributed lock: clients coordinate through the designated core RPC
-service. Known NFS, SMB/CIFS, SMB2, tmpfs, and ramfs types are rejected.
-Other types require operator qualification as persistent local storage;
-filesystem type detection cannot prove a storage system's durability guarantees.
+service. Linux storage is accepted only for these filesystem magic values:
+ext2/3/4 (`0xef53`), XFS (`0x58465342`), btrfs (`0x9123683e`), ZFS
+(`0x2fc12fc1`), and F2FS (`0xf2f52010`). Every other type is unsupported,
+including unknown types, FUSE, overlay, network and cluster filesystems, and
+volatile storage. There is no override. This is the implementation's accepted
+storage policy; it does not claim that CI has exercised every accepted family
+or qualified every backing device and mount configuration. CI evidence must
+identify the filesystem actually used. Filesystem type detection cannot prove
+the backing storage system's durability guarantees.
+
+The configured directory must be a real directory owned by the authority's
+effective UID, without group or other permission bits; provision it with mode
+`0700`. The ledger must be an owned regular file with mode `0600`. Every path
+component is opened without following symlinks. Dot components, parent traversal,
+embedded NULs, and ambiguous double-leading slashes are rejected. The validated
+directory is pinned by an open descriptor before any ledger entry is created;
+ledger open and directory fsync use that same descriptor for the service's
+lifetime. Ancestors need not themselves be private: pinning each traversal step
+prevents later pathname swaps from redirecting operations away from the chosen
+private directory inode. An authorized owner or administrator can still rename
+that directory; the live service then continues using the originally opened
+inode. Do not move, replace, or clone authority storage operationally.
 
 Windows and macOS clients may contact the Linux authority. An authority on
 either client platform fails closed because its local-filesystem qualification
