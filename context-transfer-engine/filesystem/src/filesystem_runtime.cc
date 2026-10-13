@@ -536,7 +536,12 @@ clio::run::TaskResume Runtime::CreateEntry(FsReq r, clio::run::u32 type,
     }
     id = FsUnpack(r.id_);
   } else {
-    CLIO_CO_AWAIT(MintIdReady(FsInodeHomeFor(path, NumContainers()), id));
+    int mrc = 0;
+    CLIO_CO_AWAIT(MintIdReady(FsInodeHomeFor(path, NumContainers()), id, mrc));
+    if (mrc != 0) {
+      er.rc_ = static_cast<clio::run::u32>(mrc);
+      CLIO_CO_RETURN;
+    }
   }
   Inode ino;
   ino.tag_id_ = id;

@@ -944,8 +944,11 @@ class Runtime : public clio::run::Container {
   /**
    * Make sure at least `margin` ids are durably reserved beyond the next
    * one (writes the reservation record when not).
+   * @param margin ids that must stay reserved past the next one
+   * @param ok OUT false when the reservation could not be recorded (no id
+   *        past the recorded one may then be minted)
    */
-  clio::run::TaskResume EnsureIdReserve(clio::run::u32 margin);
+  clio::run::TaskResume EnsureIdReserve(clio::run::u32 margin, bool &ok);
   /**
    * Mint a new, never-reused inode id homed on `home` (null when none is
    * reserved). The major names this container as the minter, so ids minted
@@ -958,10 +961,11 @@ class Runtime : public clio::run::Container {
    * Mint an id homed on `home`, extending the durable id reservation first
    * when it has run out.
    * @param home the container that will serve the inode
-   * @param id OUT the id
+   * @param id OUT the id (null when rc != 0)
+   * @param rc OUT 0, or EIO when the reservation could not be recorded
    */
   clio::run::TaskResume MintIdReady(clio::run::u32 home,
-                                    clio::cte::core::TagId &id);
+                                    clio::cte::core::TagId &id, int &rc);
   /**
    * Store the record of a NEW inode before its name is published (#1158).
    * The inode's home (FsInodeHomeFor) is usually not the container that

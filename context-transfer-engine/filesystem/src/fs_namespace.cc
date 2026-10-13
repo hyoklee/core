@@ -418,12 +418,19 @@ clio::cte::core::TagId Runtime::MintIdFor(clio::run::u32 home) {
 }
 
 clio::run::TaskResume Runtime::MintIdReady(clio::run::u32 home,
-                                           clio::cte::core::TagId &id) {
+                                           clio::cte::core::TagId &id,
+                                           int &rc) {
   CLIO_TASK_BODY_BEGIN
+  rc = 0;
   for (;;) {
     id = MintIdFor(home);
     if (!id.IsNull()) break;
-    CLIO_CO_AWAIT(EnsureIdReserve(1024));
+    bool ok = false;
+    CLIO_CO_AWAIT(EnsureIdReserve(1024, ok));
+    if (!ok) {
+      rc = EIO;  // never mint past a reservation that is not recorded
+      break;
+    }
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -818,7 +825,10 @@ clio::run::TaskResume Runtime::CatchUpNames() {
 // ===========================================================================
 
 namespace {
-/** Blob holding container `c`'s id reservation. */
+/** Xattr key (in the system tag) holding container `c`'s id reservation. */
+std::string IdsKey(clio::run::u32 c) { return "~ids." + std::to_string(c); }
+/** Blob that held the id reservation before it moved to IdsKey (read only,
+ *  so a reservation stored by an earlier build is still honoured). */
 std::string IdsBlob(clio::run::u32 c) { return "ids." + std::to_string(c); }
 /** Blob holding container `c`'s orphan list. */
 std::string OrphansBlob(clio::run::u32 c) {
@@ -844,8 +854,10 @@ void Runtime::LogInode(const InodeState &fi) {
   }
 }
 
-clio::run::TaskResume Runtime::EnsureIdReserve(clio::run::u32 margin) {
+clio::run::TaskResume Runtime::EnsureIdReserve(clio::run::u32 margin,
+                                               bool &ok) {
   CLIO_TASK_BODY_BEGIN
+  ok = true;
   for (;;) {
     clio::run::u32 want = 0;
     bool go = false;
@@ -861,27 +873,32 @@ clio::run::TaskResume Runtime::EnsureIdReserve(clio::run::u32 margin) {
       CLIO_CO_AWAIT(clio::run::yield(20.0));
       continue;
     }
-    bool ok = true;
-    if (!sys_tag_id_.IsNull()) {
+    // The reservation is a key of this container's system tag, on its own
+    // CTE container: an in-memory update made durable by the CTE WAL, like
+    // the inode records. It used to be a blob that had to land on a
+    // non-volatile tier; with none configured every store failed, the
+    // counter restarted at 1 after each restart, and new directories took
+    // the ids of live ones -- each showing the other's contents.
+    if (sys_tag_id_.IsNull()) {
+      ok = false;
+    } else {
       std::string rec;
       FsEnc(&rec).U32(want);
-      auto p = cte_.AsyncPutBlob(sys_tag_id_, IdsBlob(container_id_), 0,
-                                 rec.size(), rec.data(), -1.0f,
-                                 SysCtx(inode_volatile_only_), 0u,
-                                 clio::run::PoolQuery::Dynamic());
+      auto p = cte_.AsyncTagSetXattr(sys_tag_id_, IdsKey(container_id_), rec,
+                                     0, clio::run::PoolQuery::Local());
       CLIO_CO_AWAIT(p);
       ok = p->GetReturnCode() == 0;
       if (!ok) {
         HLOG(kError, "filesystem: storing the id reservation failed (rc {}); "
-             "ids minted now could repeat after a restart",
+             "no inode is created until it is stored, since an unrecorded "
+             "reservation lets ids repeat after a restart",
              p->GetReturnCode());
       }
     }
     {
       std::lock_guard<std::mutex> g(meta_mu_);
       reserving_ = false;
-      // Unavailability must not stop creates: advance anyway (logged above).
-      minted_hi_ = std::max(minted_hi_, want);
+      if (ok) minted_hi_ = std::max(minted_hi_, want);
     }
     break;
   }
@@ -925,6 +942,23 @@ clio::run::TaskResume Runtime::LoadSysRecords() {
   if (sys_tag_id_.IsNull()) CLIO_CO_RETURN;
   std::string rec;
   {
+    auto x = cte_.AsyncTagGetXattr(sys_tag_id_, IdsKey(container_id_),
+                                   clio::run::PoolQuery::Local());
+    CLIO_CO_AWAIT(x);
+    clio::run::u32 hi = 0;
+    if (x->GetReturnCode() == 0 && x->found_) {
+      const std::string v = x->value_.str();
+      FsDec d(v.data(), v.size());
+      if (d.U32(&hi)) {
+        // Everything reserved before the restart may be in use: start past it.
+        std::lock_guard<std::mutex> lk(meta_mu_);
+        next_minor_ = std::max<clio::run::u32>(hi, 1);
+        minted_hi_ = next_minor_;
+      }
+    }
+  }
+  {
+    // A reservation an earlier build stored as a blob.
     auto sz = cte_.AsyncGetBlobSize(sys_tag_id_, IdsBlob(container_id_));
     CLIO_CO_AWAIT(sz);
     if (sz->GetReturnCode() == 0 && sz->size_ >= 4) {
@@ -935,9 +969,9 @@ clio::run::TaskResume Runtime::LoadSysRecords() {
       clio::run::u32 hi = 0;
       FsDec d(rec.data(), rec.size());
       if (g->GetReturnCode() == 0 && d.U32(&hi)) {
-        // Everything reserved before the restart may be in use: start past it.
         std::lock_guard<std::mutex> lk(meta_mu_);
-        next_minor_ = std::max<clio::run::u32>(hi, 1);
+        next_minor_ = std::max<clio::run::u32>(next_minor_,
+                                               std::max<clio::run::u32>(hi, 1));
         minted_hi_ = next_minor_;
       }
     }
