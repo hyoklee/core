@@ -44,7 +44,11 @@ GLOBAL_CROSS_CONST clio::run::u32 kRegisterGpuContainer = 33;
 GLOBAL_CROSS_CONST clio::run::u32 kListContainers = 34;
 GLOBAL_CROSS_CONST clio::run::u32 kQueryTaskProgress = 35;
 
-GLOBAL_CROSS_CONST clio::run::u32 kMaxMethodId = 36;
+GLOBAL_CROSS_CONST clio::run::u32 kOwnershipAcquire = 36;
+GLOBAL_CROSS_CONST clio::run::u32 kOwnershipRelease = 37;
+GLOBAL_CROSS_CONST clio::run::u32 kOwnershipInspect = 38;
+
+GLOBAL_CROSS_CONST clio::run::u32 kMaxMethodId = 39;
 
 inline const std::vector<std::string>& GetMethodNames() {
   static const std::vector<std::string> names = [] {
@@ -77,6 +81,9 @@ inline const std::vector<std::string>& GetMethodNames() {
     v[33] = "RegisterGpuContainer";
     v[34] = "ListContainers";
     v[35] = "QueryTaskProgress";
+    v[36] = "OwnershipAcquire";
+    v[37] = "OwnershipRelease";
+    v[38] = "OwnershipInspect";
     return v;
   }();
   return names;
