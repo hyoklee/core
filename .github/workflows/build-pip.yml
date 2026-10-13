@@ -620,6 +620,11 @@ jobs:
             python: '3.14'
 
     steps:
+    - name: Check out ownership test sources
+      uses: actions/checkout@v4
+      with:
+        sparse-checkout: installers/pip/test
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -710,13 +715,15 @@ jobs:
     # FIRST step on purpose: actions/checkout cleans the workspace, so running
     # it after download-artifact deletes the very artifact this job tests
     # ("Cannot find path ...\\wheels because it does not exist"). Sparse
-    # because the job needs only the retry helper, not the tree -- without a
+    # because the job needs only the retry helper and ownership tests -- without a
     # checkout at all the helper is absent and the step dies with "The argument
     # 'CI/Retry.ps1' is not recognized as the name of a script file".
-    - name: Check out CI helpers
+    - name: Check out CI helpers and ownership tests
       uses: actions/checkout@v4
       with:
-        sparse-checkout: CI
+        sparse-checkout: |
+          CI
+          installers/pip/test
 
     - name: Set up Python
       uses: actions/setup-python@v5
