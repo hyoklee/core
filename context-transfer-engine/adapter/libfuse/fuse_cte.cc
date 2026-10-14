@@ -3219,8 +3219,11 @@ int cte_fuse_flush(const char *path, struct fuse_file_info *fi) {
   const std::string p =
       handle ? HandlePath(handle, path) : std::string(path ? path : "");
   if (p.empty()) return 0;
+  // A file with hard links takes the awaited path: its size and pages are
+  // overlaid under THIS name only, so a stat or read through a sibling
+  // right after close(2) saw the old file until the queued publish landed.
   if (handle != nullptr && AsyncFlushEnabled() && !MultiNode() &&
-      !handle->appended.load()) {
+      !handle->appended.load() && LinkGroupSiblings(p).empty()) {
     return FlushAsync(handle, p);
   }
   if (handle != nullptr && handle->fh == 0) {
