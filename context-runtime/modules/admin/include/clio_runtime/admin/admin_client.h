@@ -40,6 +40,8 @@
 
 #include "admin_tasks.h"
 #include <clio_runtime/pool_manager.h>
+#include <limits>
+#include <stdexcept>
 
 /**
  * Client API for Admin ChiMod
@@ -598,6 +600,49 @@ class Client : public clio::run::ContainerClient {
     auto task = ipc_manager->NewTask<AnnounceShutdownTask>(
         clio::run::CreateTaskId(), pool_id_, pool_query, shutting_down_node_id);
     return ipc_manager->Send(task);
+  }
+  /** Acquire at a physical node; no logical routing or authority failover. */
+  clio::run::Future<OwnershipAcquireTask> AsyncOwnershipAcquire(
+      clio::run::u64 authority_node, const std::string& resource,
+      const std::string& expected_uuid, const std::string& owner_nonce,
+      const std::string& owner_label, const std::string& holder_metadata) {
+    if (authority_node > std::numeric_limits<clio::run::u32>::max()) {
+      throw std::invalid_argument("ownership authority node exceeds unsigned 32-bit range");
+    }
+    auto* ipc = CLIO_IPC;
+    auto task = ipc->NewTask<OwnershipAcquireTask>(
+        clio::run::CreateTaskId(), pool_id_, PoolQuery::Physical(authority_node),
+        authority_node, resource, expected_uuid, 0, owner_nonce, owner_label,
+        holder_metadata);
+    return ipc->Send(task);
+  }
+
+  /** Release only the exact authority/resource/revision/nonce token. */
+  clio::run::Future<OwnershipReleaseTask> AsyncOwnershipRelease(
+      clio::run::u64 authority_node, const std::string& resource,
+      const std::string& expected_uuid, clio::run::u64 revision,
+      const std::string& owner_nonce) {
+    if (authority_node > std::numeric_limits<clio::run::u32>::max()) {
+      throw std::invalid_argument("ownership authority node exceeds unsigned 32-bit range");
+    }
+    auto* ipc = CLIO_IPC;
+    auto task = ipc->NewTask<OwnershipReleaseTask>(
+        clio::run::CreateTaskId(), pool_id_, PoolQuery::Physical(authority_node),
+        authority_node, resource, expected_uuid, revision, owner_nonce, "", "");
+    return ipc->Send(task);
+  }
+
+  /** Inspect the configured physical authority without changing ownership. */
+  clio::run::Future<OwnershipInspectTask> AsyncOwnershipInspect(
+      clio::run::u64 authority_node, const std::string& resource) {
+    if (authority_node > std::numeric_limits<clio::run::u32>::max()) {
+      throw std::invalid_argument("ownership authority node exceeds unsigned 32-bit range");
+    }
+    auto* ipc = CLIO_IPC;
+    auto task = ipc->NewTask<OwnershipInspectTask>(
+        clio::run::CreateTaskId(), pool_id_, PoolQuery::Physical(authority_node),
+        authority_node, resource, "", 0, "", "", "");
+    return ipc->Send(task);
   }
 };
 

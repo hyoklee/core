@@ -192,6 +192,11 @@ jobs:
           fi
           conda activate iowarp
           ./CI/calculate_coverage.sh --build --run-ctest --clean --site ${{ matrix.site }}
+          if [ "${{ matrix.phase }}" = "unit" ]; then
+            # Install the changed ABI before a strict, single-pass ownership gate.
+            cmake --install build --prefix "$PWD/build/ownership-ci-install"
+            ctest --test-dir build -L ownership --no-tests=error --output-on-failure --timeout 120
+          fi
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v5
