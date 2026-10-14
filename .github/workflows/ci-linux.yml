@@ -192,6 +192,28 @@ jobs:
           fi
           conda activate iowarp
           ./CI/calculate_coverage.sh --build --run-ctest --clean --site ${{ matrix.site }}
+      - name: Require real Python conditional-write coverage
+        if: matrix.phase == 'unit' && matrix.arch == 'amd64'
+        # The integration label excludes this fixture from the broad CDash
+        # UNTIL_PASS sweep. Require discovery and one focused run without retry.
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          command = ["ctest", "--test-dir", "build", "-R", "^python_conditional_put_test$"]
+          discovered = json.loads(subprocess.check_output(command + ["--show-only=json-v1"], text=True))
+          if len(discovered["tests"]) != 1:
+              raise SystemExit("python_conditional_put_test must be registered exactly once")
+          junit = Path("build/conditional-python.xml").resolve()
+          subprocess.run(command + ["--output-on-failure", "--no-tests=error", "--output-junit", str(junit)], check=True)
+          results = list(ET.parse(junit).getroot().iter("testcase"))
+          if len(results) != 1 or any(results[0].find(tag) is not None for tag in ("skipped", "failure", "error")):
+              raise SystemExit("python_conditional_put_test must execute once and pass; absent/skipped/failed is failure")
+          print("Verified: python_conditional_put_test executed once and passed against the real runtime")
+          PY
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v5
