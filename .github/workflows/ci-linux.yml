@@ -197,7 +197,16 @@ jobs:
         # The integration label excludes this fixture from the broad CDash
         # UNTIL_PASS sweep. Require discovery and one focused run without retry.
         run: |
+          if [ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/miniconda3/etc/profile.d/conda.sh"
+          elif [ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]; then
+            source "$HOME/anaconda3/etc/profile.d/conda.sh"
+          elif command -v conda &>/dev/null; then
+            eval "$(conda shell.bash hook)"
+          fi
+          conda activate iowarp
           python3 - <<'PY'
+          from collections import Counter
           import json
           from pathlib import Path
           import subprocess
@@ -205,15 +214,28 @@ jobs:
 
           command = ["ctest", "--test-dir", "build", "-R", "^python_conditional_put_test$"]
           discovered = json.loads(subprocess.check_output(command + ["--show-only=json-v1"], text=True))
-          if len(discovered["tests"]) != 1:
-              raise SystemExit("python_conditional_put_test must be registered exactly once")
+          # CTest adds the required cleanup fixture around the selected test.
+          expected_names = Counter({
+              "cr_pre_test_cleanup": 1,
+              "python_conditional_put_test": 1,
+              "cr_post_test_cleanup": 1,
+          })
+          discovered_names = Counter(test["name"] for test in discovered["tests"])
+          print(f"Focused conditional-write tests: {dict(discovered_names)}", flush=True)
+          if discovered_names != expected_names:
+              raise SystemExit("python_conditional_put_test must be registered exactly once with its cleanup fixture")
           junit = Path("build/conditional-python.xml").resolve()
           subprocess.run(command + ["--output-on-failure", "--no-tests=error", "--output-junit", str(junit)], check=True)
           results = list(ET.parse(junit).getroot().iter("testcase"))
-          if len(results) != 1 or any(results[0].find(tag) is not None for tag in ("skipped", "failure", "error")):
-              raise SystemExit("python_conditional_put_test must execute once and pass; absent/skipped/failed is failure")
+          result_names = Counter(result.attrib["name"] for result in results)
+          unsuccessful = any(result.find(tag) is not None for result in results for tag in ("skipped", "failure", "error"))
+          if result_names != expected_names or unsuccessful:
+              raise SystemExit("python_conditional_put_test and its cleanup fixture must execute once and pass; absent/skipped/failed is failure")
           print("Verified: python_conditional_put_test executed once and passed against the real runtime")
           PY
+          # Refresh the report after the focused test without rebuilding,
+          # cleaning counters, or rerunning any tests.
+          ./CI/calculate_coverage.sh
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v5
