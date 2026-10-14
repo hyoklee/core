@@ -1151,6 +1151,12 @@ class Runtime : public clio::run::Container {
    * @param rec the encoded record (EncInodeRec)
    * @param rc the PutBlob return code (0 on success)
    */
+  /**
+   * Where an inode's record lives: its owner's CTE container (Local when the
+   * owner is this container). EnsureInode reads it there.
+   * @param packed the inode's packed id
+   */
+  clio::run::PoolQuery InodeRecQuery(clio::run::u64 packed);
   clio::run::TaskResume StoreInodeRec(clio::run::u64 packed,
                                       const std::string &rec, int &rc);
   /**

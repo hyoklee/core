@@ -56,6 +56,14 @@ constexpr clio::run::u32 kOldInodeRecMagic = 0x31494643u;
 constexpr double kStoreBusyPollUs = 20.0;
 }  // namespace
 
+clio::run::PoolQuery Runtime::InodeRecQuery(clio::run::u64 packed) {
+  const clio::run::u32 owner = InodeOwner(packed);
+  return owner == container_id_
+             ? clio::run::PoolQuery::Local()
+             : clio::run::PoolQuery::DirectId(
+                   static_cast<clio::run::ContainerId>(owner));
+}
+
 clio::run::TaskResume Runtime::CreateInodeRecord(
     Inode ino, const std::string &mirror_path, int &rc) {
   CLIO_TASK_BODY_BEGIN
@@ -96,8 +104,7 @@ clio::run::TaskResume Runtime::DiscardInodeRecord(
     inode_dirty_.erase(packed);
     inode_dirty_seq_.erase(packed);
   }
-  auto d = cte_.AsyncTagDelXattr(id, kInodeKey, 0,
-                                 clio::run::PoolQuery::Local());
+  auto d = cte_.AsyncTagDelXattr(id, kInodeKey, 0, InodeRecQuery(packed));
   CLIO_CO_AWAIT(d);  // best effort: a leftover record names nothing
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -172,11 +179,14 @@ clio::run::TaskResume Runtime::StoreInodeRec(clio::run::u64 packed,
       CLIO_CO_RETURN;
     }
   }
-  // The home's own CTE container holds the record: one in-memory update and
-  // a WAL append there, no blob placement or device write. Only this home
-  // writes or reads it (a dead home's records are on its own node, #1263).
+  // The owner's own CTE container holds the record: one in-memory update and
+  // a WAL append there, no blob placement or device write. Only the owner
+  // reads it (EnsureInode, Local), so a record stored by another container --
+  // a create's name inserter is usually not the inode's home -- is sent
+  // there; stored Local it was invisible to the home (a dead home's records
+  // are on its own node, #1263).
   auto p = cte_.AsyncTagSetXattr(FsUnpack(packed), kInodeKey, rec, 0,
-                                 clio::run::PoolQuery::Local());
+                                 InodeRecQuery(packed));
   CLIO_CO_AWAIT(p);
   rc = static_cast<int>(p->GetReturnCode());
   CLIO_CO_RETURN;
