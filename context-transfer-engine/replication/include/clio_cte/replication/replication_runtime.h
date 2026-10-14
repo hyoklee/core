@@ -356,7 +356,17 @@ class Runtime : public clio::cte::core::CoreInterposer {
     /** Which change this is (handoff_seq_ at NoteHandoff): a push clears
      *  the entry only if no newer change replaced it meanwhile. */
     clio::run::u64 seq_ = 0;
+    /** Wall time (ns) of that change here; 0 when unknown (replayed from
+     *  the handoff log). Carried by the push so the owner can tell it from
+     *  a newer write it took itself after it came back. */
+    clio::run::u64 ns_ = 0;
   };
+  /** Wall time (ns) of the last client change this container applied as a
+   *  blob's owner, per blob key (owner_write_mu_). A hand-back push older
+   *  than it is stale: a node that came back from a partition takes writes
+   *  at once, and the stand-in's older copy must not land over them. */
+  std::unordered_map<std::string, clio::run::u64> owner_write_ns_;
+  std::mutex owner_write_mu_;
   /** Last HandoffEntry::seq_ handed out (handoff_mu_). */
   clio::run::u64 handoff_seq_ = 0;
   /** Owners a PushHandoff is running for (handoff_mu_): the sweep and an
@@ -392,6 +402,23 @@ class Runtime : public clio::cte::core::CoreInterposer {
    */
   void NoteHandoff(clio::run::u32 owner, const TagId &tag,
                    const std::string &name, bool deleted);
+  /**
+   * Record a client change applied here as the blob's owner (see
+   * owner_write_ns_).
+   * @param tag blob's tag
+   * @param name blob name
+   */
+  void NoteOwnerWrite(const TagId &tag, const std::string &name);
+  /**
+   * Whether this owner changed the blob after `ns` (a hand-back push's
+   * stand-in time): the push is then stale and is dropped.
+   * @param tag blob's tag
+   * @param name blob name
+   * @param ns the stand-in's change time (0 = unknown: never stale)
+   * @return true if the owner's copy is newer
+   */
+  bool OwnerWroteAfter(const TagId &tag, const std::string &name,
+                       clio::run::u64 ns);
   /**
    * Drop every node's cached copy of a blob this container just changed on
    * behalf of its dead owner: the owner tracks who holds copies, and this

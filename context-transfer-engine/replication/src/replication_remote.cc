@@ -105,8 +105,41 @@ void Runtime::NoteHandoff(clio::run::u32 owner, const TagId &tag,
   std::lock_guard<std::mutex> g(handoff_mu_);
   const std::string key = std::to_string(tag.major_) + "." +
                           std::to_string(tag.minor_) + "." + name;
-  handoff_[owner][key] = HandoffEntry{tag, name, deleted, ++handoff_seq_};
+  handoff_[owner][key] = HandoffEntry{tag, name, deleted, ++handoff_seq_,
+                                      clio::cte::core::GetWallTimeNs()};
   LogHandoff(kHandoffNote, owner, handoff_[owner][key]);
+}
+
+namespace {
+/** Owner-write times older than this are forgotten (a stand-in hands its
+ *  changes back within a few sweeps of the owner answering again). */
+constexpr clio::run::u64 kOwnerWriteKeepNs = 600ull * 1000000000ull;
+/** A hand-back push the owner dropped: its own copy is newer. */
+constexpr clio::run::u32 kHandoffStaleRc = 7741;
+}  // namespace
+
+void Runtime::NoteOwnerWrite(const TagId &tag, const std::string &name) {
+  const clio::run::u64 now = clio::cte::core::GetWallTimeNs();
+  const std::string key = std::to_string(tag.major_) + "." +
+                          std::to_string(tag.minor_) + "." + name;
+  std::lock_guard<std::mutex> g(owner_write_mu_);
+  owner_write_ns_[key] = now;
+  if (owner_write_ns_.size() > 65536) {
+    for (auto it = owner_write_ns_.begin(); it != owner_write_ns_.end();) {
+      it = now - it->second > kOwnerWriteKeepNs ? owner_write_ns_.erase(it)
+                                                : std::next(it);
+    }
+  }
+}
+
+bool Runtime::OwnerWroteAfter(const TagId &tag, const std::string &name,
+                              clio::run::u64 ns) {
+  if (ns == 0) return false;
+  const std::string key = std::to_string(tag.major_) + "." +
+                          std::to_string(tag.minor_) + "." + name;
+  std::lock_guard<std::mutex> g(owner_write_mu_);
+  auto it = owner_write_ns_.find(key);
+  return it != owner_write_ns_.end() && it->second > ns;
 }
 
 // ===========================================================================
@@ -220,14 +253,24 @@ clio::run::TaskResume Runtime::PutBlob(
   // This container owns the blob: after a restart, the stand-in's copy of
   // it lands first.
   CLIO_CO_AWAIT(AwaitHandback(task->context_));
+  const bool handoff_push =
+      (task->context_.op_flags_ & Context::kHandoffPush) != 0;
+  // A hand-back push older than a change this owner took itself since it
+  // came back (a partition heals without a restart, so no hand-back gate
+  // holds clients off) would roll the blob back: drop it (#1283).
+  if (handoff_push && OwnerWroteAfter(tag, name, task->context_.generation_)) {
+    task->SetReturnCode(kHandoffStaleRc);
+    CLIO_CO_RETURN;
+  }
   CLIO_CO_AWAIT(PutBlobLocal(task));
   if (task->GetReturnCode() != 0) CLIO_CO_RETURN;
   // A hand-back push comes FROM the stand-in, which holds the newer copy:
   // mirroring it back would overwrite that copy with what the push read
   // before a still-running failover put finished (#1154).
-  if ((task->context_.op_flags_ & Context::kHandoffPush) != 0) {
+  if (handoff_push) {
     CLIO_CO_RETURN;
   }
+  NoteOwnerWrite(tag, name);
   std::vector<clio::cte::core::BlobRegion> regions;
   clio::cte::core::ForEachBlobRegion(*task,
       [&regions](const clio::cte::core::BlobRegion &r) {
@@ -319,6 +362,7 @@ clio::run::TaskResume Runtime::MultiPutBlob(
                   desc.blob_name_, false);
       continue;
     }
+    NoteOwnerWrite(desc.tag_id_, desc.blob_name_);
     if (config_.remote_copies_ <= 0) continue;
     CLIO_CO_AWAIT(MirrorRange(desc.tag_id_, desc.blob_name_, desc.offset_,
                               desc.size_, batch.RecordSlice(d),
@@ -347,6 +391,7 @@ clio::run::TaskResume Runtime::DelBlob(
     }
     CLIO_CO_RETURN;
   }
+  NoteOwnerWrite(tag, name);
   if (config_.remote_copies_ <= 0) CLIO_CO_RETURN;
   const clio::run::u32 n = NumContainers();
   for (int i = 1; i <= config_.remote_copies_ && i < static_cast<int>(n); ++i) {
@@ -376,6 +421,7 @@ clio::run::TaskResume Runtime::TruncateBlob(
     }
     CLIO_CO_RETURN;
   }
+  NoteOwnerWrite(tag, name);
   if (config_.remote_copies_ <= 0) CLIO_CO_RETURN;
   const clio::run::u32 n = NumContainers();
   for (int i = 1; i <= config_.remote_copies_ && i < static_cast<int>(n); ++i) {
@@ -405,6 +451,9 @@ clio::run::TaskResume Runtime::PushOne(HandoffEntry e, clio::run::u32 owner,
   // keeps it and the next pass sends the finished state (#1154).
   Context push_ctx;
   push_ctx.op_flags_ |= Context::kHandoffPush;
+  // The stand-in's change time rides in generation_ (unused without
+  // kGenerational): the owner drops a push older than its own copy.
+  push_ctx.generation_ = e.ns_;
   if (e.deleted_) {
     auto d = Self()->AsyncDelBlob(e.tag_, e.name_, to_owner);
     CLIO_CO_AWAIT(d);
@@ -436,6 +485,13 @@ clio::run::TaskResume Runtime::PushOne(HandoffEntry e, clio::run::u32 owner,
                                     config_.cache_score_, push_ctx, 0u,
                                     to_owner);
       CLIO_CO_AWAIT(p);
+      if (p->GetReturnCode() == kHandoffStaleRc) {
+        // The owner has written the blob since: its copy is the current one,
+        // and neither the rest of this copy nor the truncate may land.
+        CLIO_IPC->FreeBuffer(buf);
+        *ok = true;
+        CLIO_CO_RETURN;
+      }
       good = p->GetReturnCode() == 0;
     }
     CLIO_IPC->FreeBuffer(buf);
