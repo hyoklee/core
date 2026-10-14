@@ -275,7 +275,7 @@ class Controller:
         prefix = self.root / f"client-{self.sequence}"
         job = {"operation": operation, **arguments}
         for kind in ("ready", "gate", "output"):
-            job[kind] = str(prefix.with_suffix(f".{kind}"))
+            job.setdefault(kind, str(prefix.with_suffix(f".{kind}")))
         job_path = prefix.with_suffix(".json")
         job_path.write_text(json.dumps(job), encoding="utf-8")
         log = prefix.with_suffix(".log").open("wb")
@@ -306,8 +306,8 @@ class Controller:
             return all(Path(job["ready"]).exists() for job in jobs)
 
         wait_until(ready, "clients did not initialize", PROCESS_TIMEOUT)
-        for job in jobs:
-            Path(job["gate"]).touch()
+        for gate in {job["gate"] for job in jobs}:
+            Path(gate).touch()
 
     def collect(self, job: dict[str, Any]) -> dict[str, Any]:
         """Require process success and a concrete result from its native Future."""
@@ -324,8 +324,11 @@ class Controller:
     def race(self, name: str, version: int | None = None) -> tuple[int, str]:
         """Require exactly one native winner and unchanged losing contenders."""
         arguments = {} if version is None else {"version": version}
+        gate = str(self.root / f"race-{self.sequence}.gate")
         jobs = [
-            self.start("contend", name=name, nonce=uuid.uuid4().hex, **arguments)
+            self.start(
+                "contend", name=name, nonce=uuid.uuid4().hex, gate=gate, **arguments
+            )
             for _ in range(4)
         ]
         self.release(jobs)
