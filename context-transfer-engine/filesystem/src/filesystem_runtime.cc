@@ -144,6 +144,16 @@ clio::run::TaskResume Runtime::Create(clio::run::shared_ptr<CreateTask> &task) {
   // Caches granted by an earlier incarnation of this container run out by
   // started_ms_ + lease; resync pushes wait at most that long for them.
   started_ms_ = SteadyMs();
+  // Directory blocks this container is home for: in memory, persisted in a
+  // node-local journal next to the stream log when metadata_log_path is set
+  // (else in CTE blobs). Replayed first, before any await: the container is
+  // registered before Create runs, so peers' lookups arrive while it awaits
+  // below, and a home block loaded before the replay came back empty -- for
+  // "/" a fresh empty root that then replaced the journaled one.
+  OpenDirJournal(cfg.metadata_log_path_.empty()
+                     ? std::string()
+                     : ctp::ConfigParse::ExpandPath(cfg.metadata_log_path_) +
+                           ".dirs." + std::to_string(container_id_));
   next_pool_id_ = cfg.next_pool_id_;
   if (!next_pool_id_.IsNull()) {
     cte_ = clio::cte::core::Client(next_pool_id_);
@@ -203,13 +213,6 @@ clio::run::TaskResume Runtime::Create(clio::run::shared_ptr<CreateTask> &task) {
   }
   split_entries_ = std::max<clio::run::u32>(cfg.dir_split_entries_, 16);
   case_insensitive_ = cfg.case_insensitive_;
-  // Directory blocks this container is home for: in memory, persisted in a
-  // node-local journal next to the stream log when metadata_log_path is set
-  // (else in CTE blobs). Replayed before anything reads a directory.
-  OpenDirJournal(cfg.metadata_log_path_.empty()
-                     ? std::string()
-                     : ctp::ConfigParse::ExpandPath(cfg.metadata_log_path_) +
-                           ".dirs." + std::to_string(container_id_));
   // Inode records live in CTE blobs and load on demand; only this
   // container's id reservation and orphan list are read up front.
   CLIO_CO_AWAIT(LoadSysRecords());

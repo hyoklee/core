@@ -131,6 +131,10 @@ clio::run::TaskResume Runtime::ReadBlockBlob(clio::run::u64 dir,
                                              int &rc) {
   CLIO_TASK_BODY_BEGIN
   rc = 0;
+  // Before the journal is replayed, "not in the journal" means nothing.
+  while (!dir_ready_.load(std::memory_order_acquire)) {
+    CLIO_CO_AWAIT(clio::run::yield(1000.0));
+  }
   if (dir_journal_) {
     rc = TakeJournaledBlock(dir, k, out);
     const clio::run::u32 n = NumContainers();
@@ -202,6 +206,9 @@ clio::run::TaskResume Runtime::WriteBlockBlob(clio::run::u64 dir,
                                               int &rc) {
   CLIO_TASK_BODY_BEGIN
   rc = 0;
+  while (!dir_ready_.load(std::memory_order_acquire)) {
+    CLIO_CO_AWAIT(clio::run::yield(1000.0));
+  }
   if (dir_journal_) {
     rc = JournalAppend(FsLogRec::kBlockImage, image);
     CLIO_CO_RETURN;

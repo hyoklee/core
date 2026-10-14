@@ -113,11 +113,13 @@ void Runtime::OpenDirJournal(const std::string &path) {
   if (path.empty()) {
     HLOG(kInfo, "filesystem: no metadata_log_path; directory blocks persist "
          "in CTE blobs");
+    dir_ready_.store(true, std::memory_order_release);
     return;
   }
   if (!dir_log_.Open(path)) {
     HLOG(kError, "filesystem: cannot open directory journal {}: {}; "
          "directory blocks persist in CTE blobs", path, std::strerror(errno));
+    dir_ready_.store(true, std::memory_order_release);
     return;
   }
   dir_journal_ = true;
@@ -134,6 +136,7 @@ void Runtime::OpenDirJournal(const std::string &path) {
     blocks = journaled_.size();
   }
   dir_log_synced_ms_ = SteadyMs();
+  dir_ready_.store(true, std::memory_order_release);
   HLOG(kInfo, "filesystem: directory journal {}: {} ({} records, {} blocks)",
        path, is_restart_ ? "replayed" : "fresh", n, blocks);
 }

@@ -463,6 +463,9 @@ class Runtime : public clio::run::Container {
   /** True when directory blocks persist in dir_log_ (metadata_log_path is
    *  set) instead of CTE blobs. */
   bool dir_journal_ = false;
+  /** Set once OpenDirJournal has decided the journal (and replayed it): home
+   *  block loads wait for it, as must anything a peer asks before Create. */
+  std::atomic<bool> dir_ready_{false};
   /** Node-local journal of the blocks this container is home for. */
   FsMetaLog dir_log_;
   /** Orders appends against a compaction's snapshot + rewrite. Taken
