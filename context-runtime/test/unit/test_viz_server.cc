@@ -431,6 +431,7 @@ TEST_CASE("Viz asset search covers build and install layouts", "[viz]") {
 
   // CLIO_VIZ_PATH takes precedence, so assets can be edited without a rebuild.
   std::filesystem::path root = MakeAssetTree();
+  CTP_MSAN_UNPOISON_PATH(root);  // assembled inside libstdc++.so
   std::filesystem::path viz_root = root.parent_path() / "clio_viz_test_root";
   std::filesystem::remove_all(viz_root);
   std::filesystem::create_directories(viz_root / "clio_admin");

@@ -422,13 +422,17 @@ static size_t ReadCgroupMemoryLimit() {
                          "/sys/fs/cgroup/memory/memory.limit_in_bytes"};
   for (const char *path : paths) {
     std::ifstream f(path);
+    CTP_MSAN_UNPOISON_OBJ(f);  // stream state is owned by libstdc++.so
     if (!f.is_open()) {
       continue;
     }
     std::string v;
-    if (!(f >> v)) {
+    f >> v;
+    CTP_MSAN_UNPOISON_OBJ(f);
+    if (!f) {
       continue;
     }
+    CTP_MSAN_UNPOISON_STRING(v);
     if (v == "max") {
       return 0;  // explicitly unlimited
     }
@@ -1896,9 +1900,15 @@ std::string SystemInfo::PredictDriveFailure(const std::string &drive_type,
   const std::string url =
       (env_url && *env_url) ? env_url
                             : "http://host.docker.internal:8000/predict/auto";
+  // Everything below is uninstrumented Poco doing its own address parsing and
+  // socket work through libc on stack MSan considers poisoned; only the
+  // interceptor checks reach it. The response body is unpoisoned explicitly.
+  ctp::MsanInterceptorCheckGuard msan_guard;
   try {
     Poco::URI uri(url);
+    CTP_MSAN_UNPOISON_OBJ(uri);
     std::string path = uri.getPathAndQuery();
+    CTP_MSAN_UNPOISON_STRING(path);
     if (path.empty()) {
       path = "/";
     }
@@ -1920,8 +1930,10 @@ std::string SystemInfo::PredictDriveFailure(const std::string &drive_type,
     CTP_MSAN_UNPOISON_STRING(body);
     return body.empty() ? "{}" : body;
   } catch (const Poco::Exception &e) {
+    std::string msg = e.displayText();
+    CTP_MSAN_UNPOISON_STRING(msg);  // built by uninstrumented Poco
     return std::string("{\"error\": \"Prediction server unreachable: ") +
-           JsonEscape(e.displayText()) + "\"}";
+           JsonEscape(msg) + "\"}";
   }
 #else
   (void)payload;
