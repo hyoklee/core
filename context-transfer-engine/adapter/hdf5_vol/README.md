@@ -67,7 +67,8 @@ writes are valid native HDF5 files readable by standard tools.
 | Knob | Default | Effect |
 |---|---|---|
 | `CLIO_VOL_CACHE` | on | `0`/`off`/`false`/`no` disables the CTE tier entirely — pure pass-through, no runtime required |
-| `CLIO_VOL_CHUNK_SIZE` | 1 MiB | Blob chunk size for staging dataset images |
+| `CLIO_VOL_CHUNK_SIZE` | 64 KiB | Blob chunk size for staging dataset images. A partial read fetches every chunk it touches, so this sets the cost of a small read; larger values favour whole-dataset reads slightly |
+| `CLIO_VOL_ADMIT` | `read-miss` (`write` when `CLIO_STAMP_SETTLE_MAX_NS` is set) | Which accesses put data in the tier: `write`, `read-miss` or `second-access`. Without stamp settling a writing close withholds the coherence stamp, the next open drops whatever the write staged, and write admission ends up staging everything twice |
 | `CLIO_VOL_MAX_SERVE_BYTES` | 1 GiB | Datasets larger than this are not served from cache for partial reads (see below) |
 | `CLIO_VOL_TRACE` | unset | Directory for access telemetry (see below) |
 | `CLIO_VOL_STAMP_GRANULARITY_NS` | 10 ms | Bound on filesystem timestamp granularity. A coherence stamp is withheld when the file's mtime is younger than this, because mtime cannot then rule out a later same-granule write (see below) |
