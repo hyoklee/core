@@ -1486,7 +1486,17 @@ void RunPublish(const PendingClose &pc) {
  * apply it. Shared by the closer thread and the synchronous barrier.
  * @param pc the entry
  */
+// Depth of RunCloserEntry on this thread. An entry can call back into a
+// hook that drains the closer (a refused write-behind shrinks the file
+// through cte_fuse_truncate): waiting for the closer there waited for this
+// very entry, and every later close and truncate hung behind it.
+thread_local int t_closer_entry_depth = 0;
+
 void RunCloserEntry(const PendingClose &pc) {
+  struct DepthGuard {
+    DepthGuard() { ++t_closer_entry_depth; }
+    ~DepthGuard() { --t_closer_entry_depth; }
+  } depth_guard;
   // Order the metadata op AFTER the file's in-flight writes land. A
   // fire-and-forget task racing them is how a detached close dropped
   // writes on a dead handle, and how a detached utimens republished the
@@ -1600,6 +1610,9 @@ void MaybeDirectIo(struct fuse_file_info *fi) {
 // unlink call this — they're rare, and a queued entry executing after the
 // path moves is how every ghost/EEXIST class in the lock-cycle repro arose.
 void CloserBarrier() {
+  // Inside a closer entry: the entries before it have run, the ones after it
+  // must run after it -- there is nothing this caller may wait for.
+  if (t_closer_entry_depth > 0) return;
   std::deque<PendingClose> q;
   {
     // Also wait out an entry CloserMain already popped: it is invisible to
