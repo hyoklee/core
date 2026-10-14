@@ -1515,9 +1515,21 @@ clio::run::TaskResume Runtime::StoreDegradedParity(clio::run::u64 s,
     rows.push_back(j);
     bufs.push_back(buf);
   }
-  const bool all_sent = rows.size() == ActiveParityCount();
+  // An active row not even sent holds a stale shard. Asked per row, now:
+  // comparing rows.size() with a fresh ActiveParityCount() refused a good
+  // write when another worker faulted a parity row right after its shard
+  // was sent -- the count dropped, the sent row no longer matched, and the
+  // write failed silently with max_failures members down (#1284).
+  bool stale = false;
+  for (size_t j = 0; j < parity_level_; ++j) {
+    if (parity_members_[j].state_ == ec::EcState::kActive &&
+        std::find(rows.begin(), rows.end(), j) == rows.end()) {
+      HLOG(kError, "safe_bdev Write: slot {}: active parity row {} was not "
+           "written (no buffer); refusing the write", s, j);
+      stale = true;
+    }
+  }
   clio::run::u32 written = 0;
-  bool stale = !all_sent;  // an active row not even sent holds a stale shard
   for (size_t i = 0; i < futs.size(); ++i) {
     CLIO_CO_AWAIT(futs[i]);
     const bool wok =
@@ -1529,6 +1541,8 @@ clio::run::TaskResume Runtime::StoreDegradedParity(clio::run::u64 s,
     } else if (parity_members_[rows[i]].state_ == ec::EcState::kActive) {
       // A parity disk that just failed is out of the stripe; one that is
       // still active holds a stale shard, which the stripe cannot carry.
+      HLOG(kError, "safe_bdev Write: slot {}: parity row {} failed the write "
+           "but is still active; refusing the write", s, rows[i]);
       stale = true;
     }
   }
@@ -1815,7 +1829,11 @@ bool Runtime::DispatchMemberWrites(const WriteTask &task, const char *data,
     }
     if (DataActive(d)) {
       ctp::ipc::FullPtr<char> seg = ipc->AllocateBuffer(len);
-      if (seg.IsNull()) return false;
+      if (seg.IsNull()) {
+        HLOG(kError, "safe_bdev Write: no {}-byte buffer for member {}; "
+             "failing the write", len, d);
+        return false;
+      }
       std::memcpy(seg.ptr_, data + buf_pos, len);
       mw.bufs.push_back(seg);
       mw.members.push_back(d);
