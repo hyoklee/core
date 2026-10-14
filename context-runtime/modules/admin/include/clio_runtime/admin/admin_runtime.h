@@ -36,9 +36,6 @@
 
 #include "admin_client.h"
 #include "admin_tasks.h"
-#include "ownership_ledger.h"
-#include <memory>
-#include <cstdlib>
 #include <clio_runtime/clio_runtime.h>
 #include <clio_runtime/container.h>
 #include <clio_runtime/pool_manager.h>
@@ -82,26 +79,6 @@ public:
 
 private:
   // Container-specific state
-  std::mutex ownership_init_mutex_;
-  std::unique_ptr<OwnershipLedger> ownership_ledger_;
-  bool ownership_failed_ = false;
-  std::string ownership_storage_path_;
-
-  /** Obtain the configured physical authority, failing closed on startup errors. */
-  OwnershipLedger& OwnershipAuthority(clio::run::u64 requested_node);
-
-  /** Populate only public fields in the wire reply. */
-  template <typename T>
-  static void SetOwnershipResult(T& task, const OwnershipResult& result) {
-    task.outcome_ = result.outcome;
-    task.authority_uuid_ = result.record.authority_uuid;
-    task.revision_ = result.record.revision;
-    task.held_ = result.record.held;
-    task.owner_label_ = result.record.owner_label;
-    task.holder_metadata_ = result.record.holder_metadata;
-    task.SetReturnCode(0);
-  }
-
   clio::run::u32 create_count_ = 0;
   clio::run::u32 pools_created_ = 0;
   clio::run::u32 pools_destroyed_ = 0;
@@ -601,17 +578,6 @@ private:
    *         recovery); false if some earlier call already did.
    */
   static bool ClaimRecovery(clio::run::u64 dead_node_id);
-
- public:
-  /** Acquire non-expiring ownership at the explicitly configured authority. */
-  clio::run::TaskResume OwnershipAcquire(
-      clio::run::shared_ptr<OwnershipAcquireTask>& task);
-  /** Release the exact current ownership token durably. */
-  clio::run::TaskResume OwnershipRelease(
-      clio::run::shared_ptr<OwnershipReleaseTask>& task);
-  /** Inspect the holder without revealing the nonce. */
-  clio::run::TaskResume OwnershipInspect(
-      clio::run::shared_ptr<OwnershipInspectTask>& task);
 };
 
 } // namespace clio::run::admin
