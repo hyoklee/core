@@ -748,6 +748,11 @@ PathMap<clio::run::u64> g_hiwater;
 // tag's mtime -- only when their page ships, so a stat right after write(2)
 // reported the PRE-write mtime (make and rsync compare exactly that).
 PathMap<clio::run::u64> g_wtime;
+// A write time an explicit utimens took off the stat overlay (the caller's
+// times win there), kept for the size push only: the push must still tell
+// the chimod the bytes predate the utimens, or it stamps the time it lands
+// and undoes the caller's mtime (cp -p / tar futimens before close).
+PathMap<clio::run::u64> g_wtime_pre;
 
 /** Current wall-clock time in nanoseconds since the epoch. */
 static clio::run::u64 WallNowNs() {
@@ -835,6 +840,7 @@ void HiwaterRaise(const std::string &path, clio::run::u64 end) {
     auto &v = g_hiwater[path];
     if (end > v) v = end;
     g_wtime[path] = WallNowNs();
+    g_wtime_pre.erase(path);
   }
   // A write supersedes a pending utimens mtime (the 2 s overlay would
   // otherwise keep reporting the stamped time over the write).
@@ -852,6 +858,19 @@ clio::run::u64 WriteTimeFor(const std::string &path) {
   auto it = g_wtime.find(path);
   return it == g_wtime.end() ? 0 : it->second;
 }
+/**
+ * Write time a size push carries for `path`: the last write(2), including
+ * one an explicit utimens has since taken off the stat overlay.
+ * @param path the file's current path
+ * @return nanoseconds since the epoch, or 0 when nothing is outstanding
+ */
+clio::run::u64 PushTimeFor(const std::string &path) {
+  std::lock_guard<std::mutex> lk(g_hw_mtx);
+  auto it = g_wtime.find(path);
+  if (it != g_wtime.end()) return it->second;
+  auto pt = g_wtime_pre.find(path);
+  return pt == g_wtime_pre.end() ? 0 : pt->second;
+}
 clio::run::u64 HiwaterFor(const std::string &path) {
   std::lock_guard<std::mutex> lk(g_hw_mtx);
   auto it = g_hiwater.find(path);
@@ -861,6 +880,7 @@ void HiwaterErase(const std::string &path) {
   std::lock_guard<std::mutex> lk(g_hw_mtx);
   g_hiwater.erase(path);
   g_wtime.erase(path);
+  g_wtime_pre.erase(path);
 }
 /**
  * Drop a path's hiwater entry after `pushed` was adopted by the chimod --
@@ -876,6 +896,7 @@ void HiwaterEraseIfCovered(const std::string &path, clio::run::u64 pushed) {
   if (it == g_hiwater.end() || it->second > pushed) return;
   g_hiwater.erase(it);
   g_wtime.erase(path);
+  g_wtime_pre.erase(path);
 }
 // Truncate invalidates any unflushed-write extent past the new size; without
 // this, getattr's hiwater overlay kept reporting the pre-truncate size.
@@ -903,6 +924,13 @@ void HiwaterRename(const std::string &from, const std::string &to) {
     clio::run::u64 v = wt->second;
     g_wtime.erase(wt);
     auto &dst = g_wtime[to];
+    if (v > dst) dst = v;
+  }
+  auto pt = g_wtime_pre.find(from);
+  if (pt != g_wtime_pre.end()) {
+    clio::run::u64 v = pt->second;
+    g_wtime_pre.erase(pt);
+    auto &dst = g_wtime_pre[to];
     if (v > dst) dst = v;
   }
 }
@@ -2419,7 +2447,11 @@ int cte_fuse_utimens(const char *path_in, const cte_timespec_t tv[2],
   // the source's mtime right after writing; the overlay must not win).
   {
     std::lock_guard<std::mutex> lk(g_hw_mtx);
-    g_wtime.erase(path_s);
+    auto wt = g_wtime.find(path_s);
+    if (wt != g_wtime.end()) {
+      g_wtime_pre[path_s] = wt->second;
+      g_wtime.erase(wt);
+    }
   }
   // Translate the POSIX (atime, mtime) timespec pair into the chimod's flag
   // encoding: bit0/bit1 = explicit atime/mtime, bit2/bit3 = UTIME_NOW (resolved
@@ -3105,7 +3137,7 @@ static int PublishOnClose(CfsHandle *handle, const std::string &hp) {
     auto t = cfs->AsyncAdvanceSize(
         (static_cast<clio::run::u64>(handle->tag.major_) << 32) |
             static_cast<clio::run::u64>(handle->tag.minor_),
-        hiwater, WriteTimeFor(hp));
+        hiwater, PushTimeFor(hp));
     t.Wait();
     if (t->GetReturnCode() != 0) {
       HLOG(kError, "clio_cte_fuse: publishing the size of {} failed (rc {}); "
@@ -3167,7 +3199,7 @@ static int FlushAsync(CfsHandle *handle, const std::string &p) {
     pc.path = p;
     pc.tag = handle->tag;
     pc.hiwater = HiwaterFor(p);
-    pc.wtime = WriteTimeFor(p);
+    pc.wtime = PushTimeFor(p);
     EnqueueDrainOrdered(std::move(pc));
     // The kernel caches each NAME separately (see the awaited path below).
     for (const auto &sib : LinkGroupSiblings(p)) InvalidatePath(sib);
@@ -3307,7 +3339,7 @@ int cte_fuse_release(const char *path, struct fuse_file_info *fi) {
       pc.path = handle->path;
       pc.tag = handle->tag;
       pc.hiwater = hiwater;
-      pc.wtime = WriteTimeFor(handle->path);
+      pc.wtime = PushTimeFor(handle->path);
       EnqueueDrainOrdered(std::move(pc));
     } else {
       cfs->AsyncCloseDetached(handle->fh);
@@ -3322,7 +3354,7 @@ int cte_fuse_release(const char *path, struct fuse_file_info *fi) {
         auto tt = cfs->AsyncAdvanceSize(
             (static_cast<clio::run::u64>(handle->tag.major_) << 32) |
                 static_cast<clio::run::u64>(handle->tag.minor_),
-            hiwater, WriteTimeFor(handle->path));
+            hiwater, PushTimeFor(handle->path));
         tt.Wait();
         HiwaterEraseIfCovered(handle->path, hiwater);
       }

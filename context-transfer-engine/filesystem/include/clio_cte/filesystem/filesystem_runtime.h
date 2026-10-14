@@ -381,6 +381,9 @@ class Runtime : public clio::run::Container {
     bool holders_unknown_ = false;
     /** When each holder's lease on the cached attributes runs out. */
     std::map<clio::run::u32, clio::run::u64> holder_lease_ms_;
+    /** Wall time (ns) of the last explicit mtime set (utimens); a size push
+     *  for a write before it keeps that mtime. Not persisted. */
+    clio::run::u64 mtime_set_ns_ = 0;
   };
   std::mutex meta_mu_;  ///< guards handles_, inodes_ and InodeState fields
   std::unordered_map<clio::run::u64, std::shared_ptr<InodeState>> handles_;

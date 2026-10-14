@@ -559,6 +559,7 @@ int Runtime::InodeSetAttr(const FsReq &req, FsResp &resp) {
   else if (f & kSetAtime) fi.atime_ = req.a_;
   if (f & kSetMtimeNow) fi.mtime_ = now;
   else if (f & kSetMtime) fi.mtime_ = req.b_;
+  if (f & (kSetMtimeNow | kSetMtime)) fi.mtime_set_ns_ = now;
   if (f & kSetUid) fi.uid_ = req.uid_;
   if (f & kSetGid) fi.gid_ = req.gid_;
   if (f & kSetMode) fi.mode_ = req.mode_ & 07777u;

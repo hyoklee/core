@@ -670,6 +670,10 @@ clio::run::TaskResume Runtime::SyncMeta(
 
 void Runtime::StampSizePush(const AdvanceSizeTask &task, InodeState *fi) {
   if (task.reserve_ == 0 && task.mtime_ns_ != 0) {
+    // A write the client made before an explicit utimens (cp -p, rsync -t,
+    // tar): its push lands after close, which is after the utimens, and
+    // stamping the write's time would undo the times the caller set.
+    if (task.mtime_ns_ <= fi->mtime_set_ns_) return;
     // The write's own time: the push lands after close, and the client has
     // already reported that time to stat callers. Never backwards: a batched
     // create can land after the write and stamp its own (later) time.
