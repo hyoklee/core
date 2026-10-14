@@ -412,6 +412,33 @@ size_t SystemInfo::GetRamAvailable() {
 #endif
 }
 
+size_t SystemInfo::ReadMemoryLimitFile(const std::string &path) {
+  std::ifstream f(path);
+  CTP_MSAN_UNPOISON_OBJ(f);  // stream state is owned by libstdc++.so
+  if (!f.is_open()) {
+    return 0;
+  }
+  std::string v;
+  f >> v;
+  CTP_MSAN_UNPOISON_OBJ(f);
+  if (!f) {
+    return 0;
+  }
+  CTP_MSAN_UNPOISON_STRING(v);
+  if (v == "max") {
+    return 0;  // explicitly unlimited
+  }
+  try {
+    unsigned long long n = std::stoull(v);
+    // cgroup v1 reports a sentinel near SIZE_MAX when unlimited.
+    if (n > 0 && n < (1ULL << 62)) {
+      return static_cast<size_t>(n);
+    }
+  } catch (...) {
+  }
+  return 0;
+}
+
 /**
  * Memory limit imposed on this process by its cgroup, or 0 when unlimited or
  * unreadable (cgroup v2 first, then v1).
@@ -421,28 +448,9 @@ static size_t ReadCgroupMemoryLimit() {
   const char *paths[] = {"/sys/fs/cgroup/memory.max",
                          "/sys/fs/cgroup/memory/memory.limit_in_bytes"};
   for (const char *path : paths) {
-    std::ifstream f(path);
-    CTP_MSAN_UNPOISON_OBJ(f);  // stream state is owned by libstdc++.so
-    if (!f.is_open()) {
-      continue;
-    }
-    std::string v;
-    f >> v;
-    CTP_MSAN_UNPOISON_OBJ(f);
-    if (!f) {
-      continue;
-    }
-    CTP_MSAN_UNPOISON_STRING(v);
-    if (v == "max") {
-      return 0;  // explicitly unlimited
-    }
-    try {
-      unsigned long long n = std::stoull(v);
-      // cgroup v1 reports a sentinel near SIZE_MAX when unlimited.
-      if (n > 0 && n < (1ULL << 62)) {
-        return static_cast<size_t>(n);
-      }
-    } catch (...) {
+    size_t limit = SystemInfo::ReadMemoryLimitFile(path);
+    if (limit > 0) {
+      return limit;
     }
   }
 #endif
