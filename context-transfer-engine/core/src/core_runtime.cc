@@ -1314,7 +1314,13 @@ clio::run::PoolQuery Runtime::ScheduleTask(const clio::run::shared_ptr<clio::run
     }
     case Method::kGetBlob: {
       auto typed = task.template Cast<GetBlobTask>();
-      return HashBlobToContainer(typed->tag_id_, typed->GetBlobName());
+      clio::run::PoolQuery q =
+          HashBlobToContainer(typed->tag_id_, typed->GetBlobName());
+      // Routed to a stand-in: tell it, so a miss there is never "no blob".
+      if (q.IsDirectIdMode()) {
+        typed->context_.op_flags_ |= Context::kStandInRead;
+      }
+      return q;
     }
     case Method::kReorganizeBlob: {
       auto typed = task.template Cast<ReorganizeBlobTask>();
@@ -3329,7 +3335,9 @@ clio::run::TaskResume Runtime::GetBlobImpl(clio::run::shared_ptr<TaskT> &task) {
     // blob succeed with the caller's buffer untouched, so a pager does not
     // have to tell "missing" apart from "read failed" itself.
     if (blob_info_ptr == nullptr) {
-      const clio::run::u32 miss_rc = NotFoundRc(tag_id, blob_name);
+      const clio::run::u32 miss_rc = NotFoundRc(
+          tag_id, blob_name,
+          (task->context_.op_flags_ & Context::kStandInRead) != 0);
       if (task->context_.create_on_get_ && miss_rc == 1) {
         // Bind the name so a later put has something to extend; the read
         // itself returns success with the caller's buffer untouched. Not
@@ -11593,12 +11601,16 @@ clio::run::TaskResume Runtime::TemporalSearch(
 // ==============================================================================
 
 clio::run::u32 Runtime::NotFoundRc(const TagId &tag_id,
-                                   const std::string &blob_name) {
+                                   const std::string &blob_name,
+                                   bool stand_in_read) {
   auto *pm = CLIO_POOL_MANAGER;
   const clio::run::PoolInfo *info = pm->GetPoolInfo(pool_id_);
   const clio::run::u32 n = info != nullptr ? info->num_containers_ : 0;
   if (n <= 1) return 1;
   const clio::run::u32 owner = BlobHash(tag_id, blob_name) % n;
+  // The router sent it here as the dead owner's stand-in: unknowable here,
+  // whatever this node's (possibly lagging) liveness view says.
+  if (stand_in_read && owner != container_id_) return kBlobOwnerDownRc;
   if (owner == container_id_ || ContainerNodeAlive(pool_id_, owner)) return 1;
   // Standing in for the dead owner without its copies: unknowable here.
   return FailoverContainer(pool_id_, owner) == container_id_

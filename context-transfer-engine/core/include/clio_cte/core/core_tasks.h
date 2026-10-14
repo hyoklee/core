@@ -2005,6 +2005,12 @@ struct Context {
    *  back to its returning owner. The owner applies it while it still
    *  holds back client traffic until its hand-back pull is done (#1154). */
   static constexpr clio::run::u32 kHandoffPush = 1u << 7;
+  /** kStandInRead -- set by the routing node when it sent this GetBlob to
+   *  a stand-in because it holds the owner dead. A stand-in that misses
+   *  such a read answers kBlobOwnerDownRc even if it still sees the owner
+   *  alive: its liveness view can lag the router's, and "not found" there
+   *  reads as a hole -- zeros returned for data held by the dead owner. */
+  static constexpr clio::run::u32 kStandInRead = 1u << 8;
 
   /**
    * Fault-handler parameters (checkpointing / lazy copy). When the core

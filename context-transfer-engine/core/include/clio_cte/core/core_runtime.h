@@ -1628,9 +1628,12 @@ private:
    * exist, and a reader must not treat the miss as an absence.
    * @param tag_id the blob's tag
    * @param blob_name its name
+   * @param stand_in_read the router sent the read here as the owner's
+   *        stand-in (Context::kStandInRead)
    * @return 1 or kBlobOwnerDownRc
    */
-  clio::run::u32 NotFoundRc(const TagId &tag_id, const std::string &blob_name);
+  clio::run::u32 NotFoundRc(const TagId &tag_id, const std::string &blob_name,
+                            bool stand_in_read = false);
   /**
    * Whether this container lists / counts a blob: always its own; a shadow
    * copy only while it stands in for the copy's dead owner.
