@@ -9989,6 +9989,16 @@ clio::run::TaskResume Runtime::InvalidateCachedCopies(
   clio::run::shared_ptr<clio::run::Task> cur_task = clio::run::GetCurrentTask();
 #endif
   CLIO_TASK_BODY_BEGIN
+  // A shadow copy (the owner's remote copy, which also serves this node's
+  // cached reads) never invalidates: coherence is the owner's job, and the
+  // owner does it for every change it makes. A shadow invalidating while it
+  // holds the blob's write token deadlocked with the owner doing the same:
+  // each side's cache-copy DelBlob waited in ReclaimCacheReplica for the
+  // token the other held (#1282). A stand-in serving for a dead owner still
+  // invalidates -- it is the primary until the owner returns.
+  if (blob_info.shadow_ && !ServesBlob(blob_info, tag_id, blob_name)) {
+    CLIO_CO_RETURN;
+  }
   if (is_restart_) {
     // Registrations are not persisted, so a restarted container knows none,
     // yet other nodes' copies outlived its restart (a stale copy kept being
