@@ -201,24 +201,6 @@ clio::run::TaskResume Runtime::Run(clio::run::u32 method, clio::run::shared_ptr<
       CLIO_CO_AWAIT(QueryTaskProgress(typed_task));
       break;
     }
-    case Method::kOwnershipAcquire: {
-      // Cast task handle to specific type (in-place reinterpret)
-      auto& typed_task = task_ptr.template Cast<OwnershipAcquireTask>();
-      CLIO_CO_AWAIT(OwnershipAcquire(typed_task));
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      // Cast task handle to specific type (in-place reinterpret)
-      auto& typed_task = task_ptr.template Cast<OwnershipReleaseTask>();
-      CLIO_CO_AWAIT(OwnershipRelease(typed_task));
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      // Cast task handle to specific type (in-place reinterpret)
-      auto& typed_task = task_ptr.template Cast<OwnershipInspectTask>();
-      CLIO_CO_AWAIT(OwnershipInspect(typed_task));
-      break;
-    }
     default: {
       // Unknown method - do nothing
       break;
@@ -371,21 +353,6 @@ void Runtime::SaveTask(clio::run::u32 method, clio::run::SaveTaskArchive& archiv
       archive << *typed_task;
       break;
     }
-    case Method::kOwnershipAcquire: {
-      auto& typed_task = task_ptr.template Cast<OwnershipAcquireTask>();
-      archive << *typed_task;
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      auto& typed_task = task_ptr.template Cast<OwnershipReleaseTask>();
-      archive << *typed_task;
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      auto& typed_task = task_ptr.template Cast<OwnershipInspectTask>();
-      archive << *typed_task;
-      break;
-    }
     default: {
       // Unknown method - do nothing
       break;
@@ -533,21 +500,6 @@ void Runtime::LoadTask(clio::run::u32 method, clio::run::LoadTaskArchive& archiv
     }
     case Method::kQueryTaskProgress: {
       auto& typed_task = task_ptr.template Cast<QueryTaskProgressTask>();
-      archive >> *typed_task;
-      break;
-    }
-    case Method::kOwnershipAcquire: {
-      auto& typed_task = task_ptr.template Cast<OwnershipAcquireTask>();
-      archive >> *typed_task;
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      auto& typed_task = task_ptr.template Cast<OwnershipReleaseTask>();
-      archive >> *typed_task;
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      auto& typed_task = task_ptr.template Cast<OwnershipInspectTask>();
       archive >> *typed_task;
       break;
     }
@@ -737,24 +689,6 @@ void Runtime::LocalLoadTask(clio::run::u32 method, clio::run::DefaultLoadArchive
       archive >> *typed_task;
       break;
     }
-    case Method::kOwnershipAcquire: {
-      auto& typed_task = task_ptr.template Cast<OwnershipAcquireTask>();
-      // Use archive operator which respects msg_type
-      archive >> *typed_task;
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      auto& typed_task = task_ptr.template Cast<OwnershipReleaseTask>();
-      // Use archive operator which respects msg_type
-      archive >> *typed_task;
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      auto& typed_task = task_ptr.template Cast<OwnershipInspectTask>();
-      // Use archive operator which respects msg_type
-      archive >> *typed_task;
-      break;
-    }
     default: {
       // Unknown method - do nothing
       break;
@@ -937,24 +871,6 @@ void Runtime::LocalSaveTask(clio::run::u32 method, clio::run::DefaultSaveArchive
     }
     case Method::kQueryTaskProgress: {
       auto& typed_task = task_ptr.template Cast<QueryTaskProgressTask>();
-      // Use archive operator which respects msg_type
-      archive << *typed_task;
-      break;
-    }
-    case Method::kOwnershipAcquire: {
-      auto& typed_task = task_ptr.template Cast<OwnershipAcquireTask>();
-      // Use archive operator which respects msg_type
-      archive << *typed_task;
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      auto& typed_task = task_ptr.template Cast<OwnershipReleaseTask>();
-      // Use archive operator which respects msg_type
-      archive << *typed_task;
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      auto& typed_task = task_ptr.template Cast<OwnershipInspectTask>();
       // Use archive operator which respects msg_type
       archive << *typed_task;
       break;
@@ -1279,39 +1195,6 @@ clio::run::shared_ptr<clio::run::Task> Runtime::NewCopyTask(clio::run::u32 metho
       }
       break;
     }
-    case Method::kOwnershipAcquire: {
-      // Allocate new task
-      auto new_task_ptr = ipc_manager->NewTask<OwnershipAcquireTask>();
-      if (!new_task_ptr.IsNull()) {
-        // Copy task fields (includes base Task fields)
-        auto& task_typed = orig_task_ptr.template Cast<OwnershipAcquireTask>();
-        new_task_ptr->Copy(ctp::ipc::FullPtr<OwnershipAcquireTask>(task_typed.get()));
-        return new_task_ptr.template Cast<clio::run::Task>();
-      }
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      // Allocate new task
-      auto new_task_ptr = ipc_manager->NewTask<OwnershipReleaseTask>();
-      if (!new_task_ptr.IsNull()) {
-        // Copy task fields (includes base Task fields)
-        auto& task_typed = orig_task_ptr.template Cast<OwnershipReleaseTask>();
-        new_task_ptr->Copy(ctp::ipc::FullPtr<OwnershipReleaseTask>(task_typed.get()));
-        return new_task_ptr.template Cast<clio::run::Task>();
-      }
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      // Allocate new task
-      auto new_task_ptr = ipc_manager->NewTask<OwnershipInspectTask>();
-      if (!new_task_ptr.IsNull()) {
-        // Copy task fields (includes base Task fields)
-        auto& task_typed = orig_task_ptr.template Cast<OwnershipInspectTask>();
-        new_task_ptr->Copy(ctp::ipc::FullPtr<OwnershipInspectTask>(task_typed.get()));
-        return new_task_ptr.template Cast<clio::run::Task>();
-      }
-      break;
-    }
     default: {
       // For unknown methods, create base Task copy
       auto new_task_ptr = ipc_manager->NewTask<clio::run::Task>();
@@ -1444,18 +1327,6 @@ clio::run::shared_ptr<clio::run::Task> Runtime::NewTask(clio::run::u32 method) {
     }
     case Method::kQueryTaskProgress: {
       auto new_task_ptr = ipc_manager->NewTask<QueryTaskProgressTask>();
-      return new_task_ptr.template Cast<clio::run::Task>();
-    }
-    case Method::kOwnershipAcquire: {
-      auto new_task_ptr = ipc_manager->NewTask<OwnershipAcquireTask>();
-      return new_task_ptr.template Cast<clio::run::Task>();
-    }
-    case Method::kOwnershipRelease: {
-      auto new_task_ptr = ipc_manager->NewTask<OwnershipReleaseTask>();
-      return new_task_ptr.template Cast<clio::run::Task>();
-    }
-    case Method::kOwnershipInspect: {
-      auto new_task_ptr = ipc_manager->NewTask<OwnershipInspectTask>();
       return new_task_ptr.template Cast<clio::run::Task>();
     }
     default: {
@@ -1605,21 +1476,6 @@ void Runtime::AggregateOut(clio::run::u32 method, clio::run::shared_ptr<clio::ru
     }
     case Method::kQueryTaskProgress: {
       auto& typed_task = orig_task.template Cast<QueryTaskProgressTask>();
-      typed_task->AggregateOut(ctp::ipc::FullPtr<clio::run::Task>(replica_task.get()));
-      break;
-    }
-    case Method::kOwnershipAcquire: {
-      auto& typed_task = orig_task.template Cast<OwnershipAcquireTask>();
-      typed_task->AggregateOut(ctp::ipc::FullPtr<clio::run::Task>(replica_task.get()));
-      break;
-    }
-    case Method::kOwnershipRelease: {
-      auto& typed_task = orig_task.template Cast<OwnershipReleaseTask>();
-      typed_task->AggregateOut(ctp::ipc::FullPtr<clio::run::Task>(replica_task.get()));
-      break;
-    }
-    case Method::kOwnershipInspect: {
-      auto& typed_task = orig_task.template Cast<OwnershipInspectTask>();
       typed_task->AggregateOut(ctp::ipc::FullPtr<clio::run::Task>(replica_task.get()));
       break;
     }
