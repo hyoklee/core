@@ -206,8 +206,8 @@ def basic_contract(cte: Any, client: Any, tag: Any) -> dict[str, Any]:
     return {"code": 0, "version": patched["version"]}
 
 
-def worker(job_path: Path) -> None:
-    """Connect a separate process and execute one gated native operation."""
+def worker(job_path: Path) -> bool:
+    """Execute one gated operation; return True only for daemon-death futures."""
     job = json.loads(job_path.read_text(encoding="utf-8"))
     cte, client, tag = connect()
     Path(job["ready"]).touch()
@@ -256,6 +256,7 @@ def worker(job_path: Path) -> None:
     if isinstance(value.get("data"), bytes):
         value["data"] = value["data"].hex()
     Path(job["output"]).write_text(json.dumps(value), encoding="utf-8")
+    return operation == "dead-daemon"
 
 
 class Controller:
@@ -458,13 +459,16 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         if len(sys.argv) == 3 and sys.argv[1] == "--worker":
-            worker(Path(sys.argv[2]))
-            # A fault test retains an unanswered future; teardown must not turn
-            # its explicit uncertainty into a hang or a misleading success.
+            force_exit = worker(Path(sys.argv[2]))
+            # Healthy workers exit normally so native/gcov exit handlers run.
+            # The daemon-death worker retains unanswered futures; teardown must
+            # not turn its explicit uncertainty into a hang or false success.
             sys.stdout.flush()
             sys.stderr.flush()
-            os._exit(0)
-        main()
+            if force_exit:
+                os._exit(0)
+        else:
+            main()
     except BaseException:
         traceback.print_exc()
         sys.stdout.flush()
