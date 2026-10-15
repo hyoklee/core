@@ -1817,11 +1817,7 @@ bool Runtime::DispatchMemberWrites(const WriteTask &task, const char *data,
     }
     if (DataActive(d)) {
       ctp::ipc::FullPtr<char> seg = ipc->AllocateBuffer(len);
-      if (seg.IsNull()) {
-        HLOG(kError, "safe_bdev Write: no {}-byte SHM buffer for member {}; "
-             "refusing the write", len, d);
-        return false;
-      }
+      if (seg.IsNull()) return false;
       std::memcpy(seg.ptr_, data + buf_pos, len);
       mw.bufs.push_back(seg);
       mw.members.push_back(d);
