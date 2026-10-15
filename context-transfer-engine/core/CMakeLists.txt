@@ -6,6 +6,7 @@ add_clio_module_runtime(
     src/core_runtime.cc
     src/core_config.cc
     src/core_viz.cc
+    src/core_tag_xattr.cc
     # Data placement engine: one source file per placement policy
     src/dpe/dpe.cc
     src/dpe/random_dpe.cc

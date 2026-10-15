@@ -246,9 +246,16 @@ class Agent:
       while off < size:
         n = min(chunk, size - off)
         d = pattern(seed, off, n)
-        w = os.write(fd, d)
-        if w != n:
-          raise OSError(errno_mod.EIO, f'short write {w}/{n} at {off}')
+        # A short count is legal (a write split into several requests, the
+        # store filling after the first): write the rest, as applications
+        # do; the call that cannot make progress raises the real errno.
+        w = 0
+        while w < n:
+          k = os.write(fd, d[w:])
+          if k <= 0:
+            raise OSError(errno_mod.EIO, f'write made no progress at '
+                                         f'{off + w}')
+          w += k
         h.update(d)
         off += n
       if fsync:

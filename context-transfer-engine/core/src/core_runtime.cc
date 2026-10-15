@@ -1314,7 +1314,13 @@ clio::run::PoolQuery Runtime::ScheduleTask(const clio::run::shared_ptr<clio::run
     }
     case Method::kGetBlob: {
       auto typed = task.template Cast<GetBlobTask>();
-      return HashBlobToContainer(typed->tag_id_, typed->GetBlobName());
+      clio::run::PoolQuery q =
+          HashBlobToContainer(typed->tag_id_, typed->GetBlobName());
+      // Routed to a stand-in: tell it, so a miss there is never "no blob".
+      if (q.IsDirectIdMode()) {
+        typed->context_.op_flags_ |= Context::kStandInRead;
+      }
+      return q;
     }
     case Method::kReorganizeBlob: {
       auto typed = task.template Cast<ReorganizeBlobTask>();
@@ -1376,6 +1382,12 @@ clio::run::PoolQuery Runtime::ScheduleTask(const clio::run::shared_ptr<clio::run
     // containers that are reachable).
     case Method::kGetTagSize:
       return clio::run::PoolQuery::Broadcast(0.0f);
+
+    // A tag's xattr section lives on the container its id hashes to.
+    case Method::kTagXattr: {
+      auto typed = task.template Cast<TagXattrTask>();
+      return TagXattrOwner(typed->tag_id_);
+    }
 
     // Broadcast operations
     case Method::kGetContainedBlobs:
@@ -2067,6 +2079,8 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
     static const bool put_prof = getenv("CLIO_PUT_PROF") != nullptr;
     const auto pi_t0 = std::chrono::steady_clock::now();
     auto pi_t1 = pi_t0, pi_t2 = pi_t0;
+    // Inside "pre": the reader drain and the hole zero-fill (see SLOW-PUT).
+    auto pi_dr0 = pi_t0, pi_dr1 = pi_t0, pi_z0 = pi_t0, pi_z1 = pi_t0;
     TagId tag_id = task->tag_id_;
     std::string blob_name = task->GetBlobName();
     // Append the per-page suffix when a GPU client (gpu_vector::Vector)
@@ -2265,9 +2279,11 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
     // exit below.
     blob_info_ptr->BeginDrainReaders();
     BlobReaderDrainGuard reader_drain_guard(blob_info_ptr.get());
+    pi_dr0 = std::chrono::steady_clock::now();
     while (blob_info_ptr->HasReadPins()) {
       CLIO_CO_AWAIT(clio::run::yield(BlobWriteLockPollUs()));
     }
+    pi_dr1 = std::chrono::steady_clock::now();
 
     // Content seqlock, writer half (BlobInfo::content_seq_). The drain above
     // covers readers that come through this runtime; a zero-IPC client copies
@@ -2455,6 +2471,7 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
       // Only the gap [old_blob_size, offset) needs it; sequential appends
       // (offset == old_blob_size) and overwrites (offset < old_blob_size)
       // create no hole.
+      pi_z0 = std::chrono::steady_clock::now();
       if (offset > old_blob_size) {
         if (TracePutEnv()) {
           HLOG(kInfo, "[TRACE-PUT] zero blob='{}' from={} to={} hint_idx={} hint_off={} nblocks={} tok={}",
@@ -2552,6 +2569,7 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
 
       // Step 3: ModifyExistingData — write data to blocks.
       pi_t2 = std::chrono::steady_clock::now();
+      pi_z1 = pi_t2;
       clio::run::u32 write_result = 0;
       if constexpr (TaskT::kSupportsVectored) {
        if (vectored) {
@@ -2665,9 +2683,11 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
       if (put_ms > kSlowPutMs) {
         HLOG(kWarning,
              "[SLOW-PUT] blob='{}' off={} size={} took {} ms: token {} ms, "
-             "pre {} ms, extend {} ms, modify {} ms",
+             "pre {} ms (reader drain {} ms, extend {} ms, hole zero {} ms), "
+             "modify {} ms",
              blob_name, offset, size, put_ms, us(pi_t0, pi_t1) / 1000.0,
-             us(pi_t1, pi_t2) / 1000.0, us(pi_ext0, pi_ext1) / 1000.0,
+             us(pi_t1, pi_t2) / 1000.0, us(pi_dr0, pi_dr1) / 1000.0,
+             us(pi_ext0, pi_ext1) / 1000.0, us(pi_z0, pi_z1) / 1000.0,
              us(pi_t2, pi_t3) / 1000.0);
       }
     }
@@ -3315,7 +3335,9 @@ clio::run::TaskResume Runtime::GetBlobImpl(clio::run::shared_ptr<TaskT> &task) {
     // blob succeed with the caller's buffer untouched, so a pager does not
     // have to tell "missing" apart from "read failed" itself.
     if (blob_info_ptr == nullptr) {
-      const clio::run::u32 miss_rc = NotFoundRc(tag_id, blob_name);
+      const clio::run::u32 miss_rc = NotFoundRc(
+          tag_id, blob_name,
+          (task->context_.op_flags_ & Context::kStandInRead) != 0);
       if (task->context_.create_on_get_ && miss_rc == 1) {
         // Bind the name so a later put has something to extend; the read
         // itself returns success with the caller's buffer untouched. Not
@@ -3477,7 +3499,13 @@ clio::run::TaskResume Runtime::GetBlobImpl(clio::run::shared_ptr<TaskT> &task) {
       } else if (replica_sel == 0 && blob_info_ptr->lost_bytes_ != 0) {
         task->return_code_ = kGetBlobIoErrorRc;
       } else {
-        task->return_code_ = 1;
+        // An emptied entry is authoritative only on the blob's owner (or
+        // while it is alive): on a stand-in it is a dropped cache or shadow
+        // copy and says nothing about the dead owner's blob -- answered 1
+        // it read a dead pair's page as zeros with success.
+        task->return_code_ = NotFoundRc(
+            tag_id, blob_name,
+            (task->context_.op_flags_ & Context::kStandInRead) != 0);
       }
       clio_evlat_add(2, clio::run::CycleNow() - ev_g0);
   CLIO_CO_RETURN;
@@ -6190,6 +6218,7 @@ clio::run::TaskResume Runtime::DelTag(clio::run::shared_ptr<DelTagTask> &task) {
       {
         tag_id_to_info_.erase(del_id);
       }
+      EraseTagXattrs(del_id);
     }
 
     // Step 7b: prune now-empty auto-created parent directories, bottom-up. Stop
@@ -6202,6 +6231,14 @@ clio::run::TaskResume Runtime::DelTag(clio::run::shared_ptr<DelTagTask> &task) {
         if (!tag_id_to_info_.contains(anc)) {
           continue;  // already removed (e.g. part of the deleted subtree)
         }
+        // A parent holding state -- an xattr section or blobs -- was made on
+        // purpose, not materialized for a path: it is not empty, so it and
+        // everything above it stay. Pruning one dropped only its TagInfo
+        // here, but the kDelTag record below erases its xattrs and blobs on
+        // replay: a filesystem directory's inode record survived the delete
+        // of its last child and vanished at the next restart, leaving its
+        // row naming an inode with no state.
+        if (HasTagXattrs(anc) || !BlobIndexNames(anc).empty()) break;
         tag_id_to_info_.for_each([&](const TagId &id, const std::shared_ptr<TagInfo> &info_sp) { const TagInfo &info = *info_sp; (void)info;
           (void)id;
           if (has_child) return;
@@ -7214,6 +7251,9 @@ clio::run::TaskResume Runtime::FlushMetadata(clio::run::shared_ptr<FlushMetadata
       }
       task->entries_flushed_++;
     });
+    // Each tag's xattr section (entry_type 7): the WAL records that built
+    // it are truncated once this snapshot is in place.
+    task->entries_flushed_ += WriteTagXattrSnapshot(ofs);
 
     // Write BlobInfo entries (entry_type 2; see below)
     // Serialize each blob while HOLDING its write token.
@@ -7243,7 +7283,9 @@ clio::run::TaskResume Runtime::FlushMetadata(clio::run::shared_ptr<FlushMetadata
       // does whenever a blob's token is busy.
       if (++snap_since_yield >= kSnapshotYieldEvery) {
         snap_since_yield = 0;
-        CLIO_CO_AWAIT(clio::run::yield(0));
+        // A delay > 0: yield(0) parks the task until a Future wakes it, and
+        // nothing does -- the snapshot never finished.
+        CLIO_CO_AWAIT(clio::run::yield(BlobWriteLockPollUs()));
       }
       const std::string &key = kv.first;
       BlobInfo &blob_info = *kv.second;
@@ -8375,6 +8417,31 @@ void Runtime::RestoreMetadataFromLog() {
         MirrorBlobToShm(composite_key, *blob_info_ptr);
       }
 
+    } else if (entry_type == kSnapTagXattrEntry) {
+      // One tag's xattr section: [TagId][u32 count]{[key][value]}*.
+      TagId tag_id;
+      ifs.read(reinterpret_cast<char *>(&tag_id), sizeof(tag_id));
+      uint32_t count = 0;
+      ifs.read(reinterpret_cast<char *>(&count), sizeof(count));
+      if (!ifs.good()) break;
+      // Each pair costs at least its two 4-byte length prefixes.
+      if (static_cast<clio::run::u64>(count) * 2 * sizeof(uint32_t) >
+          remaining()) {
+        corrupt("tag xattr count", count);
+        break;
+      }
+      std::vector<std::pair<std::string, std::string>> kvs(count);
+      bool kvs_ok = true;
+      for (auto &kv : kvs) {
+        if (!read_str(kv.first, "tag xattr key length") ||
+            !read_str(kv.second, "tag xattr value length")) {
+          kvs_ok = false;
+          break;
+        }
+      }
+      if (!kvs_ok) break;
+      RestoreTagXattrSection(tag_id, std::move(kvs));
+
     } else {
       corrupt("entry type", entry_type);
       stop = true;
@@ -8467,6 +8534,12 @@ void Runtime::ReplayTransactionLogs() {
         break;
       case TxnType::kSetTagIdentity:
         ApplyWalSetTagIdentity(rec.payload_, tags_replayed);
+        break;
+      case TxnType::kSetTagXattr:
+        ApplyWalTagXattr(rec.payload_, false);
+        break;
+      case TxnType::kDelTagXattr:
+        ApplyWalTagXattr(rec.payload_, true);
         break;
       case TxnType::kCreateNewBlob:
         ApplyWalCreateNewBlob(rec.payload_, blobs_replayed);
@@ -8633,6 +8706,7 @@ void Runtime::ApplyWalDelTag(const std::vector<char> &payload,
     shm_cache_.EraseBlob(key);  // issue #783: keep the mirror from going stale
   }
   tag_id_to_info_.erase(tag_id);
+  EraseTagXattrs(tag_id);
   tags_replayed++;
 }
 
@@ -9921,6 +9995,16 @@ clio::run::TaskResume Runtime::InvalidateCachedCopies(
   clio::run::shared_ptr<clio::run::Task> cur_task = clio::run::GetCurrentTask();
 #endif
   CLIO_TASK_BODY_BEGIN
+  // A shadow copy (the owner's remote copy, which also serves this node's
+  // cached reads) never invalidates: coherence is the owner's job, and the
+  // owner does it for every change it makes. A shadow invalidating while it
+  // holds the blob's write token deadlocked with the owner doing the same:
+  // each side's cache-copy DelBlob waited in ReclaimCacheReplica for the
+  // token the other held (#1282). A stand-in serving for a dead owner still
+  // invalidates -- it is the primary until the owner returns.
+  if (blob_info.shadow_ && !ServesBlob(blob_info, tag_id, blob_name)) {
+    CLIO_CO_RETURN;
+  }
   if (is_restart_) {
     // Registrations are not persisted, so a restarted container knows none,
     // yet other nodes' copies outlived its restart (a stale copy kept being
@@ -11533,17 +11617,26 @@ clio::run::TaskResume Runtime::TemporalSearch(
 // ==============================================================================
 
 clio::run::u32 Runtime::NotFoundRc(const TagId &tag_id,
-                                   const std::string &blob_name) {
+                                   const std::string &blob_name,
+                                   bool stand_in_read) {
   auto *pm = CLIO_POOL_MANAGER;
   const clio::run::PoolInfo *info = pm->GetPoolInfo(pool_id_);
   const clio::run::u32 n = info != nullptr ? info->num_containers_ : 0;
   if (n <= 1) return 1;
   const clio::run::u32 owner = BlobHash(tag_id, blob_name) % n;
+  // The router sent it here as the dead owner's stand-in: unknowable here,
+  // whatever this node's (possibly lagging) liveness view says.
+  if (stand_in_read && owner != container_id_) return kBlobOwnerDownRc;
   if (owner == container_id_ || ContainerNodeAlive(pool_id_, owner)) return 1;
-  // Standing in for the dead owner without its copies: unknowable here.
-  return FailoverContainer(pool_id_, owner) == container_id_
-             ? kBlobOwnerDownRc
-             : 1;
+  // The owner is dead and this container is not it: whether the blob
+  // exists is unknowable here, stand-in or not. Answering "no blob" when
+  // this node did not see itself as the stand-in -- its view still had the
+  // owner's successor alive while the router had already moved on -- read
+  // a dead pair's pages as holes of zeros with success
+  // (safe_two_nodes_down_never_lies, 6 nodes: rc 1 at container 0 for
+  // owner 4 with 4 and 5 down). Owner-down is retried by readers and turns
+  // into EIO at worst, never into zeros.
+  return kBlobOwnerDownRc;
 }
 
 bool Runtime::ServesBlob(const BlobInfo &blob_info, const TagId &tag_id,
