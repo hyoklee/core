@@ -665,6 +665,11 @@ def t_data_failover(ctx):
     owners = {fs_dir_owner(d, n) for d in ['/'] + [
         '/' + '/'.join(rel.strip('/').split('/')[:k])
         for k in range(1, len(rel.strip('/').split('/')) + 1)]}
+    # The files' inode homes too (FsInodeHomeFor hashes the file's path):
+    # an inode homed on the victim is unavailable while it is down by
+    # design, and its EIO is not the page failover this test is about.
+    owners |= {fs_dir_owner(f'{rel}/f{k}', n) for k in range(8)}
+    owners |= {fs_dir_owner(f'{rel}/n{k}', n) for k in range(3)}
     return next((i for i in range(n - 1, 0, -1) if i not in owners), None)
 
   # Try directory names until one leaves a node clear of the path (a fixed
@@ -740,8 +745,14 @@ def t_handoff_successor_restart(ctx):
     # stays down while the files are used); its successor, which covers for
     # it, is only down while nothing touches the path. Node 0 writes, so it
     # is neither.
+    # Nor may either home one of the files' inodes (FsInodeHomeFor hashes
+    # the file's path): an inode homed on a down node is unavailable by
+    # design, and the rewrites below would fail EIO for that, not for the
+    # hand-back this test is about.
+    homes = {fs_dir_owner(f'{rel}/f{k}', n) for k in range(8)}
     return next(((v, (v + 1) % n) for v in range(n - 1, 0, -1)
-                 if v not in owners and (v + 1) % n != 0), None)
+                 if v not in owners and v not in homes and
+                 (v + 1) % n not in homes and (v + 1) % n != 0), None)
 
   # The directory's owner depends on its name: try names until one leaves an
   # owner/successor pair clear of the path. A fixed name could leave none
