@@ -897,12 +897,19 @@ clio::run::TaskResume Runtime::GetBlob(
         const clio::run::u64 k = logged.fetch_add(1, std::memory_order_relaxed);
         if (k < 8 || k % 256 == 0) {
           const clio::run::u32 owner = OwnerOf(task->tag_id_, blob_name);
+          // Which core answer and why (#1290): the stand-in flag the router
+          // set, and the local entry's size (0 = absent or emptied), so a
+          // "no blob" answered for a dead owner's page names its path.
           HLOG(kWarning, "replication: {}.{}/{} [{}, {}) served by no copy; "
-               "core rc {} at container {} (owner {}, owner alive {}; {} "
-               "such reads so far)", task->tag_id_.major_,
+               "core rc {} at container {} (owner {}, owner alive {}, "
+               "stand-in flag {}, local size {}, unreadable {}; {} such "
+               "reads so far)", task->tag_id_.major_,
                task->tag_id_.minor_, blob_name, req_lo, end,
                task->GetReturnCode(), container_id_, owner,
-               ContainerAlive(owner), k + 1);
+               ContainerAlive(owner),
+               (task->context_.op_flags_ &
+                clio::cte::core::Context::kStandInRead) != 0,
+               primary_size, primary_unreadable, k + 1);
         }
       }
       CLIO_CO_RETURN;
