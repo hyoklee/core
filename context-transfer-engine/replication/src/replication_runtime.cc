@@ -66,17 +66,53 @@ clio::run::TaskResume Runtime::Create(clio::run::shared_ptr<CreateTask> &task) {
       // serving: otherwise it would answer with its stale copies.
       // Ask every other container: whichever stood in (the first live
       // successor at the time, which the remote-copy count does not bound).
+      // All asked at once, and waited for with a bound: a peer that never
+      // answers (flapping liveness, or its own push to this restarting node
+      // stuck behind this very Create) held compose -- and every mount on
+      // this node -- forever (#1285). Pulls still out when the bound passes
+      // go to the sweep, and handed_back_ stays false until they answer (or
+      // kHandbackWaitMs passes): returning lets a push queued behind this
+      // Create land, and owned-blob client tasks keep waiting rather than
+      // read the copies this node had before it went down.
       const clio::run::u32 n = NumContainers();
+      std::vector<clio::run::u32> asked;
+      std::vector<clio::run::Future<HandoffPullTask>> pulls;
       for (clio::run::u32 i = 1; i < n; ++i) {
         const clio::run::u32 c = (container_id_ + i) % n;
         if (!ContainerAlive(c)) continue;  // a dead one cannot answer
         auto pull = ipc->NewTask<HandoffPullTask>(
             clio::run::CreateTaskId(), fields->new_pool_id_,
             clio::run::PoolQuery::DirectId(c), container_id_);
-        auto f = ipc->Send(pull);
-        CLIO_CO_AWAIT(f);
-        HLOG(kInfo, "replication: container {} handed back {} blob(s) "
-             "(rc {})", c, f->pushed_, f->GetReturnCode());
+        pulls.push_back(ipc->Send(pull));
+        asked.push_back(c);
+      }
+      const auto t0 = std::chrono::steady_clock::now();
+      for (;;) {
+        bool all = true;
+        for (auto &f : pulls) all = all && f.IsComplete();
+        if (all || std::chrono::steady_clock::now() - t0 >=
+                       std::chrono::seconds(kHandoffPullWaitS)) {
+          break;
+        }
+        CLIO_CO_AWAIT(clio::run::yield(1000.0));
+      }
+      bool pending = false;
+      {
+        std::lock_guard<std::mutex> g(pull_mu_);
+        for (size_t i = 0; i < pulls.size(); ++i) {
+          pending_pulls_.emplace_back(asked[i], std::move(pulls[i]));
+        }
+        pull_deadline_ = t0 + std::chrono::milliseconds(kHandbackWaitMs);
+      }
+      SettlePendingPulls();
+      {
+        std::lock_guard<std::mutex> g(pull_mu_);
+        pending = !pending_pulls_.empty();
+      }
+      if (pending) {
+        // The sweep settles the rest; handed_back_ stays false meanwhile.
+        fields->return_code_ = 0;
+        CLIO_CO_RETURN;
       }
     }
   }

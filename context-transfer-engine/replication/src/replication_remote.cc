@@ -598,9 +598,39 @@ clio::run::TaskResume Runtime::HandoffPull(
   CLIO_TASK_BODY_END
 }
 
+void Runtime::SettlePendingPulls() {
+  std::lock_guard<std::mutex> g(pull_mu_);
+  if (pending_pulls_.empty()) return;
+  for (auto it = pending_pulls_.begin(); it != pending_pulls_.end();) {
+    if (!it->second.IsComplete()) {
+      ++it;
+      continue;
+    }
+    // Complete: outputs are in place. Not Wait()ed -- this may run on a
+    // worker other than the Create that sent it; dropping the future only
+    // releases our reference (send_map_ owned the in-flight task).
+    HLOG(kInfo, "replication: container {} handed back {} blob(s) (rc {})",
+         it->first, it->second->pushed_, it->second->GetReturnCode());
+    it = pending_pulls_.erase(it);
+  }
+  if (!pending_pulls_.empty() &&
+      std::chrono::steady_clock::now() < pull_deadline_) {
+    return;
+  }
+  for (const auto &p : pending_pulls_) {
+    HLOG(kError, "replication: container {} never answered the hand-back "
+         "pull within {} ms; serving owned blobs without it (its sweep still "
+         "pushes its changes, and older pushes are dropped, #1283)",
+         p.first, kHandbackWaitMs);
+  }
+  pending_pulls_.clear();
+  handed_back_.store(true, std::memory_order_release);
+}
+
 clio::run::TaskResume Runtime::HandoffSweep(
     clio::run::shared_ptr<HandoffSweepTask> &task) {
   CLIO_TASK_BODY_BEGIN
+  SettlePendingPulls();
   std::vector<clio::run::u32> owners;
   {
     std::lock_guard<std::mutex> g(handoff_mu_);

@@ -377,6 +377,23 @@ class Runtime : public clio::cte::core::CoreInterposer {
   std::atomic<bool> handed_back_{true};
   /** Longest a client task waits for the hand-back (ms). */
   static constexpr clio::run::u64 kHandbackWaitMs = 120000;
+  /** How long a restarting owner's Create waits for its peers' hand-back
+   *  pulls (s) before handing the stragglers to the sweep: Create (and so
+   *  compose and every mount on the node) must not hang on one peer (#1285).
+   *  Short on purpose: a peer whose own push into this pool is queued behind
+   *  this Create cannot answer until Create returns. */
+  static constexpr int kHandoffPullWaitS = 5;
+  /** Pulls Create sent that had not answered when it returned (pull_mu_).
+   *  handed_back_ stays false -- owned-blob client tasks keep waiting in
+   *  AwaitHandback -- until they all answer or kHandbackWaitMs passes, so a
+   *  slow peer delays only those tasks, never serves them stale data early. */
+  std::vector<std::pair<clio::run::u32,
+                        clio::run::Future<HandoffPullTask>>> pending_pulls_;
+  std::chrono::steady_clock::time_point pull_deadline_;
+  std::mutex pull_mu_;
+  /** Settle pending_pulls_ (from the sweep): log the answered ones and set
+   *  handed_back_ once none remain or the deadline passed. */
+  void SettlePendingPulls();
   /**
    * Hold a client write of a blob this container owns until it has pulled
    * back what its
