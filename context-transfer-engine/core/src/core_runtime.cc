@@ -11622,10 +11622,15 @@ clio::run::u32 Runtime::NotFoundRc(const TagId &tag_id,
   // whatever this node's (possibly lagging) liveness view says.
   if (stand_in_read && owner != container_id_) return kBlobOwnerDownRc;
   if (owner == container_id_ || ContainerNodeAlive(pool_id_, owner)) return 1;
-  // Standing in for the dead owner without its copies: unknowable here.
-  return FailoverContainer(pool_id_, owner) == container_id_
-             ? kBlobOwnerDownRc
-             : 1;
+  // The owner is dead and this container is not it: whether the blob
+  // exists is unknowable here, stand-in or not. Answering "no blob" when
+  // this node did not see itself as the stand-in -- its view still had the
+  // owner's successor alive while the router had already moved on -- read
+  // a dead pair's pages as holes of zeros with success
+  // (safe_two_nodes_down_never_lies, 6 nodes: rc 1 at container 0 for
+  // owner 4 with 4 and 5 down). Owner-down is retried by readers and turns
+  // into EIO at worst, never into zeros.
+  return kBlobOwnerDownRc;
 }
 
 bool Runtime::ServesBlob(const BlobInfo &blob_info, const TagId &tag_id,
