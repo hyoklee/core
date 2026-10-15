@@ -157,7 +157,9 @@ bool Contains(const std::string &haystack, const std::string &needle) {
 /** Report what a failing body actually said -- a 200 with the wrong shape and a
  *  503 from a timed-out Monitor are very different bugs. */
 void Explain(const std::string &what, const HttpReply &reply) {
-  std::cout << "  " << what << " -> " << reply.status << " "
+  // std::to_string, not operator<<: libstdc++'s integer formatter builds its
+  // digits on stack HttpGet's Poco session left poisoned.
+  std::cout << "  " << what << " -> " + std::to_string(reply.status) + " "
             << reply.body.substr(0, 300) << std::endl;
 }
 
