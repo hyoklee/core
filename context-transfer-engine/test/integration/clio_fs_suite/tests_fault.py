@@ -813,6 +813,102 @@ def t_handoff_successor_restart(ctx):
                        f'e.g. {stale[:2]}')
 
 
+@test('restart_with_slow_handback_peers', 'fault', min_nodes=4,
+      redeploy_after=True, timeout=1200)
+def t_restart_slow_handback_peers(ctx):
+  """A node returns while every peer answers its hand-back pull late (a
+  test hook, CLIO_TEST_HANDOFF_PULL_DELAY_MS: alive, probed fine, slower
+  than the owner's bound). Its restart must not wait on them (#1285): the
+  remount finishes in bounded time, no read returns the owner's pre-outage
+  bytes while the pulls are out, and every change reaches it after."""
+  n = len(ctx.hosts)
+
+  def pick_for(root):
+    rel = root[len(ctx.cl.mnt):]
+    owners = {fs_dir_owner(d, n) for d in ['/'] + [
+        '/' + '/'.join(rel.strip('/').split('/')[:k])
+        for k in range(1, len(rel.strip('/').split('/')) + 1)]}
+    homes = {fs_dir_owner(f'{rel}/f{k}', n) for k in range(8)}
+    return next(((v, (v + 1) % n) for v in range(n - 1, 0, -1)
+                 if v not in owners and v not in homes and
+                 (v + 1) % n not in owners and (v + 1) % n not in homes and
+                 (v + 1) % n != 0), None)
+
+  root, pick = None, None
+  for k in range(64):
+    cand = ctx.p(f'fz{k}')
+    pick = pick_for(cand)
+    if pick is not None:
+      root = cand
+      break
+  if pick is None:
+    raise TestUnsupported('no directory name leaves an owner/successor pair '
+                          'clear of the path and its inodes')
+  victim, succ = pick
+  vh, sh_ = ctx.hosts[victim], ctx.hosts[succ]
+  ctx.ok(0, 'mkdir', path=root)
+  ctx.note(f'node{victim} goes down; every peer answers its pull 12 s late')
+  size = 8 * MiB
+  files = [f'{root}/f{k}' for k in range(8)]
+  for k, p in enumerate(files):
+    ctx.ok(0, 'write_file', path=p, size=size, seed=400 + k, fsync=True)
+  # Every peer answers a hand-back pull 12 s late (test hook): alive and
+  # probed fine, but slower than the returning owner's 5 s bound. Peers
+  # are restarted with it before the owner goes down (a restart of a
+  # covering node keeps its handoff log, #1130).
+  cl = ctx.cl
+  saved = dict(cl.extra_env)
+  cl.extra_env['CLIO_TEST_HANDOFF_PULL_DELAY_MS'] = '12000'
+  try:
+    for i, h in enumerate(ctx.hosts):
+      if i == victim:
+        continue
+      cl.kill_fuse(h)
+      cl.stop_runtime(h)
+      cl.start_runtime(h)
+      ctx.check(cl.runtime_up(h), f'{h} runtime did not restart')
+      ctx.check(cl.mount(h), f'{h} remount failed')
+      cl.agents.pop(h, None)
+  finally:
+    cl.extra_env.clear()
+    cl.extra_env.update(saved)
+  cl.kill_fuse(vh)
+  cl.kill_runtime(vh)
+  time.sleep(3)
+  for k, p in enumerate(files):
+    ctx.ok(0, 'write_file', path=p, size=size, seed=800 + k, fsync=True)
+  # Bring the victim back (without the hook): its Create asks live peers
+  # that answer late, so its bounded wait must run out.
+  t0 = time.time()
+  cl.start_runtime(vh)
+  ctx.check(cl.runtime_up(vh), f'{vh} runtime did not restart')
+  mounted = cl.mount(vh, timeout=90)
+  ctx.metrics['remount_s'] = round(time.time() - t0, 1)
+  ctx.check(mounted, f'{vh} remount failed with slow peers '
+                     f'({ctx.metrics["remount_s"]} s)')
+  cl.agents.pop(vh, None)
+  # Read at once from the victim: its owned blobs must not come back as
+  # the pre-outage bytes while the late pulls are still out.
+  early = []
+  for k, p in enumerate(files):
+    r = ctx.call(victim, 'verify_file', path=p, size=size, seed=800 + k)
+    if not (r.get('ok') and r['ret']['ok']):
+      early.append((p, r.get('err') or r.get('ret')))
+  ctx.metrics['wrong_while_pulls_out'] = len(early)
+  ctx.check(not early, f'{len(early)} reads on node{victim} wrong while its '
+                       f'hand-back pulls were still out, e.g. {early[:2]}')
+  time.sleep(5)
+  stale = []
+  for i in range(n):
+    for k, p in enumerate(files):
+      r = ctx.call(i, 'verify_file', path=p, size=size, seed=800 + k)
+      if not (r.get('ok') and r['ret']['ok']):
+        stale.append((i, p, r.get('err') or r.get('ret')))
+  ctx.metrics['stale_after_pulls'] = len(stale)
+  ctx.check(not stale, f'{len(stale)} reads wrong after the late pulls '
+                       f'answered, e.g. {stale[:2]}')
+
+
 def blob_info_notes(ctx, path, verdict):
   """Note every node's view (cte_search --blob-info) of the page blob a
   failed verify mismatched in, to tell a stale copy from a lost one."""

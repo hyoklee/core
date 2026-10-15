@@ -45,6 +45,7 @@
 #include <clio_cte/core/blob_placement.h>
 
 #include <algorithm>
+#include <cstdlib>
 
 namespace clio::cte::replication {
 
@@ -590,6 +591,23 @@ clio::run::TaskResume Runtime::AwaitHandback(const Context &ctx) {
 clio::run::TaskResume Runtime::HandoffPull(
     clio::run::shared_ptr<HandoffPullTask> &task) {
   CLIO_TASK_BODY_BEGIN
+  {
+    // Test hook: answer a returning owner's pull this many ms late, so a
+    // test can hold a live peer past the owner's bounded wait (#1285).
+    static const double delay_ms = [] {
+      const char *e = std::getenv("CLIO_TEST_HANDOFF_PULL_DELAY_MS");
+      return e != nullptr ? std::atof(e) : 0.0;
+    }();
+    if (delay_ms > 0) {
+      HLOG(kWarning, "replication: test hook delays this hand-back pull "
+           "by {} ms", delay_ms);
+      const auto t0 = std::chrono::steady_clock::now();
+      while (std::chrono::steady_clock::now() - t0 <
+             std::chrono::duration<double, std::milli>(delay_ms)) {
+        CLIO_CO_AWAIT(clio::run::yield(100000.0));
+      }
+    }
+  }
   clio::run::u32 pushed = 0;
   CLIO_CO_AWAIT(PushHandoff(task->owner_, &pushed));
   task->pushed_ = pushed;
