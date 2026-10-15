@@ -3499,7 +3499,13 @@ clio::run::TaskResume Runtime::GetBlobImpl(clio::run::shared_ptr<TaskT> &task) {
       } else if (replica_sel == 0 && blob_info_ptr->lost_bytes_ != 0) {
         task->return_code_ = kGetBlobIoErrorRc;
       } else {
-        task->return_code_ = 1;
+        // An emptied entry is authoritative only on the blob's owner (or
+        // while it is alive): on a stand-in it is a dropped cache or shadow
+        // copy and says nothing about the dead owner's blob -- answered 1
+        // it read a dead pair's page as zeros with success.
+        task->return_code_ = NotFoundRc(
+            tag_id, blob_name,
+            (task->context_.op_flags_ & Context::kStandInRead) != 0);
       }
       clio_evlat_add(2, clio::run::CycleNow() - ev_g0);
   CLIO_CO_RETURN;
