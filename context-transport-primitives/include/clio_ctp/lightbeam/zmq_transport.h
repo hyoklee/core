@@ -684,6 +684,12 @@ class ZeroMqTransport : public Transport {
   template <typename MetaT>
   int RecvMetadata(MetaT& meta, const LbmContext& ctx = LbmContext()) {
     (void)ctx;
+    // zmq_msg_recv processes pending pipe commands on this thread, and libzmq
+    // (uninstrumented) writes its signaler's eventfd counter on our stack
+    // before handing it to write(2). That stack still carries shadow from
+    // earlier instrumented frames, so the write interceptor reports libzmq's
+    // own bytes. Suppress only those interceptor checks.
+    ctp::MsanInterceptorCheckGuard msan_guard;
     zmq_msg_t msg;
     zmq_msg_init(&msg);
     int rc;

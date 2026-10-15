@@ -877,6 +877,9 @@ bool VizServer::StartOn(const std::string &bind_addr, u32 port,
         new PocoVizHandlerFactory(this), *impl->pool, impl->socket, params);
     impl->server->start();
     impl->bind_addr = bind_addr;
+    // HTTPServer's constructor (uninstrumented Poco) copies the socket handle
+    // after the unpoison above; clear it again before reading the impl pointer.
+    CTP_MSAN_UNPOISON_OBJ(impl->socket);
     impl->port = impl->socket.address().port();
   } catch (const Poco::Exception &e) {
     // Never fatal: a taken port (a second runtime on this node, or an unrelated
@@ -910,6 +913,8 @@ void VizServer::Stop() {
   // down, aborting requests, and FALSE lets current requests finish. Waiting
   // is the risky one, so keep true.)
   try {
+    // Poco's acceptor thread (uninstrumented) shares this handle; see StartOn.
+    CTP_MSAN_UNPOISON_OBJ(impl_->socket);
     impl_->socket.close();
   } catch (const Poco::Exception &e) {
     HLOG(kWarning, "Viz: error closing the dashboard socket: {}",
