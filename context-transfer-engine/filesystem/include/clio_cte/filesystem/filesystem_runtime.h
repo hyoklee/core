@@ -531,9 +531,13 @@ class Runtime : public clio::run::Container {
    * @param op FsShardOp code
    * @param req request
    * @param resp filled with the response (rc_ = EIO when unreachable)
+   * @param node_lost if non-null, set true when the call failed because the
+   *        target's node was lost with it in flight (the caller may resolve
+   *        the target again: failover names the stand-in once it is dead)
    */
   clio::run::TaskResume CallShard(clio::run::u32 target, clio::run::u32 op,
-                                  const FsReq &req, FsResp &resp);
+                                  const FsReq &req, FsResp &resp,
+                                  bool *node_lost = nullptr);
   /**
    * Send ShardOp `op` to container `target` without waiting (fan-out).
    * @param target container (may be this one)
@@ -596,6 +600,26 @@ class Runtime : public clio::run::Container {
    */
   clio::run::TaskResume WriteBlockBlob(clio::run::u64 dir, clio::run::u32 k,
                                        const std::string &image, int &rc);
+  /**
+   * Read block (dir, k) from its CTE blob only (no journal lookup).
+   * @param dir packed directory id
+   * @param k block index
+   * @param out receives the block
+   * @param rc 0, ENOENT (no such blob) or EIO (any other failure)
+   */
+  clio::run::TaskResume ReadBlockCte(clio::run::u64 dir, clio::run::u32 k,
+                                     InodeTableBlock *out, int &rc);
+  /**
+   * Store a block image in its CTE blob, padded to a power of two, on a
+   * non-volatile tier when one accepts it (else RAM). With the directory
+   * journal on this is the replicated mirror a stand-in reads (#1263).
+   * @param dir packed directory id
+   * @param k block index
+   * @param image EncodeTableBlock(block, true)
+   * @param rc 0, ENOSPC (store full) or EIO
+   */
+  clio::run::TaskResume PutBlockCte(clio::run::u64 dir, clio::run::u32 k,
+                                    const std::string &image, int &rc);
   /**
    * Open this container's directory journal, then replay it (restart) or
    * empty it (fresh start). Leaves dir_journal_ false when `path` is empty

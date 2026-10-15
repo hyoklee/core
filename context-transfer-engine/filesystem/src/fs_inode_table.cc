@@ -82,6 +82,12 @@ constexpr double kLoadPollUs = 20.0;
 constexpr clio::run::u64 kIncarnationStride = 1ull << 32;
 /** A block load, wait or commit slower than this is reported (seconds). */
 constexpr double kSlowBlockOpS = 10.0;
+/** How long a load keeps asking a block home that did not answer, waiting
+ *  for failover to name its stand-in (s): node death is declared within
+ *  ~10 s. Past it the load fails EIO. */
+constexpr int kHomeFailoverWaitS = 15;
+/** Pause between those attempts (us). */
+constexpr double kHomeFailoverPollUs = 250000.0;
 
 /** Encode a list of block indices. */
 std::string EncIndices(const std::vector<clio::run::u32> &v) {
@@ -137,17 +143,39 @@ clio::run::TaskResume Runtime::ReadBlockBlob(clio::run::u64 dir,
   }
   if (dir_journal_) {
     rc = TakeJournaledBlock(dir, k, out);
-    const clio::run::u32 n = NumContainers();
-    if (rc == ENOENT && n > 1 &&
-        clio::cte::core::BlobHash(FsUnpack(dir), TableBlockName(k)) % n !=
-            container_id_) {
-      // Serving a dead home's block: it is in that node's own journal
-      // (#1263), not here. Not "no such directory", which would let a
-      // create or a repair replace it.
-      rc = EIO;
+    if (rc == ENOENT) {
+      // Nothing in this journal: either a stand-in for a dead home (the
+      // block is in that node's journal and in its replicated CTE mirror,
+      // #1263) or a block that does not exist. The CTE read tells them
+      // apart: only "no such blob" is ENOENT.
+      CLIO_CO_AWAIT(ReadBlockCte(dir, k, out, rc));
+      CLIO_CO_RETURN;
     }
+    if (rc != 0) CLIO_CO_RETURN;
+    // A stand-in may have changed the block while this node was down; the
+    // CTE hand-back delivered its copy. Take whichever is newer. A failed
+    // CTE read never fails a read the journal answered.
+    {
+      auto cte_copy = std::make_shared<InodeTableBlock>();
+      int cte_rc = 0;
+      CLIO_CO_AWAIT(ReadBlockCte(dir, k, cte_copy.get(), cte_rc));
+      if (cte_rc == 0 && cte_copy->version_ > out->version_) {
+        *out = std::move(*cte_copy);
+      }
+    }
+    rc = 0;
     CLIO_CO_RETURN;
   }
+  CLIO_CO_AWAIT(ReadBlockCte(dir, k, out, rc));
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
+clio::run::TaskResume Runtime::ReadBlockCte(clio::run::u64 dir,
+                                            clio::run::u32 k,
+                                            InodeTableBlock *out, int &rc) {
+  CLIO_TASK_BODY_BEGIN
+  rc = 0;
   bool ready = false;
   CLIO_CO_AWAIT(AwaitCteReady(ready));
   if (!ready) {
@@ -211,8 +239,22 @@ clio::run::TaskResume Runtime::WriteBlockBlob(clio::run::u64 dir,
   }
   if (dir_journal_) {
     rc = JournalAppend(FsLogRec::kBlockImage, image);
-    CLIO_CO_RETURN;
+    if (rc != 0) CLIO_CO_RETURN;
   }
+  // With the journal on, the CTE blob is the replicated mirror a stand-in
+  // reads while this node is down (#1263); the change is acknowledged only
+  // once both are written.
+  CLIO_CO_AWAIT(PutBlockCte(dir, k, image, rc));
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
+clio::run::TaskResume Runtime::PutBlockCte(clio::run::u64 dir,
+                                           clio::run::u32 k,
+                                           const std::string &image,
+                                           int &rc) {
+  CLIO_TASK_BODY_BEGIN
+  rc = 0;
   bool ready = false;
   CLIO_CO_AWAIT(AwaitCteReady(ready));
   if (!ready) {
@@ -286,7 +328,19 @@ clio::run::TaskResume Runtime::LoadBlock(clio::run::u64 dir, clio::run::u32 k,
         out = expired;
         CLIO_CO_RETURN;
       }
-      if (rc != kFsRedirect) CLIO_CO_RETURN;  // unreachable: never stale
+      if (rc != kFsRedirect) {
+        // Unreachable: never serve the old copy. But a home that just died
+        // is not yet declared dead (~10 s); wait for failover to name its
+        // stand-in, which serves the block from its replicated CTE copy
+        // (#1263), rather than fail a lookup the cluster can answer.
+        if (std::chrono::steady_clock::now() - wait_t0 <
+            std::chrono::seconds(kHomeFailoverWaitS)) {
+          rc = 0;
+          CLIO_CO_AWAIT(clio::run::yield(kHomeFailoverPollUs));
+          continue;
+        }
+        CLIO_CO_RETURN;
+      }
       rc = 0;
       std::lock_guard<std::mutex> g(ns_mu_);
       auto it = blocks_.find(key);
@@ -359,10 +413,18 @@ clio::run::TaskResume Runtime::LoadBlock(clio::run::u64 dir, clio::run::u32 k,
       CLIO_CO_AWAIT(clio::run::yield(1000.0));
       continue;
     }
-    if (!mine && lrc == EIO && attempt < 3 && BlockHome(dir, k) != home) {
+    if (!mine && lrc == EIO && BlockHome(dir, k) != home && attempt < 3) {
       // The home died while it was asked, and failover has since moved the
       // block to its successor, which holds its replica: ask there instead
       // of failing a lookup the cluster can still answer.
+      continue;
+    }
+    if (!mine && lrc == EIO &&
+        std::chrono::steady_clock::now() - wait_t0 <
+            std::chrono::seconds(kHomeFailoverWaitS)) {
+      // The home did not answer but is not yet declared dead (~10 s): wait
+      // for failover to move the block rather than fail now (#1263).
+      CLIO_CO_AWAIT(clio::run::yield(kHomeFailoverPollUs));
       continue;
     }
     rc = lrc == kFsRedirect ? EIO : lrc;
@@ -739,6 +801,7 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<TableBlockSlot> slot,
     std::vector<TableDelta> deltas;
     std::string image, jrec;
     FsLogRec jtype = FsLogRec::kBlockDeltas;
+    std::string mirror;  // full image for the CTE copy of a journaled delta
     std::vector<clio::run::u32> holders;
     std::vector<clio::run::u64> leases;  // parallel to holders
     std::map<clio::run::u32, clio::run::u64> reg;  // registrations pushed to
@@ -755,6 +818,12 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<TableBlockSlot> slot,
         k = slot->blk_.index_;
         deltas.swap(slot->unpushed_);
         TakePersistLocked(*slot, deltas, &image, &jtype, &jrec);
+        // A journaled delta lives only in this node's journal: mirror the
+        // block's whole current image to its replicated CTE blob too, so a
+        // stand-in can serve it while this node is down (#1263).
+        if (dir_journal_ && image.empty() && !jrec.empty()) {
+          mirror = EncodeTableBlock(slot->blk_, true);
+        }
         reg = slot->holders_;
         if (slot->holders_unknown_) {
           resync = true;
@@ -771,7 +840,10 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<TableBlockSlot> slot,
     int wrc = 0;
     const auto commit_t0 = std::chrono::steady_clock::now();
     if (!image.empty()) CLIO_CO_AWAIT(WriteBlockBlob(dir, k, image, wrc));
-    if (!jrec.empty()) wrc = JournalAppend(jtype, jrec);
+    if (wrc == 0 && !jrec.empty()) wrc = JournalAppend(jtype, jrec);
+    if (wrc == 0 && !mirror.empty()) {
+      CLIO_CO_AWAIT(PutBlockCte(dir, k, mirror, wrc));
+    }
     std::vector<clio::run::u32> gone;
     if (!deltas.empty() && !holders.empty()) {
       FsReq pr;
@@ -1584,7 +1656,17 @@ clio::run::TaskResume Runtime::TableOp(clio::run::u32 op, FsReq req,
       std::lock_guard<std::mutex> g(ns_mu_);
       req.block_ = slot->blk_.index_;
     }
-    CLIO_CO_AWAIT(CallShard(BlockHome(req.dir_id_, req.block_), op, req, resp));
+    bool lost = false;
+    CLIO_CO_AWAIT(CallShard(BlockHome(req.dir_id_, req.block_), op, req, resp,
+                            &lost));
+    // The block's home died with the call in flight: once it is declared
+    // dead BlockHome names its stand-in, which serves the block from its
+    // replicated CTE copy (#1263). Walk again rather than fail the lookup
+    // in the ~10 s before the death is declared; bounded by this loop.
+    if (lost) {
+      CLIO_CO_AWAIT(clio::run::yield(std::min(500000.0, 50000.0 * (attempt + 1))));
+      continue;
+    }
     if (resp.rc_ != static_cast<clio::run::u32>(kFsRedirect)) CLIO_CO_RETURN;
     {
       // Our copy said the name was here and the home says it is not: drop

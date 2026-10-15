@@ -3513,8 +3513,15 @@ int cte_fuse_read(const char *path, char *buf, size_t size,
             buf + done);
         g.Wait();
         grc = static_cast<int>(g->GetReturnCode());
-        if (!clio::cte::core::IsNodeLostRc(static_cast<clio::run::u32>(grc)) ||
-            attempt >= kReadNodeLostRetries) {
+        // Owner-down from a stand-in (#1280) can be as transient as
+        // node-lost: the stand-in's liveness view lags the router's until it
+        // too declares the owner dead and serves its copies. Retried within
+        // the same bound; after it, still EIO (never zeros).
+        const bool transient =
+            clio::cte::core::IsNodeLostRc(static_cast<clio::run::u32>(grc)) ||
+            static_cast<clio::run::u32>(grc) ==
+                clio::cte::core::kBlobOwnerDownRc;
+        if (!transient || attempt >= kReadNodeLostRetries) {
           break;
         }
         std::this_thread::sleep_for(
@@ -3542,6 +3549,10 @@ int cte_fuse_read(const char *path, char *buf, size_t size,
       // I/O error. Treating it as a hole returned zeros with success: a
       // reader got silently corrupted data while a node was down.
       if (grc != 0 && grc != 1) {
+        HLOG(kError, "clio_cte_fuse: read of tag {}.{} page {} failed rc {} "
+             "after {} attempt(s); reporting EIO", handle->tag.major_,
+             handle->tag.minor_, clio::cte::filesystem::PageName(cur), grc,
+             attempt + 1);
         slow_read(-EIO, done / clio::cte::filesystem::kFsPageSize + 1);
         return -EIO;
       }

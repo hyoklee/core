@@ -182,8 +182,9 @@ clio::run::u32 Runtime::InodeOwner(clio::run::u64 packed) {
 
 clio::run::TaskResume Runtime::CallShard(clio::run::u32 target,
                                          clio::run::u32 op, const FsReq &req,
-                                         FsResp &resp) {
+                                         FsResp &resp, bool *node_lost) {
   CLIO_TASK_BODY_BEGIN
+  if (node_lost != nullptr) *node_lost = false;
   if (target == container_id_) {
     CLIO_CO_AWAIT(ExecShardOp(op, req, resp));
     CLIO_CO_RETURN;
@@ -200,6 +201,11 @@ clio::run::TaskResume Runtime::CallShard(clio::run::u32 target,
   if (t->GetReturnCode() != 0 || !DecResp(t->resp_.str(), &resp)) {
     // The owner is unreachable (dead node, network timeout): the state it
     // owns is unavailable, which POSIX can only express as an I/O error.
+    if (node_lost != nullptr &&
+        clio::cte::core::IsNodeLostRc(
+            static_cast<clio::run::u32>(t->GetReturnCode()))) {
+      *node_lost = true;
+    }
     resp = FsResp();
     resp.rc_ = EIO;
   }
