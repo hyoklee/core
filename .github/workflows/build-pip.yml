@@ -151,9 +151,13 @@ jobs:
   # Build Windows wheels via cibuildwheel
   #------------------------------------------------------------
   build-wheels-windows:
-    name: Build Windows wheels
+    name: Build Windows wheels (${{ matrix.abi }})
     runs-on: windows-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [cp310, cp311, cp312, cp313, cp314]
 
     steps:
     - name: Checkout repository
@@ -198,7 +202,7 @@ jobs:
 
     - name: Build Windows wheels
       env:
-        CIBW_BUILD: "cp310-win_amd64 cp311-win_amd64 cp312-win_amd64 cp313-win_amd64 cp314-win_amd64"
+        CIBW_BUILD: "${{ matrix.abi }}-win_amd64"
         CIBW_ENVIRONMENT_WINDOWS: >-
           CMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
           VCPKG_DEFAULT_TRIPLET=x64-windows
@@ -224,7 +228,7 @@ jobs:
     - name: Upload Windows wheels
       uses: actions/upload-artifact@v4
       with:
-        name: wheels-win_amd64
+        name: wheels-win_amd64-${{ matrix.abi }}
         path: installers/pip/wheelhouse/*.whl
 
   #------------------------------------------------------------
@@ -740,7 +744,11 @@ jobs:
       fail-fast: false
       matrix:
         # The oldest-maintained ABI we ship and the newest.
-        python: ['3.12', '3.14']
+        include:
+          - python: '3.12'
+            abi: cp312
+          - python: '3.14'
+            abi: cp314
 
     steps:
     # FIRST step on purpose: actions/checkout cleans the workspace, so running
@@ -764,7 +772,7 @@ jobs:
     - name: Download Windows wheels
       uses: actions/download-artifact@v4
       with:
-        name: wheels-win_amd64
+        name: wheels-win_amd64-${{ matrix.abi }}
         path: wheels/
 
     # WinFsp runtime for the fuse adapter smoke test (#899) — end users
@@ -898,7 +906,8 @@ jobs:
     - name: Download Windows wheels
       uses: actions/download-artifact@v4
       with:
-        name: wheels-win_amd64
+        pattern: wheels-win_amd64-*
+        merge-multiple: true
         path: dist/
 
     - name: Download macOS arm64 wheels
@@ -951,7 +960,8 @@ jobs:
     - name: Download Windows wheels
       uses: actions/download-artifact@v4
       with:
-        name: wheels-win_amd64
+        pattern: wheels-win_amd64-*
+        merge-multiple: true
         path: dist/
 
     - name: Download macOS arm64 wheels
