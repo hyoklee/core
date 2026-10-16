@@ -62,6 +62,16 @@ def _writer_errors(replies, n, skip=()):
       'nerrors', 0) for i in range(n) if i not in skip}
 
 
+def _writer_error_samples(replies, n, keep=3):
+  """The first few error messages of each writer that saw any."""
+  out = {}
+  for i in range(n):
+    errs = ((replies.get(i) or {}).get('ret') or {}).get('errors') or []
+    if errs:
+      out[f'node{i}'] = errs[:keep]
+  return out
+
+
 def _bounce(ctx, host, crash, down_s):
   """Take one node down (SIGKILL or graceful stop) and bring it back."""
   cl = ctx.cl
@@ -462,6 +472,7 @@ def t_rebuild_interrupted(ctx):
             f'{victim}: the resumed rebuild did not complete')
   th.join(timeout=240 + 1200)
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   _check_filesets(ctx, base, n, nfiles, logs, replies,
                   'after an interrupted rebuild, a parity death and a crash')
   for h in cl.hosts:  # one more per array: node1 is at max_failures again
@@ -564,6 +575,7 @@ def t_two_nodes_down(ctx):
   th.join(timeout=300 + 1200)
   th2.join(timeout=60 + 600)
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   ctx.metrics['writer_errors_after_return'] = _writer_errors(replies2, n)
   ctx.metrics['writer_secs_after_return'] = round(time.time() - back_at, 1)
   for i in range(n):  # what the failed rounds saw (first few per node)
@@ -641,6 +653,7 @@ def t_chaos_disks_and_nodes(ctx):
   ctx.metrics['events'] = events
   th.join(timeout=600 + 1200)
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   _check_filesets(ctx, base, n, nfiles, logs, replies,
                   'after six rounds of random disk and node faults')
   restart_cluster(ctx, crash=True)
@@ -906,6 +919,7 @@ def t_disk_swapped_while_down(ctx):
     ctx.note(f'in-place rebuild onto the blank member refused: {out[-400:]}')
   th.join(timeout=150 + 1200)
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   _check_filesets(ctx, base, n, nfiles, logs, replies,
                   'after a dead disk was swapped for a blank one offline')
   if rc == 0:
@@ -998,6 +1012,7 @@ def t_crash_cycles(ctx):
   ctx.metrics['journal_bytes_node0_per_cycle'] = [
       s.get('node0', {}).get('safe_array.alog.journal', 0) for s in sizes]
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   ctx.check(restarts[-1] <= 3 * restarts[0] + 5,
             f'recovery got slower across crashes: {restarts}')
   _check_filesets(ctx, base, n, nfiles, logs, replies,
@@ -1045,6 +1060,7 @@ def t_parity_replaced_with_data_down(ctx):
                                        # parity must now carry the stripe
   th.join(timeout=150 + 1200)
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   _check_filesets(ctx, base, n, nfiles, logs, replies,
                   'with two data members dead behind a rebuilt parity disk')
   restart_cluster(ctx, crash=True)
@@ -1098,6 +1114,7 @@ def t_partition_during_writes(ctx):
   ctx.metrics['partition_s'] = round(time.time() - t0, 1)
   th.join(timeout=150 + 1200)
   ctx.metrics['writer_errors'] = _writer_errors(replies, n)
+  ctx.metrics['writer_error_samples'] = _writer_error_samples(replies, n)
   _check_filesets(ctx, base, n, nfiles, logs, replies,
                   'after a 45 s partition of node1 under degraded writes')
   p = ctx.p('after_split')

@@ -563,7 +563,7 @@ static bool clio_cache_usable(clio_file_t *file) {
  * WHICH accesses put data in the tier. Distinct from CLIO_VOL_CACHE, which
  * decides whether there is a tier at all.
  *
- *   write          (default) stage on write AND on read-miss.
+ *   write          stage on write AND on read-miss.
  *   read-miss      stage ONLY on read-miss: a write-only workload pays no
  *                  staging, at the cost that the first read is always a miss.
  *   second-access  stage only once a dataset has been read TWICE, so
@@ -573,18 +573,32 @@ static bool clio_cache_usable(clio_file_t *file) {
  */
 enum class ClioAdmit { kOnWrite, kOnReadMiss, kOnSecondAccess };
 
+/* The default follows the stamp settle knob, because that knob decides whether
+   write-side staging can ever be used. A writing close leaves the file's mtime
+   fresh, so unless the close may wait it out (CLIO_STAMP_SETTLE_MAX_NS, off by
+   default) the stamp is withheld and the next open drops the image the write
+   staged. Write admission then stages everything twice -- once on write, once
+   again on the first read miss -- for the same hits read-miss gets from one.
+   With settle on, the stamp survives and write admission is what lets the very
+   first read after reopening hit, so it is the right default there. */
+static ClioAdmit clio_admit_default() {
+  return clio::adapter::stamp::SettleMaxWaitNs() > 0 ? ClioAdmit::kOnWrite
+                                                     : ClioAdmit::kOnReadMiss;
+}
+
 /* Read per call, like every other env knob in this file. Static caching made
    the policy immutable after the first transfer, which silently no-ops any
    test (or long-lived process) that changes it. */
 static ClioAdmit clio_admit_policy() {
   const char *v = std::getenv("CLIO_VOL_ADMIT");
-  if (!v || !*v) return ClioAdmit::kOnWrite;
+  if (!v || !*v) return clio_admit_default();
+  if (std::strcmp(v, "write") == 0) return ClioAdmit::kOnWrite;
   if (std::strcmp(v, "read-miss") == 0 || std::strcmp(v, "readmiss") == 0)
     return ClioAdmit::kOnReadMiss;
   if (std::strcmp(v, "second-access") == 0 ||
       std::strcmp(v, "secondaccess") == 0 || std::strcmp(v, "second") == 0)
     return ClioAdmit::kOnSecondAccess;
-  return ClioAdmit::kOnWrite;
+  return clio_admit_default();
 }
 
 /* ------------------------------------------------------ admission by cost
