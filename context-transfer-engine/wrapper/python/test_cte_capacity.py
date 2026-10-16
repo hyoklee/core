@@ -419,6 +419,65 @@ def bounded_gil_check(
     }
 
 
+def assert_registration_idempotent(
+    cte: Any,
+    client: Any,
+    tag_id: Any,
+    records: dict[str, dict[str, Any]],
+    root: Path,
+    phase: str,
+) -> dict[str, Any]:
+    """Repeat an occupied target's exact registration without changing storage."""
+    expected_names = sorted(
+        (root / "store" / filename).as_posix() + "_node0"
+        for filename in ("storage.bin", "extra.bin")
+    )
+
+    def snapshot() -> dict[str, Any]:
+        """Refresh real target counters and read every committed byte."""
+        assert client.AsyncStatTargets().wait(max_sec=10.0) == 0
+        capacity = client.AsyncGetCapacity().result(max_sec=10.0)
+        names = client.AsyncListTargets().result(max_sec=10.0)
+        assert len(names) == 2 and sorted(names) == expected_names, names
+        return {
+            "total_capacity": capacity.total_capacity,
+            "remaining_capacity": capacity.remaining_capacity,
+            "target_names": sorted(names),
+            "readback_hashes": readback(client, tag_id, records),
+        }
+
+    receipt_path = root / f"duplicate-registration-{phase}.json"
+    receipt: dict[str, Any] = {
+        "phase": phase,
+        "pool_id": "513.1",
+        "before": snapshot(),
+        "attempts": [],
+        "status": "running",
+    }
+    receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    for _ in range(2):
+        future = client.AsyncRegisterTarget(
+            (root / "store" / "extra.bin").as_posix() + "_node0",
+            cte.BdevType.kFile,
+            8 * MIB,
+            target_query=cte.PoolQuery.Local(),
+            bdev_id=cte.PoolId(513, 1),
+            pool_query=cte.PoolQuery.Local(),
+            attach_existing=0,
+            growth_unit=1 << 30,
+        )
+        attempt: dict[str, Any] = {"register_rc": future.wait(max_sec=10.0)}
+        receipt["attempts"].append(attempt)
+        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        assert attempt["register_rc"] == 0, attempt
+        attempt["after"] = snapshot()
+        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        assert attempt["after"] == receipt["before"], attempt
+    receipt["status"] = "passed"
+    receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+    return receipt
+
+
 def initial_phase(
     cte: Any, client: Any, tag_id: Any, args: argparse.Namespace
 ) -> dict[str, Any]:
@@ -464,6 +523,9 @@ def initial_phase(
             "readback_hashes": readback(client, tag_id, records),
         }
     )
+    result["duplicate_registration"] = assert_registration_idempotent(
+        cte, client, tag_id, records, root, "initial"
+    )
     (root / "expected.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     return result
 
@@ -490,6 +552,9 @@ def restart_phase(cte: Any, client: Any, tag_id: Any, root: Path) -> dict[str, A
     )
     hashes = readback(client, tag_id, expected["records"])
     assert hashes == expected["readback_hashes"]
+    duplicate_registration = assert_registration_idempotent(
+        cte, client, tag_id, expected["records"], root, "restart"
+    )
     return {
         "total_capacity": capacity.total_capacity,
         "remaining_capacity": capacity.remaining_capacity,
@@ -498,6 +563,7 @@ def restart_phase(cte: Any, client: Any, tag_id: Any, root: Path) -> dict[str, A
         "target_names": names,
         "readback_hashes": hashes,
         "all_hashes_preserved": True,
+        "duplicate_registration": duplicate_registration,
     }
 
 
