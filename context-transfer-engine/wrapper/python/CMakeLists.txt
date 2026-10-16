@@ -227,8 +227,9 @@ if(BUILD_TESTING)
     set_tests_properties(
         python_capacity_test
         PROPERTIES
-        LABELS "python;bindings;capacity"
+        LABELS "python;bindings;capacity;integration"
         TIMEOUT 180
+        RUN_SERIAL TRUE
         DEPENDS clio_cte_core_ext
     )
 endif()
