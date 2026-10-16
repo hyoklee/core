@@ -606,10 +606,14 @@ def run_suite(args: argparse.Namespace) -> int:
 if __name__ == "__main__":
     parsed = arguments()
     if parsed.phase:
-        # Native clients have no exposed shutdown method. Complete every future
-        # and write evidence, then leave teardown to this isolated process.
+        # Healthy clients finish every future while their daemon is alive.
+        # Exit normally so native finalizers also write real coverage counters.
+        # A failed phase can retain an unfinished native task; keep its nonzero
+        # forced exit and let the parent reap the verified private daemon.
         exit_code = client_phase(parsed)
         sys.stdout.flush()
         sys.stderr.flush()
+        if exit_code == 0:
+            raise SystemExit(exit_code)
         os._exit(exit_code)
     raise SystemExit(run_suite(parsed))
