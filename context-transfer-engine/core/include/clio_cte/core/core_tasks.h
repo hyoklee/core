@@ -283,6 +283,11 @@ struct TargetInfo {
   clio::run::u64 ops_written_;
   float target_score_;        // Target score (0-1, normalized log bandwidth)
   clio::run::u64 remaining_space_;  // Remaining allocatable space in bytes
+  // Bumped on every incremental debit/credit of remaining_space_. The periodic
+  // stats refresh only overwrites remaining_space_ when this did not move
+  // while its GetStats was in flight; otherwise its snapshot predates a
+  // free/alloc and writing it back would erase that update.
+  clio::run::u64 space_epoch_;
   clio::run::u64 max_capacity_;     // Total (max) capacity in bytes, fixed at register
   clio::run::bdev::PerfMetrics perf_metrics_;  // Performance metrics from bdev
   clio::run::u32 expected_ttl_days_; // Predictive device TTL (defaults to 999999)
@@ -301,6 +306,7 @@ struct TargetInfo {
         ops_written_(0),
         target_score_(0.0f),
         remaining_space_(0),
+        space_epoch_(0),
         max_capacity_(0),
         expected_ttl_days_(999999),
         persistence_level_(clio::run::bdev::PersistenceLevel::kVolatile),
@@ -316,6 +322,7 @@ struct TargetInfo {
         ops_written_(0),
         target_score_(0.0f),
         remaining_space_(0),
+        space_epoch_(0),
         max_capacity_(0),
         expected_ttl_days_(999999),
         persistence_level_(clio::run::bdev::PersistenceLevel::kVolatile) {}
@@ -332,6 +339,7 @@ struct TargetInfo {
         ops_written_(other.ops_written_),
         target_score_(other.target_score_),
         remaining_space_(other.remaining_space_),
+        space_epoch_(other.space_epoch_),
         max_capacity_(other.max_capacity_),
         perf_metrics_(other.perf_metrics_),
         expected_ttl_days_(other.expected_ttl_days_),
@@ -350,6 +358,7 @@ struct TargetInfo {
       ops_written_ = other.ops_written_;
       target_score_ = other.target_score_;
       remaining_space_ = other.remaining_space_;
+      space_epoch_ = other.space_epoch_;
       max_capacity_ = other.max_capacity_;
       perf_metrics_ = other.perf_metrics_;
       expected_ttl_days_ = other.expected_ttl_days_;

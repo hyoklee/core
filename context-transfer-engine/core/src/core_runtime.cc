@@ -1744,6 +1744,7 @@ clio::run::TaskResume Runtime::StatTargets(clio::run::shared_ptr<StatTargetsTask
       // Copy bdev_client under read lock for the async call
       clio::run::bdev::Client bdev_client_copy;
       clio::run::PoolQuery stat_query;
+      clio::run::u64 epoch_before = 0;
       bool found = false;
       {
         clio::run::ScopedCoRwReadLock read_lock(target_lock_);
@@ -1751,6 +1752,9 @@ clio::run::TaskResume Runtime::StatTargets(clio::run::shared_ptr<StatTargetsTask
         if (target_info != nullptr) {
           bdev_client_copy = target_info->bdev_client_;
           stat_query = target_info->target_query_;
+          epoch_before =
+              ctp::ipc::atomic_ref<clio::run::u64>(target_info->space_epoch_)
+                  .load(std::memory_order_relaxed);
           found = true;
         }
       }
@@ -1776,7 +1780,14 @@ clio::run::TaskResume Runtime::StatTargets(clio::run::shared_ptr<StatTargetsTask
         TargetInfo *target_info = registered_targets_.find(target_id);
         if (target_info != nullptr) {
           target_info->perf_metrics_ = perf_metrics;
-          target_info->remaining_space_ = remaining_size;
+          // Lost-update guard: a free or alloc credited/debited this target
+          // while GetStats was in flight, so remaining_size predates it.
+          // Writing it back erased an eviction's freed bytes and failed the
+          // put that evicted for room (cte_evict_trigger under ubsan). Keep
+          // the incremental figure; the next period resyncs.
+          if (target_info->space_epoch_ == epoch_before) {
+            target_info->remaining_space_ = remaining_size;
+          }
           // The device's capacity can change (a safe_bdev member added,
           // lost or replaced); df and the dashboard follow within a period.
           if (total_size != 0) target_info->max_capacity_ = total_size;
@@ -9929,6 +9940,8 @@ clio::run::TaskResume Runtime::ExtendBlob(BlobInfo &blob_info, clio::run::u64 of
             cur, (cur > physical_sum) ? cur - physical_sum : 0,
             std::memory_order_relaxed)) {
         }
+        ctp::ipc::atomic_ref<clio::run::u64>(ti->space_epoch_)
+            .fetch_add(1, std::memory_order_relaxed);
       }
     }
   }
@@ -10334,6 +10347,8 @@ clio::run::TaskResume Runtime::ResizeBlob(BlobInfo &blob_info, clio::run::u64 ne
       if (target_info != nullptr) {
         ctp::ipc::atomic_ref<clio::run::u64>(target_info->remaining_space_)
             .fetch_add(bytes_freed, std::memory_order_relaxed);
+        ctp::ipc::atomic_ref<clio::run::u64>(target_info->space_epoch_)
+            .fetch_add(1, std::memory_order_relaxed);
       }
     }
   }
@@ -10954,6 +10969,8 @@ clio::run::TaskResume Runtime::FreeAllBlobBlocks(BlobInfo &blob_info,
             ctp::ipc::atomic_ref<clio::run::u64>(target_info->remaining_space_)
                 .fetch_add(bytes_freed, std::memory_order_relaxed) +
             bytes_freed;
+        ctp::ipc::atomic_ref<clio::run::u64>(target_info->space_epoch_)
+            .fetch_add(1, std::memory_order_relaxed);
         HLOG(kDebug, "Updated target {} remaining_space_ by +{} bytes (now {})",
              pool_id.major_, bytes_freed, now);
       }
