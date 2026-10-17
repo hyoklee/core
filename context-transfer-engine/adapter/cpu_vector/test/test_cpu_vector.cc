@@ -31,9 +31,15 @@ using clio::run::u64;
 
 namespace {
 
+/** Where the runtime config goes: CLIO_TEST_DATA_DIR if it names a real
+ *  directory (trimmed), else the system temp directory. */
 std::string TestDataDir() {
-  const char *d = clio::run::env::GetCompat("TEST_DATA_DIR");
-  return (d && *d) ? d : ".";
+  std::string d;
+  if (const char *e = clio::run::env::GetCompat("TEST_DATA_DIR")) d = e;
+  while (!d.empty() && (d.back() == ' ' || d.back() == '\t')) d.pop_back();
+  std::error_code ec;
+  if (!d.empty() && fs::is_directory(d, ec)) return d;
+  return fs::temp_directory_path(ec).string();
 }
 
 class Fixture {
@@ -45,7 +51,11 @@ class Fixture {
     {
       std::ofstream f(config_path_);
       REQUIRE(f.is_open());
+      // A dedicated port: the runtime default (9413) is shared with every
+      // other test and any running daemon.
       f << R"(
+networking:
+  port: 9461
 runtime:
   num_threads: 4
   queue_depth: 1024

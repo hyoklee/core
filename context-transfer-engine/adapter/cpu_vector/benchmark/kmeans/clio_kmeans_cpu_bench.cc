@@ -87,7 +87,8 @@ std::string WriteConfig(u64 data_mb) {
   const std::string path =
       std::string((d && *d) ? d : "/tmp") + "/kmeans_cpu_config.yaml";
   std::ofstream f(path);
-  f << "runtime:\n  num_threads: 4\n  queue_depth: 1024\n"
+  f << "networking:\n  port: 9462\n"
+       "runtime:\n  num_threads: 4\n  queue_depth: 1024\n"
        "compose:\n  - mod_name: clio_cte_core\n    pool_name: clio_cte\n"
        "    pool_query: local\n    pool_id: 512.0\n    storage:\n"
        "      - path: \"ram::kmeans_cpu_dram\"\n        bdev_type: \"ram\"\n"

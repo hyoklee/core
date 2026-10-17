@@ -658,6 +658,9 @@ class Vector {
     s.alloc_waits = stat_[kAllocWaits].load();
     return s;
   }
+  /** gpu_vector spelling (ReadStats(gpu_id)); there is one cache, so the
+   *  id is ignored. Lets code written against either vector read stats. */
+  Stats ReadStats(int /*gpu_id*/) const { return ReadStats(); }
 
   /** Every frame's metadata. */
   std::vector<Page> ReadTable() const {
