@@ -271,6 +271,77 @@ def t_cache_after_home_restart(ctx):
                         f'seen by a cache, e.g. {misses[:6]}')
 
 
+@test('failover_reload_keeps_entries', 'dirs', min_nodes=4,
+      redeploy_after=True, timeout=2400)
+def t_failover_reload_keeps_entries(ctx):
+  """The home of a directory is cut off one way (nobody can send to it)
+  long enough to be failed over, while every other node keeps creating
+  files in that directory, and the home itself created files there before
+  the split. After the heal the home receives the rejoin notice and
+  reloads its blocks; that reload must keep EVERY entry: the ones it made
+  before the split and the ones the stand-in made during it. Checked from
+  every node. (A wrongly triggered reload lost recent entries; this checks
+  the reload a real failover needs.)"""
+  import time
+  from tests_fault import fs_dir_owner
+  n = len(ctx.hosts)
+  base = ctx.p('fr')
+  ctx.ok(0, 'mkdir', path=base)
+  rel0 = base[len(ctx.cl.mnt):]
+  # A directory homed on a node other than node0 (the driver's writer).
+  d = a = None
+  for k in range(64):
+    cand = f'{base}/d{k}'
+    own = fs_dir_owner(cand[len(ctx.cl.mnt):], n)
+    if own not in (0, fs_dir_owner(rel0, n)):
+      d, a = cand, own
+      break
+  if d is None:
+    from suite import TestUnsupported
+    raise TestUnsupported('no candidate directory homed away from node0')
+  ctx.ok(0, 'mkdir', path=d)
+  ctx.note(f'directory home node{a}')
+  made = set()
+  for k in range(40):  # before the split: some written by the home itself
+    i = a if k % 2 == 0 else 0
+    ctx.ok(i, 'write_file', path=f'{d}/pre{k}', size=64, seed=k, fsync=True)
+    made.add(f'pre{k}')
+  others = [i for i in range(n) if i != a]
+  for i in others:
+    ctx.cl.partition(ctx.hosts[i], [a])
+  try:
+    time.sleep(15)  # declared dead, its blocks failed over
+    t0 = time.time()
+    k = 0
+    while time.time() - t0 < 30:
+      i = others[k % len(others)]
+      r = ctx.call(i, 'write_file', path=f'{d}/mid{k}', size=64, seed=1000 + k,
+                   fsync=True, timeout=120)
+      if r.get('ok'):
+        made.add(f'mid{k}')
+      k += 1
+    ctx.metrics['created_during_split'] = sum(
+        1 for x in made if x.startswith('mid'))
+  finally:
+    for i in others:
+      ctx.cl.heal(ctx.hosts[i])
+  time.sleep(20)  # rejoin, notice, reload
+  for k in range(10):  # and the home keeps working after the reload
+    ctx.ok(a, 'write_file', path=f'{d}/post{k}', size=64, seed=2000 + k,
+           fsync=True)
+    made.add(f'post{k}')
+  lost = {}
+  for i in range(n):
+    r = ctx.call(i, 'listdir', path=d, timeout=300)
+    seen = set(r.get('ret') or []) if r.get('ok') else set()
+    miss = sorted(made - seen)
+    if miss:
+      lost[f'node{i}'] = (len(miss), miss[:5])
+  ctx.metrics['entries'] = len(made)
+  ctx.check(not lost, f'acknowledged entries missing after the failover '
+                      f'reload: {lost}')
+
+
 @test('partitioned_cache_not_stale', 'dirs', min_nodes=3, redeploy_after=True,
       timeout=1800)
 def t_partitioned_cache(ctx):
