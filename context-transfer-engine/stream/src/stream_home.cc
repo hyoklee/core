@@ -238,6 +238,25 @@ clio::run::TaskResume Runtime::Plan(clio::run::shared_ptr<PlanTask> &task) {
   const clio::cte::core::TagId tag = task->tag_id_;
   std::vector<AppendEntry> entries(task->entries_.begin(),
                                    task->entries_.end());
+  // Only the stream's home merges (decision stream-standin-merge). The
+  // stream's end lives in the home's log; a stand-in serving a dead home
+  // has no reliable way to know it and merged at its own size -- 0 for a
+  // stream it never served -- writing over the stream's first records
+  // (append_home_restart: writer 0's record 0 overwritten by another
+  // writer's, traced). Refuse: the origin keeps the durably staged appends
+  // and retries until the home is back; fsync fails past the deadline.
+  if (!entries.empty()) {
+    clio::cte::core::TagId stag;
+    clio::run::u32 home = container_id_;
+    AppendEntry tmp;
+    if (ParseStagedName(entries.front().staged_name_, &stag, &home, &tmp) &&
+        home != container_id_) {
+      HLOG(kDebug, "stream: {}.{} belongs to container {}; not merging it "
+           "as a stand-in", tag.major_, tag.minor_, home);
+      task->return_code_ = kRcIo;
+      CLIO_CO_RETURN;
+    }
+  }
   bool dropped = false;
   std::vector<StreamPlan> retry;
   for (;;) {  // claim the stream: one merge at a time
