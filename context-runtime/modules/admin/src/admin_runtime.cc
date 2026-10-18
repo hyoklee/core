@@ -1648,7 +1648,28 @@ clio::run::TaskResume Runtime::QueryTaskProgress(
     // Rejoin notice: the prober holds this node dead, so it may have failed
     // our homes over to a stand-in that changed them. Cached home state is
     // suspect; the filesystem reloads it (see IpcManager::HeldDeadSeq).
-    CLIO_IPC->NoteHeldDeadByPeer();
+    // Honored only once at least half the peers sent one recently: only a
+    // majority fails a node over (failover-quorum). A single cut-off node
+    // holds every peer dead and re-probes them all; acting on its notices
+    // alone made healthy majority nodes drop and reload home directory
+    // blocks, and the reload lost recent entries (safe_partition_during_
+    // writes). A sender-side majority check raced the heal.
+    const auto now = std::chrono::steady_clock::now();
+    const clio::run::u64 sender = task->pool_query_.GetReturnNode();
+    std::lock_guard<std::mutex> g(held_dead_mu_);
+    held_dead_by_[sender] = now;
+    for (auto it = held_dead_by_.begin(); it != held_dead_by_.end();) {
+      it = now - it->second > std::chrono::seconds(60)
+               ? held_dead_by_.erase(it)
+               : std::next(it);
+    }
+    const size_t peers = CLIO_IPC->GetNodeIds().size() > 0
+                             ? CLIO_IPC->GetNodeIds().size() - 1
+                             : 0;
+    if (peers > 0 && held_dead_by_.size() * 2 >= peers) {
+      CLIO_IPC->NoteHeldDeadByPeer();
+      held_dead_by_.clear();  // one reload per failover
+    }
   }
   bool present = CLIO_IPC->GetRun2Run()->HasRecvTask(task->query_net_key_,
                                                      task->query_replica_id_);
@@ -1850,6 +1871,8 @@ void Runtime::FireIdleProbes() {
   // peer dead; its notices made the majority drop and reload home
   // directory blocks that nobody had failed over, and the reload lost
   // recent entries (safe_partition_during_writes, baseline1).
+  // (Kept as a first filter; the receiver makes the real decision by
+  // counting distinct senders, see QueryTaskProgress.)
   bool majority = true;
   {
     size_t total = 0, alive = 0;
