@@ -1844,6 +1844,21 @@ void Runtime::FireIdleProbes() {
   }
   const clio::run::u64 self = ipc_manager->GetNodeId();
   const auto now = std::chrono::steady_clock::now();
+  // Whether this node sees at least half the cluster alive. Only such a
+  // node can have failed a peer over (failover-quorum), so only its
+  // re-probes carry the rejoin notice. A cut-off minority node sees every
+  // peer dead; its notices made the majority drop and reload home
+  // directory blocks that nobody had failed over, and the reload lost
+  // recent entries (safe_partition_during_writes, baseline1).
+  bool majority = true;
+  {
+    size_t total = 0, alive = 0;
+    for (clio::run::u64 n : ipc_manager->GetNodeIds()) {
+      ++total;
+      if (n == self || ipc_manager->IsAlive(n)) ++alive;
+    }
+    majority = total == 0 || alive * 2 >= total;
+  }
   for (clio::run::u64 node : ipc_manager->GetNodeIds()) {
     if (node == self || busy.count(node) != 0) continue;
     const bool dead =
@@ -1869,7 +1884,7 @@ void Runtime::FireIdleProbes() {
     clio::run::PoolQuery q =
         clio::run::PoolQuery::Physical(static_cast<clio::run::u32>(node));
     q.SetNetTimeout(5.0f);
-    const size_t key = dead ? kDeadReprobeKey : kIdleProbeKey;
+    const size_t key = dead && majority ? kDeadReprobeKey : kIdleProbeKey;
     auto task = ipc_manager->NewTask<QueryTaskProgressTask>(
         clio::run::CreateTaskId(), clio::run::kAdminPoolId, q, key, 0u);
     task->SetFlags(TASK_LIVENESS_PROBE);  // transmitted even to a dead node
