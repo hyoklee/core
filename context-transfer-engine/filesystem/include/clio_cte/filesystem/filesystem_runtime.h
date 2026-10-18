@@ -441,6 +441,12 @@ class Runtime : public clio::run::Container {
   };
   std::mutex ns_mu_;  ///< guards blocks_, loading_, early_ and every slot
   std::unordered_map<TableBlockKey, std::shared_ptr<TableBlockSlot>, TableBlockKeyHash> blocks_;
+  /** IpcManager::HeldDeadSeq() when home blocks were last trusted. A change
+   *  is a rejoin notice: a peer held this node dead and may have failed its
+   *  homes over, so clean home blocks are dropped and reloaded. */
+  std::atomic<clio::run::u64> seen_held_dead_seq_{0};
+  /** Drop every clean home block (reload on next use); see above. */
+  void DropHomeBlocksAfterFailover();
   /** Blocks being loaded here (a push that arrives meanwhile is kept),
    *  each with the step its loader is on -- named in a slow waiter's
    *  warning, so a load that never returns says where it is stuck. */
@@ -1260,6 +1266,19 @@ class Runtime : public clio::run::Container {
    *        answer EIO, not ENOENT, when it is set.
    */
   clio::run::TaskResume EnsureInode(clio::run::u64 packed, int *err = nullptr);
+  /**
+   * The inode record this home's first live successor stored while it
+   * served the inode (this node down or cut off), if any.
+   * @param packed inode
+   * @param rec receives the record (empty: none)
+   * @param from receives the container holding it
+   */
+  clio::run::TaskResume FetchStandInRecord(clio::run::u64 packed,
+                                           std::string *rec,
+                                           clio::run::u32 *from);
+  /** Whether inode record a was written after b (ctime/mtime; an
+   *  unreadable b loses). */
+  static bool RecordNewer(const std::string &a, const std::string &b);
   /**
    * Stat an inode: the home's own copy, else this container's cached copy,
    * else a fetch from the home (which registers this container for pushes).

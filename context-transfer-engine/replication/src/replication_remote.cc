@@ -134,8 +134,15 @@ void Runtime::NoteOwnerWrite(const TagId &tag, const std::string &name) {
 }
 
 bool Runtime::OwnerWroteAfter(const TagId &tag, const std::string &name,
-                              clio::run::u64 ns) {
-  if (ns == 0) return false;
+                              clio::run::u64 age_plus_one) {
+  if (age_plus_one == 0) return false;  // unknown (replayed from the log)
+  // When the stand-in's change happened, on THIS node's clock: now minus
+  // its age as the stand-in measured it (PushOne). Skew-free; the push's
+  // transit time makes the change look slightly older, which can only make
+  // a write this owner took within that window win -- the conservative way.
+  const clio::run::u64 now = clio::cte::core::GetWallTimeNs();
+  const clio::run::u64 age = age_plus_one - 1;
+  const clio::run::u64 ns = now > age ? now - age : 0;
   const std::string key = std::to_string(tag.major_) + "." +
                           std::to_string(tag.minor_) + "." + name;
   std::lock_guard<std::mutex> g(owner_write_mu_);
@@ -156,7 +163,13 @@ clio::run::TaskResume Runtime::MirrorRange(TagId tag, std::string name,
   const clio::run::u32 n = NumContainers();
   for (int i = 1; i <= config_.remote_copies_ && i < static_cast<int>(n); ++i) {
     const clio::run::u32 c = (container_id_ + i) % n;
-    if (!ContainerAlive(c)) continue;  // degraded: one copy fewer for now
+    if (!ContainerAlive(c)) {
+      // Degraded: one copy fewer for now. Its copy is now stale; when it is
+      // back the sweep re-copies the blob (a later owner loss would serve
+      // the stale copy as current otherwise).
+      NoteRemirror(c, tag, name);
+      continue;
+    }
     Context ctx;
     ctx.op_flags_ |= Context::kShadowCopy;
     auto p = Self()->AsyncPutBlob(tag, name, off, size, data, score, ctx, 0u,
@@ -166,7 +179,74 @@ clio::run::TaskResume Runtime::MirrorRange(TagId tag, std::string name,
       HLOG(kWarning, "replication: remote copy of {}.{}/{} on container {} "
            "failed (rc {})", tag.major_, tag.minor_, name, c,
            p->GetReturnCode());
+      NoteRemirror(c, tag, name);
     }
+  }
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
+void Runtime::NoteRemirror(clio::run::u32 holder, const TagId &tag,
+                           const std::string &name) {
+  std::lock_guard<std::mutex> g(remirror_mu_);
+  remirror_[holder][BlobKey(tag, name)] = std::make_pair(tag, name);
+}
+
+clio::run::TaskResume Runtime::ReMirror(TagId tag, std::string name,
+                                        clio::run::u32 holder, bool &ok) {
+  CLIO_TASK_BODY_BEGIN
+  ok = false;
+  // Under the blob's write token, so no client write lands between reading
+  // the primary and writing the copy (its own mirror runs after it unlocks,
+  // so it reaches the copy after this one).
+  {
+    std::vector<std::string> keys{BlobKey(tag, name)};
+    CLIO_CO_AWAIT(LockBlobs(keys));
+    auto *cte = GetCoreClient();
+    clio::run::u64 size = 0;
+    {
+      auto st = cte->AsyncGetBlobSize(tag, name, clio::run::PoolQuery::Local(),
+                                      0);
+      CLIO_CO_AWAIT(st);
+      if (st->GetReturnCode() != 0) {
+        UnlockBlobs(keys);
+        ok = true;  // gone (deleted since): nothing to copy
+        CLIO_CO_RETURN;
+      }
+      size = st->size_ - st->lost_bytes_;
+    }
+    bool good = true;
+    for (clio::run::u64 off = 0; off < size && good;
+         off += kHandoffChunk) {
+      const clio::run::u64 len = std::min(kHandoffChunk, size - off);
+      auto buf = CLIO_IPC->AllocateBuffer(len);
+      if (buf.IsNull()) {
+        good = false;
+        break;
+      }
+      ctp::ipc::ShmPtr<> bp = buf.shm_.template Cast<void>();
+      auto g = cte->AsyncGetBlob(tag, name, off, len, 0u, bp,
+                                 clio::run::PoolQuery::Local());
+      CLIO_CO_AWAIT(g);
+      if (g->GetReturnCode() != 0) {
+        CLIO_IPC->FreeBuffer(buf);
+        good = false;
+        break;
+      }
+      Context ctx;
+      ctx.op_flags_ |= Context::kShadowCopy;
+      // The first chunk replaces the copy, so a stale tail (the blob was
+      // truncated meanwhile) does not survive.
+      auto p = Self()->AsyncPutBlob(
+          tag, name, off, len, bp, config_.replica_score_, ctx,
+          off == 0 ? clio::cte::core::kCtePutReplace : 0u,
+          clio::run::PoolQuery::DirectId(holder));
+      CLIO_CO_AWAIT(p);
+      CLIO_IPC->FreeBuffer(buf);
+      good = p->GetReturnCode() == 0;
+    }
+    UnlockBlobs(keys);
+    ok = good;
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -305,13 +385,23 @@ clio::run::TaskResume Runtime::MultiPutBlob(
   // replication layer at its owner, so its replicas and remote copies are
   // written (the core alone would forward them to the owner's core).
   bool all_here = true;
+  // And the batched path applies one shadow mark to every record, so it is
+  // only right when the records are all this container's own or all held
+  // for a dead owner. A mixed batch (some pages owned here, some standing
+  // in) goes record by record: PutBlob decides ownership per blob. Deciding
+  // from the route blob alone left this owner's records unmirrored (its
+  // successor later read them as holes -- zeros) or a dead owner's records
+  // never handed back.
+  int owned = 0, foreign = 0;
   for (size_t d = 0; d < batch.size() && all_here; ++d) {
     if (!batch.RecordValid(d)) continue;
     const auto &desc = batch.descs_[d];
     const clio::run::u32 owner = OwnerOf(desc.tag_id_, desc.blob_name_);
     all_here = clio::cte::core::FailoverContainer(pool_id_, owner) ==
                container_id_;
+    (owner == container_id_ ? owned : foreign)++;
   }
+  if (owned > 0 && foreign > 0) all_here = false;
   if (!all_here) {
     task->num_ok_ = 0;
     task->first_rc_ = 0;
@@ -347,9 +437,9 @@ clio::run::TaskResume Runtime::MultiPutBlob(
     task->SetReturnCode(task->first_rc_);
     CLIO_CO_RETURN;
   }
-  const bool owner_here = batch.size() == 0 ||
-      OwnerOf(task->route_tag_id_, task->route_blob_.str()) == container_id_;
-  if (!owner_here) {
+  // Here every record is owned here, or every record is held for a dead
+  // owner (a mixed batch went record by record above).
+  if (foreign > 0) {
     task->context_.op_flags_ |= Context::kShadowCopy;  // standing in
   }
   CLIO_CO_AWAIT(MultiPutBlobLocal(task));
@@ -357,10 +447,10 @@ clio::run::TaskResume Runtime::MultiPutBlob(
   for (size_t d = 0; d < batch.size(); ++d) {
     if (!batch.RecordValid(d)) continue;
     const auto &desc = batch.descs_[d];
-    if (!owner_here) {
+    const clio::run::u32 rec_owner = OwnerOf(desc.tag_id_, desc.blob_name_);
+    if (rec_owner != container_id_) {
       // Standing in for a dead owner: always hand back (#1130).
-      NoteHandoff(OwnerOf(desc.tag_id_, desc.blob_name_), desc.tag_id_,
-                  desc.blob_name_, false);
+      NoteHandoff(rec_owner, desc.tag_id_, desc.blob_name_, false);
       continue;
     }
     NoteOwnerWrite(desc.tag_id_, desc.blob_name_);
@@ -452,9 +542,16 @@ clio::run::TaskResume Runtime::PushOne(HandoffEntry e, clio::run::u32 owner,
   // keeps it and the next pass sends the finished state (#1154).
   Context push_ctx;
   push_ctx.op_flags_ |= Context::kHandoffPush;
-  // The stand-in's change time rides in generation_ (unused without
-  // kGenerational): the owner drops a push older than its own copy.
-  push_ctx.generation_ = e.ns_;
+  // The change's AGE on this node's clock rides in generation_ (unused
+  // without kGenerational), +1 so 0 still means "unknown". An absolute time
+  // would be compared against the owner's clock, and Ares nodes run up to
+  // ~30 s apart: the owner dropped valid hand-backs as stale and kept
+  // serving pre-partition pages. The owner places the change at its own
+  // now - age, so only transit time, never clock skew, enters the ordering.
+  if (e.ns_ != 0) {
+    const clio::run::u64 now = clio::cte::core::GetWallTimeNs();
+    push_ctx.generation_ = (now > e.ns_ ? now - e.ns_ : 0) + 1;
+  }
   if (e.deleted_) {
     auto d = Self()->AsyncDelBlob(e.tag_, e.name_, to_owner);
     CLIO_CO_AWAIT(d);
@@ -661,6 +758,40 @@ clio::run::TaskResume Runtime::HandoffSweep(
     if (pushed != 0) {
       HLOG(kInfo, "replication: handed {} blob(s) back to container {}",
            pushed, owner);
+    }
+  }
+  {
+    // Copy holders that missed mirrors while down, now back: re-copy those
+    // blobs from this owner's primary.
+    std::vector<std::pair<clio::run::u32, std::vector<std::pair<TagId,
+                                                                std::string>>>>
+        todo;
+    {
+      std::lock_guard<std::mutex> g(remirror_mu_);
+      for (auto it = remirror_.begin(); it != remirror_.end();) {
+        if (!ContainerAlive(it->first)) {
+          ++it;
+          continue;
+        }
+        std::vector<std::pair<TagId, std::string>> blobs;
+        for (auto &kv : it->second) blobs.push_back(kv.second);
+        todo.emplace_back(it->first, std::move(blobs));
+        it = remirror_.erase(it);
+      }
+    }
+    for (auto &hb : todo) {
+      clio::run::u32 done = 0;
+      for (auto &b : hb.second) {
+        bool ok = false;
+        CLIO_CO_AWAIT(ReMirror(b.first, b.second, hb.first, ok));
+        if (ok) {
+          ++done;
+        } else {
+          NoteRemirror(hb.first, b.first, b.second);  // next sweep
+        }
+      }
+      HLOG(kInfo, "replication: re-copied {} of {} blob(s) to container {} "
+           "that missed them while down", done, hb.second.size(), hb.first);
     }
   }
   task->return_code_ = 0;

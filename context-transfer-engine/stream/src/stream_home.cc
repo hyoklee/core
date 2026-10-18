@@ -290,6 +290,7 @@ clio::run::TaskResume Runtime::Plan(clio::run::shared_ptr<PlanTask> &task) {
     plan.base_ = st.size_;
     plan.entries_ = std::move(entries);
     for (const auto &e : plan.entries_) st.size_ += e.size_;
+    TracePlan("plan", plan);
     if (!plan.entries_.empty()) {
       open_plans_[plan.id_] = plan;
       LogPlanLocked(plan);
@@ -317,6 +318,38 @@ clio::run::TaskResume Runtime::Plan(clio::run::shared_ptr<PlanTask> &task) {
   CLIO_TASK_BODY_END
 }
 
+void Runtime::TracePlan(const char *what, const StreamPlan &plan) const {
+  // CLIO_TRACE_STREAM=1: one line per merge plan -- where it lands and
+  // which (origin, counter) range of appends it carries -- to see which
+  // plan put a writer's records out of order (append_home_restart).
+  static const bool on = [] {
+    const char *e = std::getenv("CLIO_TRACE_STREAM");
+    return e != nullptr && e[0] == '1';
+  }();
+  if (!on || plan.entries_.empty()) return;
+  std::map<clio::run::u32, std::pair<clio::run::u64, clio::run::u64>> by;
+  clio::run::u64 bytes = 0;
+  for (const auto &e : plan.entries_) {
+    auto it = by.find(e.origin_);
+    if (it == by.end()) {
+      by[e.origin_] = {e.counter_, e.counter_};
+    } else {
+      it->second.first = std::min(it->second.first, e.counter_);
+      it->second.second = std::max(it->second.second, e.counter_);
+    }
+    bytes += e.size_;
+  }
+  std::string s;
+  for (const auto &kv : by) {
+    s += " o" + std::to_string(kv.first) + ":" +
+         std::to_string(kv.second.first) + "-" +
+         std::to_string(kv.second.second);
+  }
+  HLOG(kWarning, "[STREAM] {} id {} on node {} tag {}.{} base {} bytes {} "
+       "n {}{}", what, plan.id_, node_, plan.tag_.major_, plan.tag_.minor_,
+       plan.base_, bytes, plan.entries_.size(), s);
+}
+
 clio::run::TaskResume Runtime::ExecutePlan(StreamPlan plan,
                                            const std::string *payload,
                                            bool *ok) {
@@ -338,7 +371,22 @@ clio::run::TaskResume Runtime::ExecutePlan(StreamPlan plan,
     off += bytes;
     i = j;
   }
-  // Staged bytes are dropped only once every copy landed (in the
+  // The merged page writes may still be on the RAM tier: dropping the
+  // staged copies now left an acknowledged append in RAM only, and a
+  // SIGKILL of the home lost it (append_home_restart). Make the merged
+  // pages durable first; until then the staged blobs are what
+  // RecoverStaged replays.
+  if (*ok) {
+    auto s = cte_.AsyncSyncTag(plan.tag_);
+    CLIO_CO_AWAIT(s);
+    if (s->GetReturnCode() != 0) {
+      HLOG(kWarning, "stream: making merged appends of {}.{} durable failed "
+           "(rc {}); keeping their staged copies", plan.tag_.major_,
+           plan.tag_.minor_, s->GetReturnCode());
+      *ok = false;
+    }
+  }
+  // Staged bytes are dropped only once every copy landed durably (in the
   // background: merged names are remembered, so a staged blob that outlives
   // a crash is never merged twice); a failed plan keeps them for the retry.
   if (*ok) QueueStagedDelete(plan.entries_);

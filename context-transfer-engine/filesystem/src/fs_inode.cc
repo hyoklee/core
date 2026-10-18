@@ -106,6 +106,17 @@ clio::run::TaskResume Runtime::DiscardInodeRecord(
   }
   auto d = cte_.AsyncTagDelXattr(id, kInodeKey, 0, InodeRecQuery(packed));
   CLIO_CO_AWAIT(d);  // best effort: a leftover record names nothing
+  if (NumContainers() > 1) {
+    // And its mirror on the home's successor (StoreInodeRec).
+    const clio::run::u32 succ = (InodeHome(packed) + 1) % NumContainers();
+    if (succ != InodeOwner(packed)) {
+      auto dm = cte_.AsyncTagDelXattr(
+          id, kInodeKey, 0,
+          clio::run::PoolQuery::DirectId(
+              static_cast<clio::run::ContainerId>(succ)));
+      CLIO_CO_AWAIT(dm);
+    }
+  }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
 }
@@ -189,6 +200,25 @@ clio::run::TaskResume Runtime::StoreInodeRec(clio::run::u64 packed,
                                  InodeRecQuery(packed));
   CLIO_CO_AWAIT(p);
   rc = static_cast<int>(p->GetReturnCode());
+  if (rc == 0 && NumContainers() > 1) {
+    // Mirror the record on the home's first successor: that is the node
+    // failover hands the inode to while the home is down, and it can only
+    // serve (stat, truncate, fsync an open file) what it has a record of.
+    // Tag xattrs are not blobs, so the replication chimod never copies them.
+    // Skipped when the successor is where it was just stored (it is the
+    // stand-in now). Best effort: a missed mirror costs availability during
+    // the next outage, never correctness (EnsureInode takes the newer).
+    const clio::run::u32 n = NumContainers();
+    const clio::run::u32 succ = (InodeHome(packed) + 1) % n;
+    if (succ != InodeOwner(packed) &&
+        clio::cte::core::ContainerNodeAlive(pool_id_, succ)) {
+      auto m = cte_.AsyncTagSetXattr(
+          FsUnpack(packed), kInodeKey, rec, 0,
+          clio::run::PoolQuery::DirectId(
+              static_cast<clio::run::ContainerId>(succ)));
+      CLIO_CO_AWAIT(m);
+    }
+  }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
 }
@@ -458,6 +488,43 @@ int Runtime::ApplyInodePush(const FsReq &req) {
   return 0;
 }
 
+bool Runtime::RecordNewer(const std::string &a, const std::string &b) {
+  Inode ia, ib;
+  clio::run::u64 sa = 0, sb = 0;
+  clio::run::u32 wa = 0, wb = 0;
+  if (!DecodeInodeRecord(a, &ia, &sa, &wa, nullptr)) return false;
+  if (!DecodeInodeRecord(b, &ib, &sb, &wb, nullptr)) return true;
+  const clio::run::u64 ta = std::max(ia.ctime_, ia.mtime_);
+  const clio::run::u64 tb = std::max(ib.ctime_, ib.mtime_);
+  return ta > tb;
+}
+
+clio::run::TaskResume Runtime::FetchStandInRecord(clio::run::u64 packed,
+                                                  std::string *rec,
+                                                  clio::run::u32 *from) {
+  CLIO_TASK_BODY_BEGIN
+  rec->clear();
+  const clio::run::u32 n = NumContainers();
+  // The stand-in is the first live container after the home (the CTE's
+  // FailoverContainer rule). One failure at a time is the guarantee, so the
+  // first live successor is the one that served it.
+  for (clio::run::u32 i = 1; i < n; ++i) {
+    const clio::run::u32 c = (container_id_ + i) % n;
+    if (!clio::cte::core::ContainerNodeAlive(pool_id_, c)) continue;
+    auto g = cte_.AsyncTagGetXattr(
+        FsUnpack(packed), kInodeKey,
+        clio::run::PoolQuery::DirectId(static_cast<clio::run::ContainerId>(c)));
+    CLIO_CO_AWAIT(g);
+    if (g->GetReturnCode() == 0 && g->found_) {
+      *rec = g->value_.str();
+      *from = c;
+    }
+    break;
+  }
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
 clio::run::TaskResume Runtime::EnsureInode(clio::run::u64 packed, int *err) {
   CLIO_TASK_BODY_BEGIN
   if (err != nullptr) *err = 0;
@@ -478,7 +545,34 @@ clio::run::TaskResume Runtime::EnsureInode(clio::run::u64 packed, int *err) {
     if (err != nullptr) *err = EIO;
     CLIO_CO_RETURN;
   }
-  if (!g->found_) {
+  std::string rec = g->found_ ? g->value_.str() : std::string();
+  bool found = g->found_;
+  if (InodeHome(packed) == container_id_ && NumContainers() > 1) {
+    // While this node was down (or cut off) its successor served the inode
+    // and stored every record it wrote -- creates included -- in ITS core:
+    // tag xattrs are not blobs, so replication never hands them back. Left
+    // there, a file created during the outage vanishes once this home is
+    // back, and a change made there is undone. Take the stand-in's record
+    // when it is newer and keep it here.
+    std::string theirs;
+    clio::run::u32 from = 0;
+    CLIO_CO_AWAIT(FetchStandInRecord(packed, &theirs, &from));
+    if (!theirs.empty() && (!found || RecordNewer(theirs, rec))) {
+      int src = 0;
+      CLIO_CO_AWAIT(StoreInodeRec(packed, theirs, src));
+      if (src != 0) {
+        // Not kept here: serve nothing rather than the older record.
+        if (err != nullptr) *err = EIO;
+        CLIO_CO_RETURN;
+      }
+      HLOG(kWarning, "filesystem: inode {} took the record container {} "
+           "stored while it served this home", packed, from);
+      rec = theirs;
+      found = true;
+    }
+    // The successor's copy stays: it is the mirror the next outage needs.
+  }
+  if (!found) {
     if (packed == FsPack(FsRootId()) && InodeHome(packed) == container_id_) {
       // "/" exists by definition: its home creates its record on first use,
       // and with it the volume's flags.
@@ -495,7 +589,6 @@ clio::run::TaskResume Runtime::EnsureInode(clio::run::u64 packed, int *err) {
     }
     CLIO_CO_RETURN;
   }
-  const std::string rec = g->value_.str();
   auto fi = std::make_shared<InodeState>();
   clio::run::u64 size = 0;
   clio::run::u32 writer = kNoRecWriter;

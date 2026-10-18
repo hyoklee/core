@@ -311,10 +311,27 @@ clio::run::TaskResume Runtime::LoadBlock(clio::run::u64 dir, clio::run::u32 k,
   out.reset();
   auto wait_t0 = std::chrono::steady_clock::now();
   double next_report_s = kSlowBlockOpS;
+  if (NumContainers() > 1) {
+    const clio::run::u64 hd = CLIO_IPC->HeldDeadSeq();
+    clio::run::u64 seen = seen_held_dead_seq_.load(std::memory_order_acquire);
+    if (hd != seen &&
+        seen_held_dead_seq_.compare_exchange_strong(seen, hd)) {
+      DropHomeBlocksAfterFailover();
+    }
+  }
   for (int attempt = 0;; ++attempt) {
     const TableBlockKey key{dir, k};
     const clio::run::u32 home = BlockHome(dir, k);
     const bool mine = home == container_id_;
+    if (mine && NumContainers() > 1 &&
+        clio::cte::core::InMinority(pool_id_)) {
+      // Split brain, home side: this node sees most of the pool dead, so it
+      // is (probably) the one cut off, and the majority has a stand-in
+      // serving -- and changing -- this block. Answering from our copy
+      // reported a file created over there as ENOENT. Fail instead.
+      rc = EIO;
+      CLIO_CO_RETURN;
+    }
     bool busy = false;
     bool busy_commit = false;
     const char *busy_stage = "";
@@ -436,6 +453,39 @@ clio::run::TaskResume Runtime::LoadBlock(clio::run::u64 dir, clio::run::u32 k,
     CLIO_CO_RETURN;
   }
   CLIO_TASK_BODY_END
+}
+
+void Runtime::DropHomeBlocksAfterFailover() {
+  // Rejoin notice (decision stale_home_dir): a peer held this node dead,
+  // so a stand-in may have served and changed blocks homed here (a one-way
+  // partition never restarts this node, and a home trusts its copy with no
+  // lease: a file created over there stayed invisible here forever). Drop
+  // every CLEAN home block; the next use reloads it exactly as a restart
+  // does -- journal and the handed-back CTE copy, newest version wins --
+  // and resyncs its holders. Blocks with unwritten changes or work in
+  // flight are kept: dropping them would lose acknowledged changes.
+  size_t dropped = 0, kept = 0;
+  {
+    std::lock_guard<std::mutex> g(ns_mu_);
+    for (auto it = blocks_.begin(); it != blocks_.end();) {
+      const TableBlockSlot &s = *it->second;
+      if (!s.home_) {
+        ++it;
+        continue;
+      }
+      if (s.committing_ || s.splitting_ || s.persist_dirty_ ||
+          !s.unpushed_.empty()) {
+        ++kept;
+        ++it;
+        continue;
+      }
+      it = blocks_.erase(it);
+      ++dropped;
+    }
+  }
+  HLOG(kWarning, "filesystem: a peer held this node dead (rejoin notice); "
+       "dropped {} home directory block(s) to reload them, kept {} with "
+       "changes in flight", dropped, kept);
 }
 
 bool Runtime::FindCachedBlock(const TableBlockKey &key, clio::run::u32 home,
@@ -841,8 +891,24 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<TableBlockSlot> slot,
     const auto commit_t0 = std::chrono::steady_clock::now();
     if (!image.empty()) CLIO_CO_AWAIT(WriteBlockBlob(dir, k, image, wrc));
     if (wrc == 0 && !jrec.empty()) wrc = JournalAppend(jtype, jrec);
+    bool mirror_failed = false;
     if (wrc == 0 && !mirror.empty()) {
-      CLIO_CO_AWAIT(PutBlockCte(dir, k, mirror, wrc));
+      int mrc = 0;
+      CLIO_CO_AWAIT(PutBlockCte(dir, k, mirror, mrc));
+      if (mrc == ENOSPC) {
+        // The change is durable in this node's journal; only the replicated
+        // mirror a stand-in would read is behind. Failing the operation for
+        // that made unlink/rmdir on a full store fail ENOSPC -- the one way
+        // to free space. Succeed, and rewrite the mirror at the next commit
+        // (persist_dirty_). The cost: a stand-in serving this block before
+        // that sees it without this change.
+        mirror_failed = true;
+        HLOG(kWarning, "filesystem: inode-table block {}/{} change is "
+             "journaled but its replicated mirror could not be written "
+             "(store full); retried at the next commit", dir, k);
+      } else {
+        wrc = mrc;
+      }
     }
     std::vector<clio::run::u32> gone;
     if (!deltas.empty() && !holders.empty()) {
@@ -880,6 +946,8 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<TableBlockSlot> slot,
       if (wrc != 0) {
         slot->persist_dirty_ = true;  // the next commit retries
         slot->journal_image_ = true;  // these deltas never reached it
+      } else if (mirror_failed) {
+        slot->persist_dirty_ = true;  // rewrite the mirror next time
       }
       slot->durable_version_ = v;
       slot->committing_ = false;

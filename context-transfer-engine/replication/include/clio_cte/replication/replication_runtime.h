@@ -372,6 +372,21 @@ class Runtime : public clio::cte::core::CoreInterposer {
   /** Owners a PushHandoff is running for (handoff_mu_): the sweep and an
    *  owner's pull must not push the same blobs at once. */
   std::unordered_set<clio::run::u32> pushing_;
+  /** Blobs whose remote copy on a holder container missed a mirror (the
+   *  holder was down or the put failed), by holder: BlobKey -> (tag, name).
+   *  The HandoffSweep re-copies them once the holder is alive. */
+  std::mutex remirror_mu_;
+  std::unordered_map<clio::run::u32,
+                     std::unordered_map<std::string,
+                                        std::pair<TagId, std::string>>>
+      remirror_;
+  /** Remember that `holder`'s copy of (tag, name) is stale. */
+  void NoteRemirror(clio::run::u32 holder, const TagId &tag,
+                    const std::string &name);
+  /** Re-copy (tag, name) from this owner's primary to `holder`.
+   *  @param ok true when copied (or the blob is gone) */
+  clio::run::TaskResume ReMirror(TagId tag, std::string name,
+                                 clio::run::u32 holder, bool &ok);
   /** False on a restarted container until its hand-back pull finished:
    *  until then client writes of the blobs it owns wait (#1154). */
   std::atomic<bool> handed_back_{true};

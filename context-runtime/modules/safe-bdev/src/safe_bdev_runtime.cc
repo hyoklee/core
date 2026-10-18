@@ -2976,7 +2976,10 @@ clio::run::TaskResume Runtime::ResumeRecoveries() {
   CLIO_TASK_BODY_BEGIN
   for (size_t i = 0; i < data_members_.size(); ++i) {
     if (!data_members_[i].recovering_) continue;
-    HLOG(kInfo,
+    // Warning, not info: a rebuild resumed after a crash is something an
+    // operator must see (and the fault suite, which logs at warning, checks
+    // for it).
+    HLOG(kWarning,
          "safe_bdev: resuming interrupted recovery of data member {} onto '{}'",
          i, data_members_[i].pool_name_);
     bool ok = false;
@@ -2990,8 +2993,8 @@ clio::run::TaskResume Runtime::ResumeRecoveries() {
       bool wr = false;
       CLIO_CO_AWAIT(WriteSuperblock(false, i, wr));
       PersistMemberManifest();
-      HLOG(kInfo, "safe_bdev: recovery of data member {} completed on restart",
-           i);
+      HLOG(kWarning,
+           "safe_bdev: recovery of data member {} completed on restart", i);
     } else {
       HLOG(kWarning,
            "safe_bdev: resume of data member {} did not complete "

@@ -1644,6 +1644,12 @@ clio::run::TaskResume Runtime::QueryTaskProgress(
   // Answer from run2run's recv_map_: kRunning (1) if this node still holds the
   // queried replica task, kGone (0) otherwise (never received / already
   // responded / dropped by a restart). Issue #628.
+  if (task->query_net_key_ == kDeadReprobeKey) {
+    // Rejoin notice: the prober holds this node dead, so it may have failed
+    // our homes over to a stand-in that changed them. Cached home state is
+    // suspect; the filesystem reloads it (see IpcManager::HeldDeadSeq).
+    CLIO_IPC->NoteHeldDeadByPeer();
+  }
   bool present = CLIO_IPC->GetRun2Run()->HasRecvTask(task->query_net_key_,
                                                      task->query_replica_id_);
   task->status_ = present ? 1u : 0u;
@@ -1746,7 +1752,7 @@ void Runtime::ReapProgressProbes(std::chrono::steady_clock::time_point now,
     }
     // A failed probe is inconclusive -- only a successful answer decides.
     if (pq.future->GetReturnCode() == 0) {
-      if (pq.net_key != kIdleProbeKey) {
+      if (pq.net_key != kIdleProbeKey && pq.net_key != kDeadReprobeKey) {
         bool gone = (pq.future->status_ == 0);
         run2run->HandleTaskProgressResult(
             static_cast<clio::run::u64>(pq.net_key), pq.replica_id, gone,
@@ -1763,7 +1769,14 @@ void Runtime::ReapProgressProbes(std::chrono::steady_clock::time_point now,
              "[TaskProgress] node {} answered a liveness probe -- REJOINED, "
              "marking alive",
              pq.target_node_id);
-        run2run->FlushStaleStateForNode(pq.target_node_id);
+        // No FlushStaleStateForNode here. A restart is caught when its new
+        // incarnation's first message arrives (RecvIn FailInFlightToNode),
+        // which drops the old incarnation's state then; what is still parked
+        // now was owed to the CURRENT incarnation while we held it dead (a
+        // node is no longer revived by its own messages, only by this
+        // round trip). Discarding it left a restarted node's mount waiting
+        // forever for answers; the retry queues deliver it now it is alive.
+        (void)run2run;
         ipc_manager->SetAlive(pq.target_node_id);
         last_dead_reprobe_.erase(pq.target_node_id);
       }
@@ -1806,6 +1819,12 @@ void Runtime::FireStuckProbes(clio::run::u32 interval_ms) {
     auto task = ipc_manager->NewTask<QueryTaskProgressTask>(
         clio::run::CreateTaskId(), clio::run::kAdminPoolId, q, sr.net_key,
         sr.replica_id);
+    // A stuck-replica probe is a liveness probe too: it must reach a node
+    // held dead. Without the flag it failed fast there, and while it was in
+    // flight it marked the node "busy", so FireIdleProbes never sent the
+    // flagged re-probe either -- a node held dead with replicas stuck on it
+    // (any partition) could never answer, so never rejoin (dead-node-rejoin).
+    task->SetFlags(TASK_LIVENESS_PROBE);
     auto fut = ipc_manager->Send(task);
     pending_progress_queries_.push_back(
         {std::move(fut), static_cast<size_t>(sr.net_key), sr.replica_id,
@@ -1850,13 +1869,13 @@ void Runtime::FireIdleProbes() {
     clio::run::PoolQuery q =
         clio::run::PoolQuery::Physical(static_cast<clio::run::u32>(node));
     q.SetNetTimeout(5.0f);
+    const size_t key = dead ? kDeadReprobeKey : kIdleProbeKey;
     auto task = ipc_manager->NewTask<QueryTaskProgressTask>(
-        clio::run::CreateTaskId(), clio::run::kAdminPoolId, q, kIdleProbeKey,
-        0u);
+        clio::run::CreateTaskId(), clio::run::kAdminPoolId, q, key, 0u);
     task->SetFlags(TASK_LIVENESS_PROBE);  // transmitted even to a dead node
     auto fut = ipc_manager->Send(task);
     pending_progress_queries_.push_back(
-        {std::move(fut), kIdleProbeKey, 0u, 0ull, node,
+        {std::move(fut), key, 0u, 0ull, node,
          std::chrono::steady_clock::now(), false});
   }
 }
@@ -1973,7 +1992,7 @@ clio::run::TaskResume Runtime::HeartbeatProbe(clio::run::shared_ptr<HeartbeatPro
           clio::run::NodeState::kDead) {
         HLOG(kInfo, "SWIM: node {} answered a probe — REJOINED, marking alive",
              it->target_node_id);
-        CLIO_IPC->GetRun2Run()->FlushStaleStateForNode(it->target_node_id);
+        // Parked work is owed to the current incarnation (see ReapProgressProbes).
         ipc_manager->SetAlive(it->target_node_id);
       } else {
         ipc_manager->SetNodeState(it->target_node_id,
@@ -2008,7 +2027,7 @@ clio::run::TaskResume Runtime::HeartbeatProbe(clio::run::shared_ptr<HeartbeatPro
                "SWIM: node {} answered an indirect probe — REJOINED, marking "
                "alive",
                it->target_node_id);
-          CLIO_IPC->GetRun2Run()->FlushStaleStateForNode(it->target_node_id);
+          // Parked work is owed to the current incarnation (see ReapProgressProbes).
           ipc_manager->SetAlive(it->target_node_id);
         } else {
           ipc_manager->SetNodeState(it->target_node_id,

@@ -1125,3 +1125,53 @@ def t_partition_during_writes(ctx):
   cl.agents.clear()
   _check_filesets(ctx, base, n, nfiles, logs, replies,
                   'after the split healed and a full crash restart')
+
+
+@test('safe_new_drive_plugged_in', 'safe', min_nodes=1,
+      redeploy_after=True, timeout=5400)
+def t_new_drive_plugged_in(ctx):
+  """Growing a running array by plugging in new drives (AddBdev), with
+  writers going: a new DATA drive must add capacity without disturbing
+  existing data. A new PARITY drive on an array already at its configured
+  max_failures must be REFUSED cleanly (AddBdev caps parity at
+  max_failures by design) with the array unharmed. Then max_failures
+  members die and every fsynced version must still read back intact --
+  before and after a crash restart, which must bring the plugged-in data
+  drive back as a member."""
+  n = len(ctx.hosts)
+  cl = ctx.cl
+  base = ctx.p('nd')
+  ctx.ok(0, 'mkdir', path=base)
+  th, replies, logs, nfiles = _writers(ctx, base, 150, 'newdrive')
+  time.sleep(20)
+  t0 = time.time()
+  res = parallel(lambda h: cl.add_disk(h, gen=1, as_parity=False), cl.hosts)
+  ctx.metrics['add_data_s'] = round(time.time() - t0, 1)
+  bad = {h: str(r)[-400:] for h, r in zip(cl.hosts, res)
+         if isinstance(r, Exception) or r[0] != 0}
+  ctx.check(not bad, f'plugging in a new data drive failed: {bad}')
+  time.sleep(10)
+  t0 = time.time()
+  res = parallel(lambda h: cl.add_disk(h, gen=2, as_parity=True), cl.hosts)
+  ctx.metrics['add_parity_s'] = round(time.time() - t0, 1)
+  accepted = [h for h, r in zip(cl.hosts, res)
+              if not isinstance(r, Exception) and r[0] == 0]
+  ctx.check(not accepted, f'a parity drive beyond max_failures was '
+                          f'accepted on {accepted}')
+  th.join(timeout=150 + 1000)
+  errs = _writer_errors(replies, n)
+  ctx.metrics['writer_errors'] = errs
+  ctx.check(not any(errs.values()),
+            f'writes failed while new drives were plugged in: {errs}')
+  _check_filesets(ctx, base, n, nfiles, logs, replies,
+                  'after new data and parity drives were plugged in')
+  for h in cl.hosts:  # the full tolerance, with the new data drive seated
+    for k in range(SAFE_PARITY):
+      cl.kill_disk(h, k)
+  _check_filesets(ctx, base, n, nfiles, logs, replies,
+                  f'after {SAFE_PARITY} original members died with a '
+                  f'plugged-in data drive in the array')
+  restart_cluster(ctx, crash=True)
+  ctx.cl.agents.clear()
+  _check_filesets(ctx, base, n, nfiles, logs, replies,
+                  'after a crash restart with the plugged-in drives seated')

@@ -43,6 +43,7 @@ extern "C" void clio_evlat_add(int which, unsigned long long cycles);
 #include <clio_runtime/config_manager.h>
 #include <clio_runtime/worker.h>
 #include <clio_runtime/singletons.h>
+#include <clio_runtime/admin/autogen/admin_methods.h>
 #include <clio_ctp/lightbeam/transport_factory_impl.h>
 #include <clio_runtime/ipc/ipc_cpu2cpu_zmq.h>
 #include <clio_runtime/ipc/ipc_cpu2cpu.h>
@@ -60,6 +61,21 @@ extern "C" void clio_evlat_add(int which, unsigned long long cycles);
 #include <unordered_map>
 
 namespace clio::run {
+
+/** CLIO_TRACE_PROBES=1: log every liveness-probe hop at warning (send,
+ *  receive, answer, answer received) to follow one probe across nodes. */
+static bool TraceProbes() {
+  static const bool on = [] {
+    const char *e = std::getenv("CLIO_TRACE_PROBES");
+    return e != nullptr && e[0] == '1';
+  }();
+  return on;
+}
+
+static bool IsProbeTask(const clio::run::Task &t) {
+  return t.pool_id_ == clio::run::kAdminPoolId &&
+         t.method_ == clio::run::admin::Method::kQueryTaskProgress;
+}
 
 bool Run2RunTestPartitioned(u32 node_id) {
   static const char *path = std::getenv("CLIO_TEST_PARTITION_FILE");
@@ -208,6 +224,12 @@ void IpcManagerRun2Run::SendInTransmitReplica(
 
   ctp::lbm::LbmContext ctx(ctp::lbm::LBM_SYNC);
   int rc = lbm_transport->Send(archive, ctx);
+  if (TraceProbes() && IsProbeTask(*task_copy)) {
+    HLOG(kWarning, "[PROBE] send net_key {} -> node {} ({}:{}) alive={} rc={}",
+         task_copy->task_id_.net_key_, target_node_id,
+         target_host->ip_address, port, ipc_manager->IsAlive(target_node_id),
+         rc);
+  }
   if (nettrace::On()) {
     const uint64_t nt2 = nettrace::NowNs();
     nettrace::sendin_ser_ns += nt1 - nt0;
@@ -507,7 +529,21 @@ void IpcManagerRun2Run::SendOut(clio::run::shared_ptr<clio::run::Task> origin_ta
   // DelTask below — no manual capture/FreeBuffer needed.
   clio::run::u64 target_node_id = origin_task->pool_query_.GetReturnNode();
 
-  if (!ipc_manager->IsAlive(target_node_id)) {
+  // The answer to a liveness probe goes out even to a node we hold dead:
+  // the prober marks us alive only when it gets this answer (a round trip,
+  // decision dead-node-rejoin), and we in turn rejoin it only when OUR
+  // probe is answered. Parking it deadlocked two nodes that each held the
+  // other dead -- neither could ever rejoin once a partition healed.
+  const bool probe_answer =
+      origin_task->pool_id_ == clio::run::kAdminPoolId &&
+      origin_task->method_ ==
+          clio::run::admin::Method::kQueryTaskProgress;
+  if (TraceProbes() && probe_answer) {
+    HLOG(kWarning, "[PROBE] answer net_key {} -> node {} alive={}",
+         origin_task->task_id_.net_key_, target_node_id,
+         ipc_manager->IsAlive(target_node_id));
+  }
+  if (!ipc_manager->IsAlive(target_node_id) && !probe_answer) {
     HLOG(kWarning,
          "[SendOut] Task {} return node {} is dead, queuing for retry",
          origin_task->task_id_, target_node_id);
@@ -569,12 +605,19 @@ bool IpcManagerRun2Run::RecvInHandleOne(
     clio::run::u64 sender = archive.sender_node_;
     auto *im = CLIO_IPC;
     if (im != nullptr) im->NoteHeardFrom(sender);
+    // A message from a node held dead is NOT enough to revive it: it proves
+    // the node can reach us, not that we can reach it. Under a one-way
+    // partition (its peers cannot send to it) reviving on receipt made
+    // membership flap on every message, and the cut-off node kept answering
+    // as the home of directory blocks a stand-in was changing (split brain,
+    // partitioned_cache_not_stale). It rejoins when a liveness probe to it
+    // is answered -- a round trip -- through the dead-node re-probe
+    // (admin ReapProgressProbes, REJOINED).
     if (im != nullptr && sender != im->GetNodeId() && !im->IsAlive(sender)) {
-      HLOG(kWarning,
-           "[RecvIn] node {} was marked dead but just sent us a task — "
-           "reviving it (receipt is proof of life)",
+      HLOG(kDebug,
+           "[RecvIn] node {} is held dead but sent us a task; it rejoins "
+           "when a probe to it is answered",
            sender);
-      im->SetAlive(sender);
     }
   }
   auto container =
@@ -591,6 +634,10 @@ bool IpcManagerRun2Run::RecvInHandleOne(
     HLOG(kError, "Admin: Failed to load task");
     return false;
   }
+  if (TraceProbes() && IsProbeTask(*task_ptr)) {
+    HLOG(kWarning, "[PROBE] recv net_key {} from node {}",
+         task_ptr->task_id_.net_key_, task_ptr->pool_query_.GetReturnNode());
+  }
 
   clio::run::u64 sender_node = task_ptr->pool_query_.GetReturnNode();
   // Bytes from a peer are proof it is alive (issue #856). SWIM's probes ride
@@ -601,13 +648,9 @@ bool IpcManagerRun2Run::RecvInHandleOne(
   if (sender_node != ipc_manager->GetNodeId()) {
     ipc_manager->NoteInbound(sender_node);
   }
-  if (sender_node != ipc_manager->GetNodeId() &&
-      ipc_manager->GetNodeState(sender_node) == clio::run::NodeState::kDead) {
-    HLOG(kInfo, "[RecvIn] Received task from dead node {}, marking alive",
-         sender_node);
-    FlushStaleStateForNode(sender_node);
-    ipc_manager->SetAlive(sender_node);
-  }
+  // A task from a node held dead does not revive it either (see the stamp
+  // check above): one-way reachability is not membership. The probe-based
+  // rejoin flushes its stale state when it marks it alive.
 
   clio::run::u32 set_flags = TASK_REMOTE;
   if (archive.daemon_allocated_bulk_count_ > 0) {
@@ -1083,6 +1126,7 @@ void IpcManagerRun2Run::RegisterOriginProgress(
   prog.replicas.resize(replica_targets.size());
   for (size_t i = 0; i < replica_targets.size(); ++i) {
     prog.replicas[i].target_node_id = replica_targets[i];
+    prog.replicas[i].sent_at = prog.enqueue_time;
     // A replica never dispatched to a node has nothing to wait on -> accounted,
     // so the scan skips it and it never blocks completion.
     prog.replicas[i].accounted = (replica_targets[i] == kInvalidNodeId);
@@ -1539,7 +1583,7 @@ void IpcManagerRun2Run::ProcessRetryQueues() {
         HLOG(kInfo,
              "[RetryQueue] Re-routing task from dead node {} to node {}",
              it->target_node_id, new_node);
-        it->target_node_id = new_node;
+        it->target_node_id = new_node;  // re-dispatch: its own timeout
         if (RetrySendToNode(*it, new_node)) {
           HLOG(kInfo,
                "[RetryQueue] SendIn re-routed retry succeeded for node {}",
@@ -1648,8 +1692,9 @@ void IpcManagerRun2Run::ScanSendMapTimeouts() {
         if (dit == dead_map.end()) {
           continue;  // target still alive: the probe path owns it
         }
+        const auto since = rp.sent_at > dit->second ? rp.sent_at : dit->second;
         float dead_elapsed =
-            std::chrono::duration<float>(now - dit->second).count();
+            std::chrono::duration<float>(now - since).count();
         if (dead_elapsed >= task_timeout) {
           to_fail.push_back({kv.first, rid, rp.target_node_id});
         }

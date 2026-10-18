@@ -293,29 +293,49 @@ def t_partitioned_cache(ctx):
     ctx.ok(i, 'stat', path=f'{d}/f0')
   for i in range(n - 1):
     ctx.cl.partition(ctx.hosts[i], [a])
-  time.sleep(2)
-  t0 = time.time()
-  ctx.ok(0, 'write_file', path=f'{d}/f1', size=100, seed=2, timeout=300)
-  ctx.ok(0, 'sh', cmd=f'chmod 600 {d}/f0', timeout=300)
-  ctx.metrics['change_during_partition_s'] = round(time.time() - t0, 1)
   stale = []
-  r = ctx.call(a, 'stat', path=f'{d}/f1', timeout=300)
-  if not r['ok'] and (r.get('err') or '').startswith('ENOENT'):
-    stale.append('f1 created during the partition: ENOENT')
-  r = ctx.call(a, 'stat', path=f'{d}/f0', timeout=300)
-  if r['ok'] and r['ret']['perm'] != 0o600:
-    stale.append(f'f0 mode {oct(r["ret"]["perm"])}, set to 0o600')
-  for i in range(n - 1):
-    ctx.cl.heal(ctx.hosts[i])
+  try:
+    # Changes whose metadata lives on the cut-off node fail EIO until the
+    # others declare it dead (~10 s); give failover that long, then retry.
+    time.sleep(15)
+    t0 = time.time()
+    for op, kw in (('write_file', dict(path=f'{d}/f1', size=100, seed=2)),
+                   ('sh', dict(cmd=f'chmod 600 {d}/f0'))):
+      r = ctx.call(0, op, timeout=300, **kw)
+      while not r.get('ok') and time.time() - t0 < 60:
+        time.sleep(5)
+        r = ctx.call(0, op, timeout=300, **kw)
+      ctx.check(r.get('ok') and (op != 'sh' or r['ret']['rc'] == 0),
+                f'{op} during the partition failed 75 s in: {r}')
+    ctx.metrics['change_during_partition_s'] = round(time.time() - t0, 1)
+    r = ctx.call(a, 'stat', path=f'{d}/f1', timeout=300)
+    if not r['ok'] and (r.get('err') or '').startswith('ENOENT'):
+      stale.append('f1 created during the partition: ENOENT')
+    r = ctx.call(a, 'stat', path=f'{d}/f0', timeout=300)
+    if r['ok'] and r['ret']['perm'] != 0o600:
+      stale.append(f'f0 mode {oct(r["ret"]["perm"])}, set to 0o600')
+  finally:
+    # Whatever happened above: a partition left in place outlives the test
+    # (and redeploys) and breaks everything after it (reliability2).
+    for i in range(n - 1):
+      ctx.cl.heal(ctx.hosts[i])
   ctx.check(not stale, f'the partitioned node served stale copies as '
                        f'current: {stale}')
   ok = False
+  last = {}
   for _ in range(60):
     st = ctx.call(a, 'stat', path=f'{d}/f1')
     st0 = ctx.call(a, 'stat', path=f'{d}/f0')
+    ls = ctx.call(a, 'listdir', path=d)
+    last = {'f1': st.get('err') or 'ok',
+            'f0_perm': oct(st0['ret']['perm']) if st0.get('ok')
+            else st0.get('err'),
+            'listing': sorted(ls.get('ret') or []) if ls.get('ok')
+            else ls.get('err')}
     if st['ok'] and st0['ok'] and st0['ret']['perm'] == 0o600:
       ok = True
       break
     time.sleep(2)
-  ctx.check(ok, 'after the partition healed the node still does not see '
-                'the changes made during it')
+  ctx.metrics['converged'] = ok
+  ctx.check(ok, f'after the partition healed the node still does not see '
+                f'the changes made during it: {last}')

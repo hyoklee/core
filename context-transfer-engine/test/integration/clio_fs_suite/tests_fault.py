@@ -604,12 +604,20 @@ def t_append_home_restart(ctx):
   res = {}
 
   def app(i):
+    # fsync every 100 records: a writer appends only ~600-700 records in the
+    # 30 s, so with fsync_every=500 its one fsync (seq 499) often landed in
+    # the outage and no later fsync existed to show recovery -- the check
+    # below then failed by construction (4 of 6 runs without any fix,
+    # ab_append). More fsyncs also bound more records as durable pre-kill.
     res[i] = ctx.a(i).call('append_records', timeout=600, path=p, writer=i,
-                           count=10 ** 7, max_secs=30, fsync_every=500)
+                           count=10 ** 7, max_secs=45, fsync_every=100)
   ts = [threading.Thread(target=app, args=(i,)) for i in writers]
   for t in ts:
     t.start()
-  time.sleep(4)
+  # Long enough for several fsyncs (every 100 records at ~20/s) to finish
+  # before the kill: with 4 s, durable_before_kill was 0 in every run and
+  # the test could not see an acknowledged append get lost.
+  time.sleep(15)
   vh = ctx.hosts[victim]
   t_kill = time.time()
   ctx.cl.kill_fuse(vh)

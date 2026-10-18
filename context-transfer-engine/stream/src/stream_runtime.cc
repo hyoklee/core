@@ -469,6 +469,7 @@ clio::run::TaskResume Runtime::FinishOpenPlans() {
             [](const StreamPlan &a, const StreamPlan &b) { return a.id_ < b.id_; });
   for (const auto &plan : plans) {
     bool ok = true;
+    TracePlan("replay-open-plan", plan);
     CLIO_CO_AWAIT(ExecutePlan(plan, nullptr, &ok));
     std::lock_guard<std::mutex> g(mu_);
     LogDoneLocked(plan.id_);

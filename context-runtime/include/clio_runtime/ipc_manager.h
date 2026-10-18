@@ -838,6 +838,18 @@ class IpcManager {
    * Cheap (one relaxed atomic store), called from the receive threads.
    */
   void NoteHeardFrom(u64 node_id);
+
+  /** A peer probed this node as one it holds DEAD (rejoin notice). */
+  void NoteHeldDeadByPeer() {
+    held_dead_seq_.fetch_add(1, std::memory_order_acq_rel);
+  }
+  /** Count of rejoin notices received; a change means a peer failed this
+   *  node over since the caller last looked, so state it homes may have
+   *  been changed by a stand-in. */
+  u64 HeldDeadSeq() const {
+    return held_dead_seq_.load(std::memory_order_acquire);
+  }
+  std::atomic<u64> held_dead_seq_{0};
   /**
    * Record the incarnation a message from node_id carried (#1148).
    * @param node_id the sending node
