@@ -323,6 +323,15 @@ static void MaybeAllowPtrace() {
 
 namespace {
 
+#if defined(__SANITIZE_ADDRESS__)
+#define CLIO_FATAL_REPORT_ENABLED 0  // ASan reports SEGV itself, better
+#elif defined(__linux__)
+#define CLIO_FATAL_REPORT_ENABLED 1
+#else
+#define CLIO_FATAL_REPORT_ENABLED 0  // siginfo_t/backtrace are POSIX/glibc
+#endif
+
+#if CLIO_FATAL_REPORT_ENABLED
 /**
  * Fatal-signal reporter: the runtime has died mid-run with nothing in its
  * log and no core (core dumps are often off on clusters), so a crash was
@@ -361,6 +370,9 @@ void InstallFatalSignalReport() {
     sigaction(sig, &sa, nullptr);
   }
 }
+#else
+void InstallFatalSignalReport() {}
+#endif
 
 }  // namespace
 
