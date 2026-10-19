@@ -1692,6 +1692,11 @@ clio::run::TaskResume Runtime::QueryTaskProgress(
  */
 void Runtime::NoteProbeFailure(clio::run::u64 node_id) {
   auto *ipc_manager = CLIO_IPC;
+  if (ipc_manager->NsSincePong(node_id) / 1e9 < ProbeSilenceSec()) {
+    // Answering pongs on the control channel: alive, just congested.
+    probe_failures_.erase(node_id);
+    return;
+  }
   const clio::run::u32 failures = ++probe_failures_[node_id];
   if (failures < kProbeFailuresToDeclareDead) {
     HLOG(kWarning,
@@ -1756,7 +1761,13 @@ void Runtime::ReapProgressProbes(std::chrono::steady_clock::time_point now,
         // window is proof of life, only total silence kills.
         const clio::run::u64 heard_ns =
             ipc_manager->NsSinceHeardFrom(pq.target_node_id);
-        if (heard_ns / 1e9 < ProbeSilenceSec()) {
+        // A pong on the control channel inside the window proves the node
+        // and the path both ways are alive; the probe is only stuck behind
+        // bulk data on the main socket (decision control_port).
+        const clio::run::u64 pong_ns =
+            ipc_manager->NsSincePong(pq.target_node_id);
+        if (heard_ns / 1e9 < ProbeSilenceSec() ||
+            pong_ns / 1e9 < ProbeSilenceSec()) {
           pq.fired_at = now;
         } else {
           pq.silence_reported = true;

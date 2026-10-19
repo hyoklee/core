@@ -558,10 +558,12 @@ Worker *WorkOrchestrator::SpawnAdditionalWorker() {
   size_t elastic_budget =
       cfg ? static_cast<size_t>(cfg->GetElasticLaneHeadroom()) : 8;
   if (all_workers_.size() >= baseline_worker_count_ + elastic_budget) {
+    // (Not necessarily CPU-bound: the stalled workers may be asleep in a
+    // syscall. The ceiling is the reserved-lane budget.)
     HLOG(kWarning,
-         "[#785] NOT spawning: {} workers >= baseline {} + {} cores. The pool "
-         "is CPU-bound; another thread would only take cycles from running "
-         "tasks. Backlog on the stalled worker stays queued.",
+         "[#785] NOT spawning: {} workers >= baseline {} + {} elastic lanes "
+         "(the reserved-lane ceiling). Backlog on the stalled worker is "
+         "redistributed to healthy workers each monitor tick.",
          all_workers_.size(), baseline_worker_count_, elastic_budget);
     return nullptr;
   }

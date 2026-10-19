@@ -32,6 +32,7 @@
  */
 
 #include <clio_runtime/safe_bdev/safe_bdev_runtime.h>
+#include <clio_runtime/bdev/blocking_offload.h>
 
 #include <clio_ctp/serialize/msgpack_wrapper.h>
 
@@ -3082,13 +3083,25 @@ clio::run::TaskResume Runtime::BuildParity(clio::run::shared_ptr<BuildParityTask
 clio::run::TaskResume Runtime::FlushAllocLog(
     clio::run::shared_ptr<FlushAllocLogTask> &task) {
   CLIO_TASK_BODY_BEGIN
-  alloc_log_.Flush();
-  const clio::run::u64 live = alloc_log_.live_block_count();
-  const clio::run::u64 on_disk = alloc_log_.records_on_disk();
-  const clio::run::u64 threshold =
-      std::max<clio::run::u64>(kMinCompactRecords, live * kCompactGrowthFactor);
-  if (on_disk > threshold) {
-    alloc_log_.Compact();
+  {
+    // The log fsync (and an occasional compaction rewrite) off the worker,
+    // and without holding the log lock across the fsync (SyncAppended, not
+    // Flush): Flush blocked every worker logging an allocation for the
+    // whole fsync. AllocatorLog is internally locked, so another thread may
+    // run this.
+    auto *log = &alloc_log_;
+    auto job = clio::run::bdev::BlockingOffload::Get().Submit([log] {
+      log->SyncAppended();
+      const clio::run::u64 live = log->live_block_count();
+      const clio::run::u64 on_disk = log->records_on_disk();
+      const clio::run::u64 threshold = std::max<clio::run::u64>(
+          kMinCompactRecords, live * kCompactGrowthFactor);
+      if (on_disk > threshold) log->Compact();
+      return 0;
+    }, "safe-bdev alloc-log sync");
+    while (!job->done.load(std::memory_order_acquire)) {
+      CLIO_CO_AWAIT(clio::run::yield(clio::run::bdev::kOffloadPollUs));
+    }
   }
   if (MemberManifestNeedsCompaction()) {
     CompactMemberManifest();

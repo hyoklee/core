@@ -973,27 +973,44 @@ def t_truncate_during_failover(ctx):
   ctx.check(done, 'truncate never succeeded while the home was down '
                   '(no failover within 90 s)')
   # Two timed steps, so a hang names its half: the append, then the fsync.
+  # Only the home merges appends (decision stream-standin-merge), so while
+  # it is down an O_APPEND may report EIO at close -- allowed -- but must
+  # return promptly (it used to block for 120 s), and the tail it wrote
+  # stays queued and lands once the home is back (checked below).
+  t_app = time.time()
   r = ctx.ok(a, 'sh', cmd=f'timeout 60 python3 -c "import os; '
                           f'fd=os.open({p!r}, os.O_WRONLY|os.O_APPEND); '
                           f'os.write(fd, b\'T\'*4096); os.close(fd)"')
-  ctx.check(r['rc'] == 0, f'append after the truncate failed or took over '
-                          f'60 s (rc {r["rc"]}): {r["err"][-300:]}')
+  ctx.metrics['append_during_outage_s'] = round(time.time() - t_app, 1)
+  ctx.metrics['append_during_outage_rc'] = r['rc']
+  ctx.check(r['rc'] != 124 and time.time() - t_app < 30,
+            f'append while the home is down hung (rc {r["rc"]}, '
+            f'{time.time() - t_app:.0f} s): {r["err"][-300:]}')
   r = ctx.ok(a, 'sh', cmd=f'timeout 60 python3 -c "import os; '
                           f'fd=os.open({p!r}, os.O_RDONLY); os.fsync(fd); '
                           f'os.close(fd)"')
-  ctx.check(r['rc'] == 0, f'fsync while the home is down failed or took '
-                          f'over 60 s (rc {r["rc"]}): {r["err"][-300:]}')
+  ctx.check(r['rc'] != 124, f'fsync while the home is down hung over 60 s '
+                            f'(rc {r["rc"]}): {r["err"][-300:]}')
   want = 1 * MiB + 4096
   for i in range(n):
     if i != victim:
       sz = ctx.ok(i, 'stat', path=p)['size']
-      ctx.check(sz == want, f'node{i} sees size {sz} during the outage, '
-                            f'want {want}')
+      # The truncate is visible at once; the queued tail may not be yet.
+      ctx.check(sz in (1 * MiB, want), f'node{i} sees size {sz} during '
+                                       f'the outage, want {1 * MiB} or {want}')
   ctx.cl.start_runtime(vh)
   ctx.check(ctx.cl.runtime_up(vh), f'{vh} runtime did not restart')
   time.sleep(3)
   ctx.check(ctx.cl.mount(vh), f'{vh} remount failed')
   ctx.cl.agents.pop(vh, None)
+  # The queued tail merges once the home is back (staged appends retry
+  # every 100 ms); give it a moment before the after-checks.
+  t_back = time.time()
+  while time.time() - t_back < 60:
+    if all(ctx.ok(i, 'stat', path=p)['size'] == want for i in range(n)):
+      break
+    time.sleep(2)
+  ctx.metrics['tail_landed_after_s'] = round(time.time() - t_back, 1)
   time.sleep(2)
   def tails():
     out = {}

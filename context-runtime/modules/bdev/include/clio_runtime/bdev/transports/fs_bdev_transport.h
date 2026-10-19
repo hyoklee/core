@@ -45,6 +45,12 @@ class FsBdevTransport : public BdevTransport {
   void Destroy() override;
 
   bool AllocateBlocks(size_t size, int worker_id, std::vector<Block>& blocks) override;
+  bool AllocateBlocksDeferred(size_t size, int worker_id,
+                              std::vector<Block>& blocks,
+                              clio::run::u64* need) override;
+  bool EnsureBacked(clio::run::u64 end) override { return EnsureFileBacked(end); }
+  void FinishAllocate(bool backed_ok, int worker_id,
+                      std::vector<Block>& blocks) override;
   void FreeBlocks(int worker_id, const std::vector<Block>& blocks) override;
 
   clio::run::TaskResume WriteBlocks(ctp::ipc::FullPtr<WriteTask> task) override;

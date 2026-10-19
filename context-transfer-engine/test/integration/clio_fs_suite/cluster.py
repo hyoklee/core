@@ -517,9 +517,16 @@ compose:
       time.sleep(0.5)
     # CLIO_SUITE_GDB=1 runs the daemon under gdb and dumps every thread's
     # stack into the runtime log if it crashes (silent SIGSEGV otherwise).
-    cmd = (f'{self.env_prefix()} nohup {self._gdb("runtime")}'
-           f'{self.bin_dir}/clio_run {args} '
-           f'--no-viz </dev/null >>{log} 2>&1 &')
+    # Record how the daemon ended: runtimes have died silently mid-test
+    # (no log line, no core: ulimit -c is 0 on Ares) and the cause was
+    # unknowable. rc 137 = SIGKILL (ours, or the OOM killer), 139 = SIGSEGV,
+    # 134 = abort.
+    # (nohup on the wrapper: SIGHUP stays ignored for clio_run, as before.)
+    inner = (f'{self.env_prefix()} {self._gdb("runtime")}'
+             f'{self.bin_dir}/clio_run {args} --no-viz </dev/null '
+             f'>>{log} 2>&1; echo "=== $(date) clio_run exited rc=$?" '
+             f'>>{log}')
+    cmd = f'nohup sh -c {shlex.quote(inner)} </dev/null >/dev/null 2>&1 &'
     sh(host, f'echo "=== {time.ctime()} clio_run {args}" >> {log}; {cmd}')
 
   def gdb_prefix(self):

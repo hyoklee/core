@@ -393,7 +393,13 @@ void FsBdevTransport::LogBlocks(const std::vector<Block>& blocks,
 
 void FsBdevTransport::FlushAllocLog() {
   if (!has_alloc_log_) return;
-  alloc_log_.Flush();
+  // SyncAppended, not Flush: Flush holds the log mutex across the fsync, and
+  // every worker logging an allocation or free (LogBlocks) waited on it for
+  // the whole fsync -- AllocateBlocks/FreeBlocks stalled their workers for
+  // up to ~10 s under tiering load. SyncAppended appends under the lock and
+  // fsyncs a duplicate descriptor without it; the same records are durable
+  // when it returns.
+  alloc_log_.SyncAppended();
   // Compact once history dominates: the log is then bounded by ~2x the
   // live-block count instead of growing with every allocate/free.
   constexpr clio::run::u64 kMinCompactRecords = 4096;
@@ -436,6 +442,39 @@ bool FsBdevTransport::AllocateBlocks(size_t size, int worker_id, std::vector<Blo
   // Logged BEFORE the caller can write into or reference the blocks.
   LogBlocks(blocks, /*is_free=*/false);
   return true;
+}
+
+bool FsBdevTransport::AllocateBlocksDeferred(size_t size, int worker_id,
+                                             std::vector<Block>& blocks,
+                                             clio::run::u64* need) {
+  *need = 0;
+  if (!allocator_.AllocateBlocks(size, worker_id, blocks)) {
+    return false;
+  }
+  clio::run::u64 end = 0;
+  for (const Block &b : blocks) {
+    clio::run::u64 e = b.offset_ + b.size_;
+    if (e > end) end = e;
+  }
+  if (end <= file_backed_bytes_.load(std::memory_order_acquire)) {
+    // Inside the backed prefix: complete now (the common case).
+    LogBlocks(blocks, /*is_free=*/false);
+    return true;
+  }
+  *need = end;  // the caller grows the file off the worker, then finishes
+  return true;
+}
+
+void FsBdevTransport::FinishAllocate(bool backed_ok, int worker_id,
+                                     std::vector<Block>& blocks) {
+  if (!backed_ok) {
+    // Same as AllocateBlocks: a disk that cannot provide the promised space
+    // fails the allocation cleanly instead of handing out blocks that EIO.
+    allocator_.FreeBlocks(worker_id, blocks);
+    blocks.clear();
+    return;
+  }
+  LogBlocks(blocks, /*is_free=*/false);
 }
 
 bool FsBdevTransport::GrowBackingFile(clio::run::u64 backed,
