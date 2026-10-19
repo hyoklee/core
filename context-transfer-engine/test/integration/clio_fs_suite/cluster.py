@@ -676,6 +676,12 @@ compose:
       need[self.hdd_root] = self.disk_gb * 1024
     elif self.profile != 'ram':
       need[lr] += self.disk_gb * 1024
+    if self.profile == 'safe':
+      # The drive tests create more member files next to the array: a
+      # replacement for a dead member and up to two plugged-in drives, each
+      # one member in size (the replacement failed ENOSPC on a node the
+      # preflight had passed).
+      need[lr] += 3 * self.disk_gb * 1024 // SAFE_MEMBERS
     return need
 
   def check_space(self):

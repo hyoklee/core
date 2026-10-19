@@ -909,7 +909,15 @@ int IpcManagerRun2Run::RecvOutDeserialize(
   for (const auto &task_info : task_infos) {
     size_t net_key = task_info.task_id_.net_key_;
     clio::run::shared_ptr<clio::run::Task> origin_task;
+    clio::run::shared_ptr<clio::run::Task> replica;
+    const clio::run::u32 replica_id = task_info.task_id_.replica_id_;
     {
+      // Take the replica while send_map_mutex_ is held. A concurrent
+      // completer (dead-node scan, probe verdict, FailInFlightToNode on a
+      // restart) claims the origin under this lock and then clears its
+      // subtasks; reading Subtasks() after unlocking raced that clear and
+      // wrote the response into a freed/null replica (SIGSEGV at 0x80 in
+      // LoadTask, baseline2 safe_rebuild_interrupted_then_crash).
       std::lock_guard<std::mutex> lk(send_map_mutex_);
       auto send_it = send_map_.find(net_key);
       if (send_it == nullptr) {
@@ -920,18 +928,19 @@ int IpcManagerRun2Run::RecvOutDeserialize(
         return 5;
       }
       origin_task = *send_it;
+      if (replica_id >= origin_task->Subtasks().size()) {
+        HLOG(kError, "Admin: Invalid replica_id {} (subtasks size: {})",
+             replica_id, origin_task->Subtasks().size());
+        return 7;
+      }
+      replica = origin_task->Subtasks()[replica_id];
     }
-
-
-    clio::run::u32 replica_id = task_info.task_id_.replica_id_;
-    if (replica_id >= origin_task->Subtasks().size()) {
-      HLOG(kError, "Admin: Invalid replica_id {} (subtasks size: {})",
-           replica_id, origin_task->Subtasks().size());
+    if (replica.IsNull()) {
+      // A replica that was never dispatched (skipped) has no slot to fill.
+      HLOG(kError, "[RecvOut] Task {}: replica {} has no subtask; dropping "
+           "the response", task_info.task_id_, replica_id);
       return 7;
     }
-
-    clio::run::shared_ptr<clio::run::Task> replica =
-        origin_task->Subtasks()[replica_id];
 
     auto container =
         pool_manager->GetStaticContainer(origin_task->pool_id_).get();
@@ -964,7 +973,11 @@ int IpcManagerRun2Run::RecvOutAggregate(
   for (const auto &task_info : task_infos) {
     size_t net_key = task_info.task_id_.net_key_;
     clio::run::shared_ptr<clio::run::Task> origin_task;
+    clio::run::shared_ptr<clio::run::Task> replica;
+    const clio::run::u32 replica_id = task_info.task_id_.replica_id_;
     {
+      // Under the lock, as in RecvOutDeserialize: a concurrent completer
+      // clears the subtasks right after claiming the origin.
       std::lock_guard<std::mutex> lk(send_map_mutex_);
       auto send_it = send_map_.find(net_key);
       if (send_it == nullptr) {
@@ -973,18 +986,16 @@ int IpcManagerRun2Run::RecvOutAggregate(
         continue;
       }
       origin_task = *send_it;
+      if (replica_id >= origin_task->Subtasks().size()) {
+        HLOG(kError, "Admin: Invalid replica_id {} (subtasks size: {})",
+             replica_id, origin_task->Subtasks().size());
+        continue;
+      }
+      replica = origin_task->Subtasks()[replica_id];
     }
-
-
-    clio::run::u32 replica_id = task_info.task_id_.replica_id_;
-    if (replica_id >= origin_task->Subtasks().size()) {
-      HLOG(kError, "Admin: Invalid replica_id {} (subtasks size: {})",
-           replica_id, origin_task->Subtasks().size());
+    if (replica.IsNull()) {
       continue;
     }
-
-    clio::run::shared_ptr<clio::run::Task> replica =
-        origin_task->Subtasks()[replica_id];
 
     // AggregateOut via the Container so the concrete task type's AggregateOut()
     // runs (which merges OUT fields like bdev's blocks_). Task::AggregateOut is
