@@ -85,6 +85,14 @@ class FsBdevTransport : public BdevTransport {
   static constexpr int kAllocLogSyncPeriodMs = 50;
   std::thread sync_thread_;
   std::mutex sync_mu_;
+  /// Sync group commit: tickets issued, the last ticket a finished
+  /// fdatasync covered, and the last ticket covered by a successful one.
+  std::mutex gc_mu_;
+  std::condition_variable gc_cv_;
+  clio::run::u64 gc_next_ = 0;
+  clio::run::u64 gc_done_ = 0;
+  clio::run::u64 gc_ok_through_ = 0;
+  bool gc_running_ = false;
   std::condition_variable sync_cv_;
   bool sync_stop_ = false;
 

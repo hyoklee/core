@@ -2657,6 +2657,10 @@ clio::run::TaskResume Runtime::RebuildMember(bool is_data, int idx, bool &ok,
   // meanwhile are covered too.
   {
     clio::run::u64 s = 0;
+    // Progress at warning every ~30 s: a rebuild that outlived its caller's
+    // 960 s wait could not be told apart from a stuck one.
+    auto t_start = std::chrono::steady_clock::now();
+    auto t_last = t_start;
     for (;;) {
       clio::run::u64 hw = 0;
       {
@@ -2664,6 +2668,17 @@ clio::run::TaskResume Runtime::RebuildMember(bool is_data, int idx, bool &ok,
         hw = array_high_water_;
       }
       recovery_ops_total_.store(hw, std::memory_order_relaxed);
+      {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - t_last > std::chrono::seconds(30)) {
+          t_last = now;
+          const double secs =
+              std::chrono::duration<double>(now - t_start).count();
+          HLOG(kWarning, "safe_bdev rebuild of {} member {}: slot {} of {} "
+               "({:.1f} slots/s after {:.0f} s)", is_data ? "data" : "parity",
+               idx, s, hw, secs > 0 ? s / secs : 0.0, secs);
+        }
+      }
       if (s >= hw) break;
       if (max_rows != 0 && s >= max_rows) {
         completed = false;  // interrupted: leave the member recovering

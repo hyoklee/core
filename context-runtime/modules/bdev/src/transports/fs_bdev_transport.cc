@@ -346,13 +346,36 @@ bool FsBdevTransport::Sync() {
   // between leaves synced bytes in blocks the log may not show yet (the
   // CTE's own WAL still does), never a logged block whose bytes are lost.
   if (!BackingFileIntact("sync")) return false;
+  // Group commit. Every CTE fsync syncs the whole multi-GB tier file, and
+  // under tiering load hundreds of them queued up, each a full fdatasync
+  // (4.9 s average, 26 s max on the DRAM-heavy mix). A caller's writes have
+  // completed before it calls Sync, so ANY fdatasync that starts after this
+  // call registered covers them: register a ticket, then either wait for a
+  // sync that started after the ticket or start one that covers everyone
+  // registered so far.
+  std::unique_lock<std::mutex> lk(gc_mu_);
+  const clio::run::u64 ticket = ++gc_next_;
+  for (;;) {
+    if (gc_done_ >= ticket) return gc_ok_through_ >= ticket;
+    if (!gc_running_) break;
+    gc_cv_.wait(lk);
+  }
+  gc_running_ = true;
+  const clio::run::u64 covers = gc_next_;  // everyone registered so far
+  lk.unlock();
   const int err = SyncFileData(file_path_);
+  if (err == 0) FlushAllocLog();
+  lk.lock();
+  gc_running_ = false;
+  gc_done_ = covers;
+  if (err == 0) gc_ok_through_ = covers;
+  gc_cv_.notify_all();
+  lk.unlock();
   if (err != 0) {
     HLOG(kError, "bdev Sync: flushing {} failed ({})", file_path_,
          strerror(err));
     return false;
   }
-  FlushAllocLog();
   return true;
 }
 
