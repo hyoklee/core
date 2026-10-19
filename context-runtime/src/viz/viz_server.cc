@@ -56,6 +56,13 @@
 #include <Poco/StreamCopier.h>
 #include <Poco/ThreadPool.h>
 #include <Poco/URI.h>
+// Poco/Net pulls <windows.h> on Windows, which defines an empty function-like
+// Yield() macro (winbase.h). Including Poco first (above) means that macro is
+// live for every runtime header below and mangles their Yield() methods
+// (std_thread.h, mutex.h, shm_transport.h: MSVC C2062/C2059).
+#ifdef Yield
+#undef Yield
+#endif
 #endif
 
 #include "clio_runtime/viz/viz_server.h"
