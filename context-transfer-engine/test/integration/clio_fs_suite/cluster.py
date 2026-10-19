@@ -687,11 +687,19 @@ compose:
     paths = ' '.join(need)
 
     def chk(h):
-      rc, out = sh(h, f'mkdir -p {paths}; df -Pm {paths} | tail -n +2',
-                   timeout=30)
+      # mkdir first and on its own: a device that is missing, read-only or
+      # not ours fails here, and its error line must not be parsed as df
+      # output (it crashed this check with a ValueError on ares-comp-16).
+      rc, out = sh(h, f'mkdir -p {paths}', timeout=30)
+      if rc != 0:
+        return f'cannot create tier directories: {out.strip()[-300:]}'
+      rc, out = sh(h, f'df -Pm {paths} | tail -n +2', timeout=30)
       if rc != 0:
         return f'df failed: {out[-200:]}'
-      lines = out.strip().splitlines()
+      lines = [ln for ln in out.strip().splitlines()
+               if ln.split() and ln.split()[0].startswith('/')]
+      if len(lines) != len(need):
+        return f'unexpected df output: {out.strip()[-300:]}'
       have = {}
       for p, ln in zip(need, lines):
         f = ln.split()
