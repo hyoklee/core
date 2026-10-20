@@ -178,10 +178,33 @@ struct InodeWork {
 };
 }  // namespace
 
+/** CLIO_TRACE_INODE=1: log every inode record stored and loaded (size,
+ *  writer, container), to find where an fsynced file's size is lost. */
+static bool TraceInode() {
+  static const bool on = [] {
+    const char *e = std::getenv("CLIO_TRACE_INODE");
+    return e != nullptr && e[0] == '1';
+  }();
+  return on;
+}
+
+static void TraceInodeRec(const char *what, clio::run::u64 packed,
+                          const std::string &rec, clio::run::u32 at) {
+  if (!TraceInode()) return;
+  Inode ino;
+  clio::run::u64 size = 0;
+  clio::run::u32 writer = 0;
+  const bool ok = DecodeInodeRecord(rec, &ino, &size, &writer, nullptr);
+  HLOG(kWarning, "[INODE] {} {} on container {}: size {} writer {} "
+       "mtime {} ctime {}{}", what, packed, at, size, writer, ino.mtime_,
+       ino.ctime_, ok ? "" : " (undecodable)");
+}
+
 clio::run::TaskResume Runtime::StoreInodeRec(clio::run::u64 packed,
                                              const std::string &rec,
                                              int &rc) {
   CLIO_TASK_BODY_BEGIN
+  TraceInodeRec("store", packed, rec, container_id_);
   {
     bool ready = false;
     CLIO_CO_AWAIT(AwaitCteReady(ready));
@@ -287,6 +310,13 @@ clio::run::TaskResume Runtime::FlushInodes(int *err, clio::run::u64 since) {
           work.push_back(std::move(w));
         }
         if (fit == inodes_.end()) {
+          if (TraceInode()) {
+            // Suspected loss path: a dirty inode no longer in memory has its
+            // unstored change discarded while the flush reports success.
+            HLOG(kWarning, "[INODE] DROP dirty {} on container {}: not in "
+                 "memory, its pending record is discarded", packed,
+                 container_id_);
+          }
           inode_dirty_seq_.erase(packed);
           inode_store_failed_ms_.erase(packed);
         }
@@ -589,6 +619,7 @@ clio::run::TaskResume Runtime::EnsureInode(clio::run::u64 packed, int *err) {
     }
     CLIO_CO_RETURN;
   }
+  TraceInodeRec("load", packed, rec, container_id_);
   auto fi = std::make_shared<InodeState>();
   clio::run::u64 size = 0;
   clio::run::u32 writer = kNoRecWriter;

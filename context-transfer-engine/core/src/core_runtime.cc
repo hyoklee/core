@@ -11180,7 +11180,23 @@ clio::run::TaskResume Runtime::GetResidency(
       CLIO_CO_RETURN;
     }
 
+    // Only the blob's OWNER may answer "absent". Routing sends a probe for a
+    // dead owner's blob to a stand-in, which may hold no BlobInfo for a page
+    // that exists (GetBlob carries kStandInRead for exactly this). Reporting
+    // exists_ = 0 from there licensed the client's zero-fill: fsynced pages
+    // read back as zeros on one node while every copy held the data
+    // (stress_hot_rewrite, during a false death of the owner). Answer
+    // "unknown" instead; the client then takes the full read path.
+    const clio::run::u32 ncont = clio::cte::core::PoolContainers(pool_id_);
+    const bool owner_here =
+        ncont <= 1 ||
+        clio::cte::core::BlobHash(tag_id, blob_name) % ncont == container_id_;
+
     std::shared_ptr<BlobInfo> info = CheckBlobExists(blob_name, tag_id);
+    if (info == nullptr && !owner_here) {
+      task->return_code_ = 2;  // inconclusive: not this node's to deny
+      CLIO_CO_RETURN;
+    }
     if (info == nullptr) {
       // Absence is the ANSWER here, not a failure, so rc stays 0. This is the
       // whole point of the op: a caller that cannot tell "no such bytes" from
@@ -11216,6 +11232,10 @@ clio::run::TaskResume Runtime::GetResidency(
     //
     // A deleted blob must read as ABSENT, which is the answer that actually
     // helps a caller: it is the verdict that licenses zeros.
+    if (info->GetTotalSize() == 0 && !owner_here) {
+      task->return_code_ = 2;  // an empty stand-in entry proves nothing
+      CLIO_CO_RETURN;
+    }
     if (info->GetTotalSize() == 0) {
       task->exists_ = 0;
       task->present_bytes_ = 0;

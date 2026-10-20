@@ -550,6 +550,16 @@ void Runtime::InstallLoadedBlock(const TableBlockKey &key,
   if (ev != early_.end()) early_.erase(ev);
 }
 
+/** CLIO_TRACE_DIRBLOCK=1: log every home directory-block load and commit
+ *  (version, row count), to find where acknowledged entries disappear. */
+static bool TraceDirBlock() {
+  static const bool on = [] {
+    const char *e = std::getenv("CLIO_TRACE_DIRBLOCK");
+    return e != nullptr && e[0] == '1';
+  }();
+  return on;
+}
+
 clio::run::TaskResume Runtime::LoadHomeBlock(clio::run::u64 dir,
                                              clio::run::u32 k,
                                              std::shared_ptr<TableBlockSlot> slot,
@@ -559,6 +569,11 @@ clio::run::TaskResume Runtime::LoadHomeBlock(clio::run::u64 dir,
   const TableBlockKey key{dir, k};
   SetLoadStage(key, "home load: reading the block blob (GetBlobSize/GetBlob)");
   CLIO_CO_AWAIT(ReadBlockBlob(dir, k, &slot->blk_, lrc));
+  if (TraceDirBlock()) {
+    HLOG(kWarning, "[DIRBLOCK] home load {}/{} on container {}: rc {} "
+         "version {} rows {}", dir, k, container_id_, lrc,
+         slot->blk_.version_, slot->blk_.rows_.size());
+  }
   // Loaded from the journal: its deltas build on the image there.
   slot->journal_image_ = lrc != 0;
   if (lrc == ENOENT && dir == FsPack(FsRootId()) && k == 0) {
@@ -866,6 +881,12 @@ clio::run::TaskResume Runtime::CommitBlock(std::shared_ptr<TableBlockSlot> slot,
         v = slot->blk_.version_;
         dir = slot->blk_.dir_;
         k = slot->blk_.index_;
+        if (TraceDirBlock()) {
+          HLOG(kWarning, "[DIRBLOCK] commit {}/{} on container {}: version "
+               "{} rows {} deltas {} home {}", dir, k, container_id_, v,
+               slot->blk_.rows_.size(), slot->unpushed_.size(),
+               slot->home_);
+        }
         deltas.swap(slot->unpushed_);
         TakePersistLocked(*slot, deltas, &image, &jtype, &jrec);
         // A journaled delta lives only in this node's journal: mirror the
