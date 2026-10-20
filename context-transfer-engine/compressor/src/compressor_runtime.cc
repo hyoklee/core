@@ -1680,6 +1680,12 @@ class DeviceArray {
  * The nine algorithms take identical parameters and differ only in the opts
  * struct, so this is a switch and nothing more. Keeping it in one place is
  * what makes the path codec-agnostic instead of LZ4-only.
+ *
+ * The wire ids are CompressionFactory's (kRegistry in compress_factory.h):
+ * 13 is nvcomp-zstd and 15 is nvcomp-deflate. These two cases used to be
+ * swapped, so every zstd page went to the Deflate decoder (status
+ * nvcompErrorNotSupported) and every deflate page to the Zstd decoder (kernel
+ * faults). test_compress.cc pins the registry side of these ids.
  */
 #define CLIO_NVC_CASE_TEMP(WID, ALGO)                                         \
   case WID:                                                                   \
@@ -1695,9 +1701,9 @@ bool NvcompBatchedTempSizeImpl(int wire, const void *const *cptr,
   switch (wire) {
     CLIO_NVC_CASE_TEMP(11, LZ4)
     CLIO_NVC_CASE_TEMP(12, Snappy)
-    CLIO_NVC_CASE_TEMP(13, Deflate)
+    CLIO_NVC_CASE_TEMP(13, Zstd)
     CLIO_NVC_CASE_TEMP(14, Gdeflate)
-    CLIO_NVC_CASE_TEMP(15, Zstd)
+    CLIO_NVC_CASE_TEMP(15, Deflate)
     CLIO_NVC_CASE_TEMP(16, ANS)
     default:
       return false;
@@ -1720,9 +1726,9 @@ bool NvcompBatchedDecompressImpl(int wire, const void *const *cptr,
   switch (wire) {
     CLIO_NVC_CASE_DEC(11, LZ4)
     CLIO_NVC_CASE_DEC(12, Snappy)
-    CLIO_NVC_CASE_DEC(13, Deflate)
+    CLIO_NVC_CASE_DEC(13, Zstd)
     CLIO_NVC_CASE_DEC(14, Gdeflate)
-    CLIO_NVC_CASE_DEC(15, Zstd)
+    CLIO_NVC_CASE_DEC(15, Deflate)
     CLIO_NVC_CASE_DEC(16, ANS)
     default:
       return false;
