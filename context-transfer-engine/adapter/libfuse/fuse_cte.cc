@@ -1533,7 +1533,21 @@ void RunCloserEntry(const PendingClose &pc) {
               static_cast<clio::run::u64>(pc.tag.minor_),
           pc.hiwater, pc.wtime);
       t.Wait();
-      HiwaterEraseIfCovered(pc.path, pc.hiwater);
+      // Only on success (see RunPublish): erasing on a FAILED push (e.g. the
+      // inode's home unreachable mid-partition) discarded the one record
+      // that a size update was still pending, with nothing left to retry it
+      // from -- the file was stuck reporting size 0 forever, even after the
+      // partition healed (safe_partition_during_writes: fsynced data lost).
+      // release()'s return is not delivered to close(2) either way, so this
+      // failure is otherwise silent; latch it for the next fsync/flush/stat.
+      if (t->GetReturnCode() == 0) {
+        HiwaterEraseIfCovered(pc.path, pc.hiwater);
+      } else {
+        HLOG(kError, "clio_cte_fuse: closer publishing the size of {} failed "
+             "(rc {}); keeping the hiwater overlay for the next push",
+             pc.path, t->GetReturnCode());
+        LatchPublishError(pc.path, -EIO);
+      }
     }
   } else if (pc.hiwater != 0) {
     // AWAITED: the hiwater entry may only be dropped once the chimod
@@ -1541,7 +1555,14 @@ void RunCloserEntry(const PendingClose &pc) {
     // the stale pre-close size.
     auto t = CLIO_CFS_CLIENT->AsyncClose(pc.fh, pc.hiwater);
     t.Wait();
-    HiwaterEraseIfCovered(pc.path, pc.hiwater);
+    if (t->GetReturnCode() == 0) {
+      HiwaterEraseIfCovered(pc.path, pc.hiwater);
+    } else {
+      HLOG(kError, "clio_cte_fuse: closer publishing the size of {} failed "
+           "(rc {}); keeping the hiwater overlay for the next push",
+           pc.path, t->GetReturnCode());
+      LatchPublishError(pc.path, -EIO);
+    }
   } else {
     CLIO_CFS_CLIENT->AsyncCloseDetached(pc.fh);
   }
@@ -3372,13 +3393,27 @@ int cte_fuse_release(const char *path, struct fuse_file_info *fi) {
                 static_cast<clio::run::u64>(handle->tag.minor_),
             hiwater, PushTimeFor(handle->path));
         tt.Wait();
-        HiwaterEraseIfCovered(handle->path, hiwater);
+        // Same fix as RunCloserEntry/RunPublish: erase only once the push is
+        // known durable, so a failed push (e.g. during a partition) still
+        // leaves the overlay to retry from instead of stranding the file at
+        // size 0 forever.
+        if (tt->GetReturnCode() == 0) {
+          HiwaterEraseIfCovered(handle->path, hiwater);
+        } else {
+          LatchPublishError(handle->path, -EIO);
+        }
       }
     } else {
       auto t = cfs->AsyncClose(handle->fh, hiwater);
       t.Wait();
-      if (hiwater != 0) HiwaterEraseIfCovered(handle->path, hiwater);
       rc = (t->GetReturnCode() == 0) ? 0 : -EIO;
+      if (hiwater != 0) {
+        if (rc == 0) {
+          HiwaterEraseIfCovered(handle->path, hiwater);
+        } else {
+          LatchPublishError(handle->path, -EIO);
+        }
+      }
     }
   }
   UnregisterOpenFile(handle);
