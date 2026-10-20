@@ -1742,11 +1742,71 @@ bool NvcompBatchedDecompressImpl(int wire, const void *const *cptr,
  *   HLIF @32: +0 magic(lo32)   +16 orig  +24 nchunks  +48 chunk_raw
  *             +56 dstart       +72 rel offsets[n]     +72+8n sizes[n]
  *   chunk c lives at blob + 32 + dstart + rel[c], for size[c] bytes.
+ *
+ * That is nvcomp <= 5. nvcomp 6 bumped the magic and moved the fields
+ * (measured on 6.0.0.12):
+ *
+ *   HLIF @32: +0 magic 0x52911327  +8 payload bytes  +16 orig  +24 nchunks
+ *             +32 chunk_raw  +40 dstart  +56 codec format-spec header
+ *             (4..16 B), then rel offsets[n] and sizes[n] from an 8-aligned
+ *             start; dstart may be padded past the tables (ANS: 144).
+ *
+ * Neither layout is public API. Without the v6 branch every nvcomp 6 blob
+ * failed the parse, LaunchDecompBatch rejected every batch (wire == 0), and
+ * every gpu_vector read of a compressed page failed.
  */
 using BlobChunks = Runtime::BlobChunksPub;
 
 constexpr unsigned int kCtecMagic = 0x43544543u;
 constexpr unsigned long long kHlifMagic = 1385239334ull;
+constexpr unsigned long long kHlifMagicV6 = 1385239335ull;
+
+/** nvcomp 6 layout (above). The table start depends on the codec's
+ *  format-spec header size, so take the first 8-aligned start whose offsets
+ *  and sizes tile the payload exactly; anything else is rejected. */
+bool ParseBlobChunksV6(const unsigned char *hdr, size_t hdr_len,
+                       size_t stored_size, BlobChunks *out) {
+  const unsigned char *hl = hdr + 32;
+  unsigned long long payload = 0, orig = 0, nchunks = 0, dstart = 0;
+  std::memcpy(&payload, hl + 8, 8);
+  std::memcpy(&orig, hl + 16, 8);
+  std::memcpy(&nchunks, hl + 24, 8);
+  std::memcpy(&out->chunk_raw, hl + 32, 8);
+  std::memcpy(&dstart, hl + 40, 8);
+  if (orig != out->orig || out->chunk_raw == 0) return false;
+  if (nchunks == 0 || nchunks > (1ull << 20)) return false;
+  if (dstart < 64 + 16 * nchunks || hdr_len < 32 + dstart) return false;
+  if (32 + dstart + payload > stored_size) return false;
+  auto table = [&](unsigned long long t, unsigned long long c,
+                   unsigned long long *rel, unsigned long long *cs) {
+    std::memcpy(rel, hl + t + 8 * c, 8);
+    std::memcpy(cs, hl + t + 8 * nchunks + 8 * c, 8);
+  };
+  for (unsigned long long t = 64; t + 16 * nchunks <= dstart; t += 8) {
+    unsigned long long end = 0;
+    bool ok = true;
+    for (unsigned long long c = 0; ok && c < nchunks; ++c) {
+      unsigned long long rel = 0, cs = 0;
+      table(t, c, &rel, &cs);
+      // Chunks are packed in order from 0, each padded to its codec's
+      // alignment (8 B; ANS 16 B).
+      ok = cs != 0 && rel >= end && rel - end < 64 && (c != 0 || rel == 0) &&
+           rel + cs <= payload;
+      end = rel + cs;
+    }
+    if (!ok || end != payload) continue;
+    out->rel.resize(nchunks);
+    out->csz.resize(nchunks);
+    for (unsigned long long c = 0; c < nchunks; ++c) {
+      unsigned long long rel = 0, cs = 0;
+      table(t, c, &rel, &cs);
+      out->rel[c] = 32 + dstart + rel;            // from the blob's start
+      out->csz[c] = cs;
+    }
+    return true;
+  }
+  return false;
+}
 
 /** Parse `hdr` (a host copy of the blob's first bytes). */
 bool ParseBlobChunks(const unsigned char *hdr, size_t hdr_len,
@@ -1760,6 +1820,9 @@ bool ParseBlobChunks(const unsigned char *hdr, size_t hdr_len,
   const unsigned char *hl = hdr + 32;
   unsigned long long v = 0;
   std::memcpy(&v, hl, 8);
+  if ((v & 0xffffffffull) == kHlifMagicV6) {
+    return ParseBlobChunksV6(hdr, hdr_len, stored_size, out);
+  }
   if ((v & 0xffffffffull) != kHlifMagic) return false;
   std::memcpy(&v, hl + 16, 8);
   if (v != out->orig) return false;
