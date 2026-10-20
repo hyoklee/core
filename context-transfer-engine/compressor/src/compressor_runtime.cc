@@ -3294,6 +3294,15 @@ clio::run::TaskResume Runtime::DecompressPodGetBlob(
                                                task->GetBlobName());
       CLIO_CO_AWAIT(sz);
       if (sz->GetReturnCode() != 0 || sz->size_ == 0) {
+        // A page nobody has written yet has no stored bytes to decode. With
+        // create_on_get_ (gpu_vector's write-allocate fetch) the core creates
+        // it and answers "empty, success"; failing here instead made every
+        // compressed vector trap on its first write.
+        if (task->context_.create_on_get_) {
+          CLIO_CO_AWAIT(ForwardToCore(clio::cte::core::Method::kPodGetBlob,
+                                      task.template Cast<clio::run::Task>()));
+          CLIO_CO_RETURN;
+        }
         task->return_code_ = sz->GetReturnCode() != 0 ? sz->GetReturnCode() : 1;
         CLIO_CO_RETURN;
       }
