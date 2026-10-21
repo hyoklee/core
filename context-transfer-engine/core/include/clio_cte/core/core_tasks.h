@@ -1612,12 +1612,27 @@ struct BlobInfo {
     // Only checkable while no writer holds the blob: GetBlob reads the cache
     // while a PutBlob may be mid-update (it polls this under IsWriteLocked),
     // and re-summing blocks_ under that writer both races it and sees blocks_
-    // ahead of the cache.
-    const bool writer = ctp::ipc::atomic_ref<clio::run::u64>(
-                            const_cast<clio::run::u64 &>(write_owner_))
-                            .load() != 0;
-    assert((writer || ComputeTotalSizeSlow() == total_size_cache_) &&
-           "BlobInfo::total_size_cache_ drifted from sum(blocks_)");
+    // ahead of the cache. A writer can also take the blob after that first
+    // look and move blocks_ during the sum, so compare only when the blob was
+    // unlocked, and its placement generation and content sequence unchanged,
+    // both before and after the sum (#1233). Every PutBlob moves
+    // content_seq_; the other blocks_ mutators bump placement_gen_.
+    auto load = [](const clio::run::u64 &word) {
+      return ctp::ipc::atomic_ref<clio::run::u64>(
+                 const_cast<clio::run::u64 &>(word))
+          .load();
+    };
+    const clio::run::u64 gen_before = load(placement_gen_);
+    const clio::run::u64 seq_before = load(content_seq_);
+    if (load(write_owner_) == 0) {
+      const clio::run::u64 sum = ComputeTotalSizeSlow();
+      const clio::run::u64 cached = load(total_size_cache_);
+      const bool quiet = load(write_owner_) == 0 &&
+                         load(placement_gen_) == gen_before &&
+                         load(content_seq_) == seq_before;
+      assert((!quiet || sum == cached) &&
+             "BlobInfo::total_size_cache_ drifted from sum(blocks_)");
+    }
 #endif
     return total_size_cache_;
   }
