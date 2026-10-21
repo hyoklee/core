@@ -1687,12 +1687,19 @@ class DeviceArray {
  * nvcompErrorNotSupported) and every deflate page to the Zstd decoder (kernel
  * faults). test_compress.cc pins the registry side of these ids.
  */
+/*
+ * Temp size uses the shape-only GetTempSize, not GetTempSizeSync. The Sync
+ * variant parses the actual frames, and for zstd its answer depends on the
+ * data, but callers cache the result keyed on (nch, max_unc) alone. A later
+ * zstd batch of the same shape then overran the scratch ("nvcomp ZSTD scratch
+ * buffer allocation exceeded") and faulted the context. The shape-only bound
+ * is exactly what that cache key can promise. cptr/csz/status are unused.
+ */
 #define CLIO_NVC_CASE_TEMP(WID, ALGO)                                         \
   case WID:                                                                   \
-    return nvcompBatched##ALGO##DecompressGetTempSizeSync(                    \
-               cptr, csz, nch, max_unc, temp_bytes, 0,                        \
-               nvcompBatched##ALGO##DecompressDefaultOpts, status, stream) == \
-           nvcompSuccess;
+    return nvcompBatched##ALGO##DecompressGetTempSize(                        \
+               nch, max_unc, nvcompBatched##ALGO##DecompressDefaultOpts,      \
+               temp_bytes, nch * max_unc, stream) == nvcompSuccess;
 
 bool NvcompBatchedTempSizeImpl(int wire, const void *const *cptr,
                                const size_t *csz, size_t nch, size_t max_unc,
