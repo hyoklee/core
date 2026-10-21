@@ -111,6 +111,14 @@ static constexpr double kDecompWaitPollUs = 20.0;
  * drainer cannot hang a worker forever, so it should be generous: 2 s.
  */
 static constexpr int kDecompWaitMaxSpins = 100000;
+/**
+ * Bound on waiting out a request the drainer already OWNS (see
+ * WithdrawDecomp). Its kernel is still using the request's source and
+ * destination, so the waiter cannot leave; the bound only stops a wedged GPU
+ * from hanging the worker forever. A slow zstd batch measured 360 ms here,
+ * and one in ~3 runs exceeded the 2 s above.
+ */
+static constexpr int kDecompOwnedWaitMaxSpins = 3000000;
 
 // Bring chi namespace items into scope for CLIO_CUR_WORKER macro
 using clio::run::chi_cur_worker_key_;
@@ -1474,6 +1482,14 @@ bool Runtime::InitCodecContext() {
     batch_thread_ = std::thread([this]() { BatchDrainLoop(); });
     HLOG(kInfo, "compressor: batched GPU decompress enabled (one launch per drain)");
   }
+  return true;
+}
+
+bool Runtime::WithdrawDecomp(const std::shared_ptr<PendingDecomp> &req) {
+  std::lock_guard<std::mutex> g(batch_mu_);
+  auto it = std::find(batch_.begin(), batch_.end(), req);
+  if (it == batch_.end()) return false;   // gathered: the drainer owns it
+  batch_.erase(it);
   return true;
 }
 
@@ -3436,6 +3452,14 @@ clio::run::TaskResume Runtime::DecompressPodGetBlob(
                   CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
                   ++spins;
                 }
+                if (!req->done.load(std::memory_order_acquire) &&
+                    !WithdrawDecomp(req)) {
+                  for (int owned = 0; !req->done.load(std::memory_order_acquire) &&
+                                      owned < kDecompOwnedWaitMaxSpins;
+                       ++owned) {
+                    CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
+                  }
+                }
                 if (req->done.load(std::memory_order_acquire) && req->ok) {
                   task->return_code_ = 0;
                   CLIO_CO_RETURN;
@@ -3474,6 +3498,14 @@ clio::run::TaskResume Runtime::DecompressPodGetBlob(
                      spins < kDecompWaitMaxSpins) {
                 CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
                 ++spins;
+              }
+              if (!req->done.load(std::memory_order_acquire) &&
+                  !WithdrawDecomp(req)) {
+                for (int owned = 0; !req->done.load(std::memory_order_acquire) &&
+                                    owned < kDecompOwnedWaitMaxSpins;
+                     ++owned) {
+                  CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
+                }
               }
               if (req->done.load(std::memory_order_acquire) && req->ok) {
                 // done means the batch's event fired: the GPU is finished
@@ -3554,6 +3586,14 @@ clio::run::TaskResume Runtime::DecompressPodGetBlob(
                spins < kDecompWaitMaxSpins) {
           CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
           ++spins;
+        }
+        if (!req->done.load(std::memory_order_acquire) &&
+            !WithdrawDecomp(req)) {
+          for (int owned = 0; !req->done.load(std::memory_order_acquire) &&
+                              owned < kDecompOwnedWaitMaxSpins;
+               ++owned) {
+            CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
+          }
         }
         if (!req->done.load(std::memory_order_acquire)) {
           req->abandoned.store(true, std::memory_order_release);
@@ -3831,6 +3871,17 @@ clio::run::TaskResume Runtime::DecompressPodMultiGetBlob(
         }
         if (all) break;
         CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
+      }
+      for (clio::run::u32 i = 0; i < n; ++i) {
+        if (!reqs[i]) continue;
+        if (!reqs[i]->done.load(std::memory_order_acquire) &&
+            !WithdrawDecomp(reqs[i])) {
+          for (int owned = 0; !reqs[i]->done.load(std::memory_order_acquire) &&
+                              owned < kDecompOwnedWaitMaxSpins;
+               ++owned) {
+            CLIO_CO_AWAIT(clio::run::yield(kDecompWaitPollUs));
+          }
+        }
       }
       if (getenv("CLIO_WAIT_TRACE")) {
         static std::atomic<long long> nw{0}, tot_us{0};
