@@ -32,6 +32,7 @@
  */
 
 #include <clio_runtime/safe_bdev/safe_bdev_runtime.h>
+#include <clio_runtime/bdev/blocking_offload.h>
 
 #include <clio_ctp/serialize/msgpack_wrapper.h>
 
@@ -2659,6 +2660,10 @@ clio::run::TaskResume Runtime::RebuildMember(bool is_data, int idx, bool &ok,
   // meanwhile are covered too.
   {
     clio::run::u64 s = 0;
+    // Progress at warning every ~30 s: a rebuild that outlived its caller's
+    // 960 s wait could not be told apart from a stuck one.
+    auto t_start = std::chrono::steady_clock::now();
+    auto t_last = t_start;
     for (;;) {
       clio::run::u64 hw = 0;
       {
@@ -2666,6 +2671,17 @@ clio::run::TaskResume Runtime::RebuildMember(bool is_data, int idx, bool &ok,
         hw = array_high_water_;
       }
       recovery_ops_total_.store(hw, std::memory_order_relaxed);
+      {
+        const auto now = std::chrono::steady_clock::now();
+        if (now - t_last > std::chrono::seconds(30)) {
+          t_last = now;
+          const double secs =
+              std::chrono::duration<double>(now - t_start).count();
+          HLOG(kWarning, "safe_bdev rebuild of {} member {}: slot {} of {} "
+               "({:.1f} slots/s after {:.0f} s)", is_data ? "data" : "parity",
+               idx, s, hw, secs > 0 ? s / secs : 0.0, secs);
+        }
+      }
       if (s >= hw) break;
       if (max_rows != 0 && s >= max_rows) {
         completed = false;  // interrupted: leave the member recovering
@@ -2979,7 +2995,10 @@ clio::run::TaskResume Runtime::ResumeRecoveries() {
   CLIO_TASK_BODY_BEGIN
   for (size_t i = 0; i < data_members_.size(); ++i) {
     if (!data_members_[i].recovering_) continue;
-    HLOG(kInfo,
+    // Warning, not info: a rebuild resumed after a crash is something an
+    // operator must see (and the fault suite, which logs at warning, checks
+    // for it).
+    HLOG(kWarning,
          "safe_bdev: resuming interrupted recovery of data member {} onto '{}'",
          i, data_members_[i].pool_name_);
     bool ok = false;
@@ -2993,8 +3012,8 @@ clio::run::TaskResume Runtime::ResumeRecoveries() {
       bool wr = false;
       CLIO_CO_AWAIT(WriteSuperblock(false, i, wr));
       PersistMemberManifest();
-      HLOG(kInfo, "safe_bdev: recovery of data member {} completed on restart",
-           i);
+      HLOG(kWarning,
+           "safe_bdev: recovery of data member {} completed on restart", i);
     } else {
       HLOG(kWarning,
            "safe_bdev: resume of data member {} did not complete "
@@ -3082,13 +3101,25 @@ clio::run::TaskResume Runtime::BuildParity(clio::run::shared_ptr<BuildParityTask
 clio::run::TaskResume Runtime::FlushAllocLog(
     clio::run::shared_ptr<FlushAllocLogTask> &task) {
   CLIO_TASK_BODY_BEGIN
-  alloc_log_.Flush();
-  const clio::run::u64 live = alloc_log_.live_block_count();
-  const clio::run::u64 on_disk = alloc_log_.records_on_disk();
-  const clio::run::u64 threshold =
-      std::max<clio::run::u64>(kMinCompactRecords, live * kCompactGrowthFactor);
-  if (on_disk > threshold) {
-    alloc_log_.Compact();
+  {
+    // The log fsync (and an occasional compaction rewrite) off the worker,
+    // and without holding the log lock across the fsync (SyncAppended, not
+    // Flush): Flush blocked every worker logging an allocation for the
+    // whole fsync. AllocatorLog is internally locked, so another thread may
+    // run this.
+    auto *log = &alloc_log_;
+    auto job = clio::run::bdev::BlockingOffload::Get().Submit([log] {
+      log->SyncAppended();
+      const clio::run::u64 live = log->live_block_count();
+      const clio::run::u64 on_disk = log->records_on_disk();
+      const clio::run::u64 threshold = std::max<clio::run::u64>(
+          kMinCompactRecords, live * kCompactGrowthFactor);
+      if (on_disk > threshold) log->Compact();
+      return 0;
+    }, "safe-bdev alloc-log sync");
+    while (!job->done.load(std::memory_order_acquire)) {
+      CLIO_CO_AWAIT(clio::run::yield(clio::run::bdev::kOffloadPollUs));
+    }
   }
   if (MemberManifestNeedsCompaction()) {
     CompactMemberManifest();

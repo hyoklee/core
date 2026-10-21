@@ -729,6 +729,7 @@ bool IpcManager::ServerInit() {
   }
 
   is_initialized_ = true;
+  StartControlChannel();
 
   return true;
 }
@@ -851,6 +852,7 @@ void IpcManager::ServerFinalize() {
   if (!is_initialized_) {
     return;
   }
+  StopControlChannel();
 
   // Mark shutdown so ZeroMqTransport leaks shared-context sockets instead of
   // zmq_close-ing them on Windows (avoids libzmq's signaler WSASTARTUP abort).
@@ -1971,6 +1973,121 @@ std::vector<u64> IpcManager::GetNodeIds() const {
   ids.reserve(hostfile_map_.size());
   for (const auto &kv : hostfile_map_) ids.push_back(kv.first);
   return ids;
+}
+
+bool Run2RunTestPartitioned(u32 node_id);  // ipc/ipc_run2run.cc
+
+u64 IpcManager::NsSincePong(u64 node_id) const {
+  if (node_id >= kHeardSlots) return ~0ull;
+  const u64 last = last_pong_ns_[node_id].load(std::memory_order_relaxed);
+  if (last == 0) return ~0ull;
+  const u64 now = static_cast<u64>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  return now > last ? now - last : 0;
+}
+
+void IpcManager::StartControlChannel() {
+  if (control_thread_.joinable()) return;
+  control_stop_.store(false);
+  control_thread_ = std::thread([this] { ControlChannelLoop(); });
+}
+
+void IpcManager::StopControlChannel() {
+  control_stop_.store(true);
+  if (control_thread_.joinable()) control_thread_.join();
+}
+
+void IpcManager::ControlChannelLoop() {
+  // Own context: its I/O thread never queues behind the main context's bulk
+  // traffic. Frames: ping = "P<node_id>", pong = "Q<node_id>".
+  void *ctx = zmq_ctx_new();
+  ConfigManager *config = CLIO_CONFIG_MANAGER;
+  const u32 base = config->GetPort();
+  void *router = zmq_socket(ctx, ZMQ_ROUTER);
+  int zero = 0, hwm = 64;
+  zmq_setsockopt(router, ZMQ_LINGER, &zero, sizeof(zero));
+  zmq_setsockopt(router, ZMQ_SNDHWM, &hwm, sizeof(hwm));
+  const std::string bind = "tcp://*:" + std::to_string(base + 2);
+  if (zmq_bind(router, bind.c_str()) != 0) {
+    HLOG(kWarning, "control channel: cannot bind {} ({}); liveness falls "
+         "back to the main sockets", bind, zmq_strerror(zmq_errno()));
+    zmq_close(router);
+    zmq_ctx_term(ctx);
+    return;
+  }
+  const u64 self = GetNodeId();
+  std::vector<std::pair<u64, void *>> dealers;
+  auto now_ns = [] {
+    return static_cast<u64>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+  };
+  u64 last_ping = 0;
+  while (!control_stop_.load(std::memory_order_relaxed)) {
+    if (dealers.empty()) {
+      // The hostfile may not be loaded yet when the thread starts.
+      std::vector<std::pair<u64, std::string>> peers;
+      for (u64 n : GetNodeIds()) {
+        if (n == self) continue;
+        const Host *h = GetHost(n);
+        if (h == nullptr) continue;
+        peers.emplace_back(n, "tcp://" + h->ip_address + ":" +
+                                  std::to_string(h->PortOr(base) + 2));
+      }
+      for (auto &p : peers) {
+        void *d = zmq_socket(ctx, ZMQ_DEALER);
+        zmq_setsockopt(d, ZMQ_LINGER, &zero, sizeof(zero));
+        zmq_setsockopt(d, ZMQ_SNDHWM, &hwm, sizeof(hwm));
+        zmq_connect(d, p.second.c_str());
+        dealers.emplace_back(p.first, d);
+      }
+    }
+    const u64 t = now_ns();
+    if (t - last_ping > 500000000ull) {  // ping every 0.5 s
+      last_ping = t;
+      const std::string ping = "P" + std::to_string(self);
+      for (auto &d : dealers) {
+        if (Run2RunTestPartitioned(static_cast<u32>(d.first))) continue;
+        zmq_send(d.second, ping.data(), ping.size(), ZMQ_DONTWAIT);
+      }
+    }
+    std::vector<zmq_pollitem_t> items(1 + dealers.size());
+    items[0] = {router, 0, ZMQ_POLLIN, 0};
+    for (size_t i = 0; i < dealers.size(); ++i) {
+      items[i + 1] = {dealers[i].second, 0, ZMQ_POLLIN, 0};
+    }
+    if (zmq_poll(items.data(), static_cast<int>(items.size()), 100) <= 0) {
+      continue;
+    }
+    if (items[0].revents & ZMQ_POLLIN) {
+      char id[256], buf[64];
+      while (true) {
+        int idn = zmq_recv(router, id, sizeof(id), ZMQ_DONTWAIT);
+        if (idn < 0) break;
+        int n = zmq_recv(router, buf, sizeof(buf) - 1, ZMQ_DONTWAIT);
+        if (n <= 1 || buf[0] != 'P') continue;
+        buf[n] = '\0';
+        const u64 from = std::strtoull(buf + 1, nullptr, 10);
+        if (Run2RunTestPartitioned(static_cast<u32>(from))) continue;
+        const std::string pong = "Q" + std::to_string(self);
+        zmq_send(router, id, idn, ZMQ_SNDMORE | ZMQ_DONTWAIT);
+        zmq_send(router, pong.data(), pong.size(), ZMQ_DONTWAIT);
+      }
+    }
+    for (size_t i = 0; i < dealers.size(); ++i) {
+      if (!(items[i + 1].revents & ZMQ_POLLIN)) continue;
+      char buf[64];
+      while (zmq_recv(dealers[i].second, buf, sizeof(buf), ZMQ_DONTWAIT) >
+             0) {
+        if (buf[0] == 'Q' && dealers[i].first < kHeardSlots) {
+          last_pong_ns_[dealers[i].first].store(now_ns(),
+                                                std::memory_order_relaxed);
+        }
+      }
+    }
+  }
+  for (auto &d : dealers) zmq_close(d.second);
+  zmq_close(router);
+  zmq_ctx_term(ctx);
 }
 
 u64 IpcManager::NsSinceHeardFrom(u64 node_id) const {

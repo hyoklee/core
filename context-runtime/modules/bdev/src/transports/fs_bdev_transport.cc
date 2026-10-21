@@ -347,13 +347,36 @@ bool FsBdevTransport::Sync() {
   // between leaves synced bytes in blocks the log may not show yet (the
   // CTE's own WAL still does), never a logged block whose bytes are lost.
   if (!BackingFileIntact("sync")) return false;
+  // Group commit. Every CTE fsync syncs the whole multi-GB tier file, and
+  // under tiering load hundreds of them queued up, each a full fdatasync
+  // (4.9 s average, 26 s max on the DRAM-heavy mix). A caller's writes have
+  // completed before it calls Sync, so ANY fdatasync that starts after this
+  // call registered covers them: register a ticket, then either wait for a
+  // sync that started after the ticket or start one that covers everyone
+  // registered so far.
+  std::unique_lock<std::mutex> lk(gc_mu_);
+  const clio::run::u64 ticket = ++gc_next_;
+  for (;;) {
+    if (gc_done_ >= ticket) return gc_ok_through_ >= ticket;
+    if (!gc_running_) break;
+    gc_cv_.wait(lk);
+  }
+  gc_running_ = true;
+  const clio::run::u64 covers = gc_next_;  // everyone registered so far
+  lk.unlock();
   const int err = SyncFileData(file_path_);
+  if (err == 0) FlushAllocLog();
+  lk.lock();
+  gc_running_ = false;
+  gc_done_ = covers;
+  if (err == 0) gc_ok_through_ = covers;
+  gc_cv_.notify_all();
+  lk.unlock();
   if (err != 0) {
     HLOG(kError, "bdev Sync: flushing {} failed ({})", file_path_,
          strerror(err));
     return false;
   }
-  FlushAllocLog();
   return true;
 }
 
@@ -394,7 +417,13 @@ void FsBdevTransport::LogBlocks(const std::vector<Block>& blocks,
 
 void FsBdevTransport::FlushAllocLog() {
   if (!has_alloc_log_) return;
-  alloc_log_.Flush();
+  // SyncAppended, not Flush: Flush holds the log mutex across the fsync, and
+  // every worker logging an allocation or free (LogBlocks) waited on it for
+  // the whole fsync -- AllocateBlocks/FreeBlocks stalled their workers for
+  // up to ~10 s under tiering load. SyncAppended appends under the lock and
+  // fsyncs a duplicate descriptor without it; the same records are durable
+  // when it returns.
+  alloc_log_.SyncAppended();
   // Compact once history dominates: the log is then bounded by ~2x the
   // live-block count instead of growing with every allocate/free.
   constexpr clio::run::u64 kMinCompactRecords = 4096;
@@ -437,6 +466,39 @@ bool FsBdevTransport::AllocateBlocks(size_t size, int worker_id, std::vector<Blo
   // Logged BEFORE the caller can write into or reference the blocks.
   LogBlocks(blocks, /*is_free=*/false);
   return true;
+}
+
+bool FsBdevTransport::AllocateBlocksDeferred(size_t size, int worker_id,
+                                             std::vector<Block>& blocks,
+                                             clio::run::u64* need) {
+  *need = 0;
+  if (!allocator_.AllocateBlocks(size, worker_id, blocks)) {
+    return false;
+  }
+  clio::run::u64 end = 0;
+  for (const Block &b : blocks) {
+    clio::run::u64 e = b.offset_ + b.size_;
+    if (e > end) end = e;
+  }
+  if (end <= file_backed_bytes_.load(std::memory_order_acquire)) {
+    // Inside the backed prefix: complete now (the common case).
+    LogBlocks(blocks, /*is_free=*/false);
+    return true;
+  }
+  *need = end;  // the caller grows the file off the worker, then finishes
+  return true;
+}
+
+void FsBdevTransport::FinishAllocate(bool backed_ok, int worker_id,
+                                     std::vector<Block>& blocks) {
+  if (!backed_ok) {
+    // Same as AllocateBlocks: a disk that cannot provide the promised space
+    // fails the allocation cleanly instead of handing out blocks that EIO.
+    allocator_.FreeBlocks(worker_id, blocks);
+    blocks.clear();
+    return;
+  }
+  LogBlocks(blocks, /*is_free=*/false);
 }
 
 bool FsBdevTransport::GrowBackingFile(clio::run::u64 backed,

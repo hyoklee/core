@@ -1727,6 +1727,7 @@ void Runtime::RefreshCacheCopyBytes() {
 clio::run::TaskResume Runtime::StatTargets(clio::run::shared_ptr<StatTargetsTask> &task) {
   CLIO_TASK_BODY_BEGIN
   RefreshCacheCopyBytes();
+  CLIO_CO_AWAIT(RetryPendingInvals());
   try {
     // Collect all target IDs under read lock (can't co_await inside lambda)
     std::vector<clio::run::PoolId> target_ids;
@@ -2494,6 +2495,8 @@ clio::run::TaskResume Runtime::PutBlobImpl(clio::run::shared_ptr<TaskT> &task) {
         // had already grown the blob left recycled, unzeroed blocks exposed
         // as the hole's content. 64 KiB chunks make the allocation reliably
         // small and bound what a mid-way failure can leave unzeroed.
+        // (Larger chunks are not possible here: ModifyExistingData fails a
+        // 1 MiB zero write with rc 22, which broke every sparse write.)
         auto *ipc_mgr = CLIO_IPC;
         clio::run::u64 zcur = old_blob_size;
         while (zcur < offset) {
@@ -10065,10 +10068,15 @@ clio::run::TaskResume Runtime::InvalidateCachedCopies(
         kDelCacheCopyOnly);
     CLIO_CO_AWAIT(inval);
     if (inval->GetReturnCode() != 0) {
-      // Best-effort: "not found" means the copy was already gone, and a dead
-      // node's cache dies with it.
+      // "Not found" means the copy was already gone. An unreachable node may
+      // be alive behind a partition with its cache intact: keep the
+      // invalidation and resend it when the node answers again.
       HLOG(kDebug, "cache invalidation of {} on node {} returned rc={}",
            blob_name, node, inval->GetReturnCode());
+      if (IsNodeLostRc(inval->GetReturnCode()) ||
+          !ContainerNodeAlive(pool_id_, static_cast<clio::run::u32>(node))) {
+        NotePendingInval(node, tag_id, blob_name);
+      }
     }
   }
   CLIO_CO_RETURN;
@@ -10135,6 +10143,62 @@ clio::run::TaskResume Runtime::RollbackFailedPut(BlobInfo &blob_info,
   CLIO_TASK_BODY_END
 }
 
+void Runtime::NotePendingInval(clio::run::u64 node, const TagId &tag_id,
+                               const std::string &blob_name) {
+  std::lock_guard<std::mutex> g(pending_inval_mu_);
+  pending_inval_[node][std::to_string(tag_id.major_) + "." +
+                       std::to_string(tag_id.minor_) + "." + blob_name] =
+      std::make_pair(tag_id, blob_name);
+}
+
+clio::run::TaskResume Runtime::RetryPendingInvals() {
+#ifdef CLIO_ENABLE_BOOST_COROUTINES
+  clio::run::shared_ptr<clio::run::Task> cur_task = clio::run::GetCurrentTask();
+#endif
+  CLIO_TASK_BODY_BEGIN
+  {
+    std::vector<std::pair<clio::run::u64,
+                          std::vector<std::pair<TagId, std::string>>>>
+        todo;
+    {
+      std::lock_guard<std::mutex> g(pending_inval_mu_);
+      for (auto it = pending_inval_.begin(); it != pending_inval_.end();) {
+        if (!ContainerNodeAlive(pool_id_,
+                                static_cast<clio::run::u32>(it->first))) {
+          ++it;
+          continue;
+        }
+        std::vector<std::pair<TagId, std::string>> blobs;
+        for (auto &kv : it->second) blobs.push_back(kv.second);
+        todo.emplace_back(it->first, std::move(blobs));
+        it = pending_inval_.erase(it);
+      }
+    }
+    for (auto &nb : todo) {
+      clio::run::u32 sent = 0;
+      for (auto &b : nb.second) {
+        auto inval = client_.AsyncDelBlob(
+            b.first, b.second,
+            clio::run::PoolQuery::Physical(
+                static_cast<clio::run::u32>(nb.first)),
+            kDelCacheCopyOnly);
+        CLIO_CO_AWAIT(inval);
+        if (inval->GetReturnCode() != 0 &&
+            IsNodeLostRc(inval->GetReturnCode())) {
+          NotePendingInval(nb.first, b.first, b.second);
+        } else {
+          ++sent;
+        }
+      }
+      HLOG(kInfo, "[COH] node {} is reachable again: delivered {} of {} "
+           "cache invalidation(s) it missed", nb.first, sent,
+           nb.second.size());
+    }
+  }
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
 clio::run::TaskResume Runtime::InvalidateEveryCachedCopy(
     const TagId &tag_id, const std::string &blob_name,
     clio::run::u64 keep_node) {
@@ -10147,11 +10211,19 @@ clio::run::TaskResume Runtime::InvalidateEveryCachedCopy(
   for (clio::run::u32 c = 0; c < n; ++c) {
     // Container ids are node ids. A dead node's cache died with it.
     if (c == self_node || c == keep_node) continue;
-    if (!ContainerNodeAlive(pool_id_, c)) continue;
+    if (!ContainerNodeAlive(pool_id_, c)) {
+      // Dead or cut off: if it is only cut off its cache survives.
+      NotePendingInval(c, tag_id, blob_name);
+      continue;
+    }
     auto inval = client_.AsyncDelBlob(tag_id, blob_name,
                                       clio::run::PoolQuery::Physical(c),
                                       kDelCacheCopyOnly);
     CLIO_CO_AWAIT(inval);
+    if (inval->GetReturnCode() != 0 &&
+        IsNodeLostRc(inval->GetReturnCode())) {
+      NotePendingInval(c, tag_id, blob_name);
+    }
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
@@ -11133,7 +11205,23 @@ clio::run::TaskResume Runtime::GetResidency(
       CLIO_CO_RETURN;
     }
 
+    // Only the blob's OWNER may answer "absent". Routing sends a probe for a
+    // dead owner's blob to a stand-in, which may hold no BlobInfo for a page
+    // that exists (GetBlob carries kStandInRead for exactly this). Reporting
+    // exists_ = 0 from there licensed the client's zero-fill: fsynced pages
+    // read back as zeros on one node while every copy held the data
+    // (stress_hot_rewrite, during a false death of the owner). Answer
+    // "unknown" instead; the client then takes the full read path.
+    const clio::run::u32 ncont = clio::cte::core::PoolContainers(pool_id_);
+    const bool owner_here =
+        ncont <= 1 ||
+        clio::cte::core::BlobHash(tag_id, blob_name) % ncont == container_id_;
+
     std::shared_ptr<BlobInfo> info = CheckBlobExists(blob_name, tag_id);
+    if (info == nullptr && !owner_here) {
+      task->return_code_ = 2;  // inconclusive: not this node's to deny
+      CLIO_CO_RETURN;
+    }
     if (info == nullptr) {
       // Absence is the ANSWER here, not a failure, so rc stays 0. This is the
       // whole point of the op: a caller that cannot tell "no such bytes" from
@@ -11169,6 +11257,10 @@ clio::run::TaskResume Runtime::GetResidency(
     //
     // A deleted blob must read as ABSENT, which is the answer that actually
     // helps a caller: it is the verdict that licenses zeros.
+    if (info->GetTotalSize() == 0 && !owner_here) {
+      task->return_code_ = 2;  // an empty stand-in entry proves nothing
+      CLIO_CO_RETURN;
+    }
     if (info->GetTotalSize() == 0) {
       task->exists_ = 0;
       task->present_bytes_ = 0;

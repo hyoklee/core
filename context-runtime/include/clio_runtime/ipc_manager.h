@@ -838,6 +838,18 @@ class IpcManager {
    * Cheap (one relaxed atomic store), called from the receive threads.
    */
   void NoteHeardFrom(u64 node_id);
+
+  /** A peer probed this node as one it holds DEAD (rejoin notice). */
+  void NoteHeldDeadByPeer() {
+    held_dead_seq_.fetch_add(1, std::memory_order_acq_rel);
+  }
+  /** Count of rejoin notices received; a change means a peer failed this
+   *  node over since the caller last looked, so state it homes may have
+   *  been changed by a stand-in. */
+  u64 HeldDeadSeq() const {
+    return held_dead_seq_.load(std::memory_order_acquire);
+  }
+  std::atomic<u64> held_dead_seq_{0};
   /**
    * Record the incarnation a message from node_id carried (#1148).
    * @param node_id the sending node
@@ -849,6 +861,19 @@ class IpcManager {
   bool NotePeerIncarnation(u64 node_id, u64 incarnation);
   /** Nanoseconds since the last message from node_id; ~0ull if never. */
   u64 NsSinceHeardFrom(u64 node_id) const;
+
+  /**
+   * Nanoseconds since this node last got a pong from node_id on the control
+   * channel (~0 if never). The control channel (base port + 2) is a
+   * separate ZMQ context, socket pair and thread that carries only tiny
+   * ping/pong frames, so bulk data queued on the main peer sockets cannot
+   * delay it (decision control_port: probes queued behind 1 MiB PutBlobs
+   * missed the silence window and healthy nodes were declared dead).
+   */
+  u64 NsSincePong(u64 node_id) const;
+  /** Start / stop the control channel thread (runtime only). */
+  void StartControlChannel();
+  void StopControlChannel();
   /** Every node id in the hostfile (fixed after init; safe from any thread). */
   std::vector<u64> GetNodeIds() const;
   /** Number of nodes marked dead so far; a collective can never complete
@@ -1947,6 +1972,12 @@ class IpcManager {
   static constexpr u64 kHeardSlots = 65536;
   std::unique_ptr<std::atomic<u64>[]> last_heard_ns_{
       new std::atomic<u64>[kHeardSlots]()};
+  /** Last pong steady-clock ns per node id (control channel). */
+  std::unique_ptr<std::atomic<u64>[]> last_pong_ns_{
+      new std::atomic<u64>[kHeardSlots]()};
+  std::thread control_thread_;
+  std::atomic<bool> control_stop_{false};
+  void ControlChannelLoop();
   /** Confirmed membership changes; see GetMembershipEpoch (issue #856). */
   std::atomic<u64> membership_epoch_{0};
   /** Time of the latest real peer liveness transition; see
