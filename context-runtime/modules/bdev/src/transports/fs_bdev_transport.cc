@@ -626,6 +626,33 @@ WorkerIOContext *FsBdevTransport::GetWorkerIOContext(size_t worker_id) {
   return ctx;
 }
 
+FsBdevTransport::AlignedBuf FsBdevTransport::TakeBounce(size_t size) {
+  {
+    std::lock_guard<std::mutex> lock(bounce_mu_);
+    for (size_t i = 0; i < bounce_pool_.size(); ++i) {
+      if (bounce_pool_[i].first == size) {
+        AlignedBuf buf = std::move(bounce_pool_[i].second);
+        bounce_pool_[i] = std::move(bounce_pool_.back());
+        bounce_pool_.pop_back();
+        return buf;
+      }
+    }
+  }
+  // The aligned operator new[] called directly (not a new-expression): MSVC
+  // reads `new (std::align_val_t(...)) char[n]` as PLACEMENT new and rejects
+  // it (C2956). AlignedFree releases it with the matching operator delete[].
+  return AlignedBuf(static_cast<char *>(
+      ::operator new[](size, std::align_val_t(kDirectAlign))));
+}
+
+void FsBdevTransport::GiveBounce(AlignedBuf buf, size_t size) {
+  if (size > kBounceKeepMax) return;
+  std::lock_guard<std::mutex> lock(bounce_mu_);
+  if (bounce_pool_.size() < kBouncePoolMax) {
+    bounce_pool_.emplace_back(size, std::move(buf));
+  }
+}
+
 clio::run::TaskResume FsBdevTransport::WriteBlocks(ctp::ipc::FullPtr<WriteTask> task) {
   CLIO_TASK_BODY_BEGIN
   clio::run::Worker *worker = CLIO_CUR_WORKER;
@@ -671,32 +698,64 @@ clio::run::TaskResume FsBdevTransport::WriteBlocks(ctp::ipc::FullPtr<WriteTask> 
       CLIO_CO_RETURN;
     }
 
-    ctp::IoToken token = io_ctx->async_io_->Write(
-        block_data, static_cast<size_t>(block_write_size),
-        static_cast<int64_t>(block.offset_));
-    if (token == ctp::kInvalidIoToken) {
-      task->return_code_ = 2;
-      task->bytes_written_ = total_bytes_written;
-      CLIO_CO_RETURN;
+    // Up to three writes per block: an unaligned head and tail through the
+    // page cache, and the 4 KiB-aligned body between them bounced to the
+    // O_DIRECT fd (see WantsBounce). A FUSE write from an unaligned user
+    // buffer arrives as ~1 MiB + a few bytes, so without the split no byte
+    // of it could go direct.
+    clio::run::u64 seg_done = 0;
+    while (seg_done < block_write_size) {
+      const clio::run::u64 fo = block.offset_ + seg_done;
+      const clio::run::u64 left = block_write_size - seg_done;
+      const clio::run::u64 head =
+          std::min<clio::run::u64>(left, (kDirectAlign - fo % kDirectAlign) %
+                                             kDirectAlign);
+      const clio::run::u64 body =
+          ((left - head) / kDirectAlign) * kDirectAlign;
+      clio::run::u64 seg = left;
+      if (body >= kBounceMin) {
+        seg = head != 0 ? head : body;
+      }
+      char *seg_src = static_cast<char *>(block_data) + seg_done;
+      void *seg_data = seg_src;
+      AlignedBuf bounce;
+      if (WantsBounce(seg_src, static_cast<size_t>(seg), fo)) {
+        bounce = TakeBounce(static_cast<size_t>(seg));
+        std::memcpy(bounce.get(), seg_src, static_cast<size_t>(seg));
+        seg_data = bounce.get();
+      }
+
+      ctp::IoToken token = io_ctx->async_io_->Write(
+          seg_data, static_cast<size_t>(seg), static_cast<int64_t>(fo));
+      if (token == ctp::kInvalidIoToken) {
+        task->return_code_ = 2;
+        task->bytes_written_ = total_bytes_written + seg_done;
+        CLIO_CO_RETURN;
+      }
+
+      ctp::IoResult result;
+      while (!io_ctx->async_io_->IsComplete(token, result)) {
+        CLIO_CO_AWAIT(clio::run::yield(10.0));
+      }
+      if (bounce) {
+        GiveBounce(std::move(bounce), static_cast<size_t>(seg));
+      }
+
+      if (result.error_code != 0) {
+        task->return_code_ = 4;
+        task->io_error_ =
+            static_cast<clio::run::u32>(ctp::ClassifyErrno(result.error_code));
+        task->bytes_written_ = total_bytes_written + seg_done;
+        CLIO_CO_RETURN;
+      }
+      const clio::run::u64 got = std::min(
+          static_cast<clio::run::u64>(result.bytes_transferred), seg);
+      seg_done += got;
+      if (got < seg) break;  // short write: account for what landed
     }
 
-    ctp::IoResult result;
-    while (!io_ctx->async_io_->IsComplete(token, result)) {
-      CLIO_CO_AWAIT(clio::run::yield(10.0));
-    }
-
-    if (result.error_code != 0) {
-      task->return_code_ = 4;
-      task->io_error_ =
-          static_cast<clio::run::u32>(ctp::ClassifyErrno(result.error_code));
-      task->bytes_written_ = total_bytes_written;
-      CLIO_CO_RETURN;
-    }
-
-    clio::run::u64 actual_bytes = std::min(
-        static_cast<clio::run::u64>(result.bytes_transferred), block_write_size);
-    total_bytes_written += actual_bytes;
-    data_offset += actual_bytes;
+    total_bytes_written += seg_done;
+    data_offset += seg_done;
   }
 
   task->return_code_ = 0;
