@@ -46,13 +46,27 @@ class Iowarp(CMakePackage):
     variant('rocm', default=False, description='Enable ROCm support')
     variant('adios2', default=False, description='Build with ADIOS2 support')
     variant('fuse', default=False, description='Enable FUSE3 adapter (CTE)')
-    variant('s3', default=False,
+    variant('s3_cae', default=False,
             description='Enable Amazon S3 (s3://) import in CAE (aws-sdk-cpp)')
     variant('gcs', default=False,
             description='Enable Google Cloud Storage (gs://) import in CAE '
                         '(google-cloud-cpp storage)')
+    variant('s3_bdev', default=False,
+            description='Enable the S3 (kS3) bdev storage tier (Poco + SigV4). '
+                        'Distinct from +s3_cae, which is the CAE s3:// importer.')
     variant('boost_coro', default=False,
             description='Use Boost.Context stackful coroutine backend (issue #620)')
+
+    # Language virtuals. Spack 1.x assigns a package a compiler only if it
+    # declares these; without them iowarp gets no compiler wrapper and CMake
+    # falls back to /usr/bin/c++, which on SLES 15 is GCC 7.5 and cannot do
+    # the C++20 this project requires.
+    depends_on('c', type='build')
+    depends_on('cxx', type='build')
+
+    # C++20 with coroutines: GCC 10+ / Clang 10+.
+    conflicts('%gcc@:9', msg='iowarp requires C++20; use gcc@10: or newer')
+    conflicts('%clang@:9', msg='iowarp requires C++20; use clang@10: or newer')
 
     # Core dependencies (always required)
     depends_on('cmake@3.25:')
@@ -81,16 +95,39 @@ class Iowarp(CMakePackage):
     depends_on('libfuse@3:', when='+fuse')
     depends_on('boost+context', when='+boost_coro')
 
-    # CAE cloud import backends (opt-in). aws-sdk-cpp for the S3 assimilator
-    # (find_package(AWSSDK COMPONENTS s3)); the iowarp-overlay storage-only
-    # google-cloud-cpp for the GCS assimilator (find_package(google_cloud_cpp_storage)).
-    depends_on('aws-sdk-cpp', when='+s3')
+    # CAE cloud import backends (opt-in). The S3 assimilator now needs BOTH:
+    #   * Poco -- the in-process s3:// READ path signs SigV4 and streams over
+    #     Poco::Net (shared s3_rest.h from the bdev), because loading the AWS SDK
+    #     into the CLIO_INIT'ing runtime corrupts startup; and
+    #   * aws-sdk-cpp -- still built for the standalone cae_s3_tool helper, used
+    #     by the benchmark raw-PUT/raw-GET floors and test seeding, never linked
+    #     into the runtime (find_package(AWSSDK COMPONENTS s3)).
+    # google-cloud-cpp (iowarp-overlay, storage-only) is for the GCS assimilator.
+    depends_on('aws-sdk-cpp', when='+s3_cae')
+    depends_on('poco', when='+s3_cae')
     depends_on('google-cloud-cpp', when='+gcs')
 
-    conflicts('+s3', when='~cae', msg='S3 import lives under CAE; enable +cae')
+    # The S3 bdev tier is a Poco::Net HTTPS client that signs with SigV4; it
+    # deliberately does NOT link aws-sdk-cpp, because loading aws-cpp-sdk-core
+    # into a process that calls CLIO_INIT corrupts runtime startup, and a
+    # per-block bdev cannot fork a helper the way the CAE assimilator does. So
+    # +s3_bdev and +s3_cae are genuinely different dependency sets, not aliases.
+    #
+    # No Spack builtin repo ships `poco`, so this tree vendors one under
+    # installers/spack/packages/poco. On a system that already provides Poco
+    # (e.g. libpoco-dev), declare it a Spack external instead of building it.
+    depends_on('poco', when='+s3_bdev')
+
+    conflicts('+s3_cae', when='~cae', msg='S3 import lives under CAE; enable +cae')
     conflicts('+gcs', when='~cae', msg='GCS import lives under CAE; enable +cae')
 
     conflicts('+fuse', when='~cte', msg='fuse adapter lives under CTE; enable +cte')
+
+    # The POSIX/STDIO/MPI-IO adapters intercept calls through the ELF toolkit;
+    # without it CMake silently skips them (#1194).
+    for _adapter in ('posix', 'stdio', 'mpiio'):
+        conflicts('+' + _adapter, when='~elf',
+                  msg='the {0} adapter needs +elf'.format(_adapter))
 
     # Networking libraries
     # +ares: build libfabric with the full Ares-rail fabric set. The
@@ -147,114 +184,56 @@ class Iowarp(CMakePackage):
         args.append(self.define_from_variant(
             'CLIO_CORE_ENABLE_BOOST_COROUTINES', 'boost_coro'))
 
-        # Context-transport-primitives (CTP) options
-        if '+hdf5' in self.spec:
-            args.append(self.define('CTP_ENABLE_VFD', 'ON'))
-        if '+compress' in self.spec:
-            args.append(self.define('CTP_ENABLE_COMPRESS', 'ON'))
-        if '+encrypt' in self.spec:
-            args.append(self.define('CTP_ENABLE_ENCRYPT', 'ON'))
-        if '+mochi' in self.spec:
-            args.append(self.define('CLIO_CORE_ENABLE_THALLIUM', 'ON'))
-        if '+zmq' in self.spec:
-            args.append(self.define('CTP_ENABLE_ZMQ_TESTS', 'ON'))
-        if '+elf' in self.spec:
-            args.append(self.define('CTP_ENABLE_ELF', 'ON'))
-        if '+cuda' in self.spec:
-            args.append(self.define('CTP_ENABLE_CUDA', 'ON'))
-        if '+rocm' in self.spec:
-            args.append(self.define('CTP_ENABLE_ROCM', 'ON'))
+        # Feature options. Every name here is an option() in the root
+        # CMakeLists.txt; the CTP_*/CTE_*/CAE_* spellings this used to pass
+        # are derived there, not read, so those variants built nothing (#1194).
+        # define_from_variant also passes OFF, which matters for the adapters
+        # whose CMake default is ON (POSIX).
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_ELF', 'elf'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_ZMQ', 'zmq'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_THALLIUM', 'mochi'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_MPI', 'mpiio'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_HDF5', 'hdf5'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_ENCRYPT', 'encrypt'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_PYTHON', 'python'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_CUDA', 'cuda'))
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_ROCM', 'rocm'))
         if '+adios2' in self.spec:
             args.append(self.define('CLIO_CTE_ENABLE_ADIOS2_ADAPTER', 'ON'))
             args.append(self.define('CLIO_CORE_ENABLE_GRAY_SCOTT', 'ON'))
 
-        # Tests and benchmarks
-        if '+test' in self.spec:
-            args.append(self.define('CLIO_CORE_ENABLE_TESTS', 'ON'))
-            args.append(self.define('CTP_ENABLE_TESTS', 'ON'))
-            args.append(self.define('CLIO_ENABLE_TESTS', 'ON'))
-            args.append(self.define('CLIO_CTE_ENABLE_TESTS', 'ON'))
-            args.append(self.define('CLIO_CAE_ENABLE_TESTS', 'ON'))
-            args.append(self.define('CLIO_CEE_ENABLE_TESTS', 'ON'))
-        else:
-            args.append(self.define('CLIO_CORE_ENABLE_TESTS', 'OFF'))
-            args.append(self.define('CTP_ENABLE_TESTS', 'OFF'))
-            args.append(self.define('CLIO_ENABLE_TESTS', 'OFF'))
-            args.append(self.define('CLIO_CTE_ENABLE_TESTS', 'OFF'))
-            args.append(self.define('CLIO_CAE_ENABLE_TESTS', 'OFF'))
-            args.append(self.define('CLIO_CEE_ENABLE_TESTS', 'OFF'))
+        # Tests and benchmarks: one switch each covers every component.
+        args.append(self.define_from_variant('CLIO_CORE_ENABLE_TESTS', 'test'))
+        args.append(self.define_from_variant(
+            'CLIO_CORE_ENABLE_BENCHMARKS', 'benchmark'))
 
-        if '+benchmark' in self.spec:
-            args.append(self.define('CLIO_CORE_ENABLE_BENCHMARKS', 'ON'))
-            args.append(self.define('CTP_ENABLE_BENCHMARKS', 'ON'))
-            args.append(self.define('CLIO_ENABLE_BENCHMARKS', 'ON'))
-            args.append(self.define('CLIO_CTE_ENABLE_BENCHMARKS', 'ON'))
-            args.append(self.define('CLIO_CAE_ENABLE_BENCHMARKS', 'ON'))
-            args.append(self.define('CLIO_CEE_ENABLE_BENCHMARKS', 'ON'))
-        else:
-            args.append(self.define('CLIO_CORE_ENABLE_BENCHMARKS', 'OFF'))
-            args.append(self.define('CTP_ENABLE_BENCHMARKS', 'OFF'))
-            args.append(self.define('CLIO_ENABLE_BENCHMARKS', 'OFF'))
-            args.append(self.define('CLIO_CTE_ENABLE_BENCHMARKS', 'OFF'))
-            args.append(self.define('CLIO_CAE_ENABLE_BENCHMARKS', 'OFF'))
-            args.append(self.define('CLIO_CEE_ENABLE_BENCHMARKS', 'OFF'))
+        # Context-transfer-engine (CTE) adapters. The I/O adapters also need
+        # +elf (enforced by the conflicts above).
+        cte = '+cte' in self.spec
+        for variant, option in (
+                ('posix', 'CLIO_CTE_ENABLE_POSIX_ADAPTER'),
+                ('stdio', 'CLIO_CTE_ENABLE_STDIO_ADAPTER'),
+                ('mpiio', 'CLIO_CTE_ENABLE_MPIIO_ADAPTER'),
+                ('hdf5', 'CLIO_CTE_ENABLE_VFD'),
+                ('compress', 'CLIO_CTE_ENABLE_COMPRESS'),
+                ('fuse', 'CLIO_CTE_ENABLE_FUSE_ADAPTER')):
+            on = cte and ('+' + variant) in self.spec
+            args.append(self.define(option, on))
+        # The VOL connector needs the HDF5 1.14 VOL API.
+        vol = cte and self.spec.satisfies('+hdf5 ^hdf5@1.14:')
+        args.append(self.define('CLIO_CTE_ENABLE_HDF5_VOL', vol))
 
-        # CLIO Runtime runtime options (if enabled)
-        if '+runtime' in self.spec:
-            if '+cuda' in self.spec:
-                args.append(self.define('CLIO_ENABLE_CUDA', 'ON'))
-            if '+rocm' in self.spec:
-                args.append(self.define('CLIO_ENABLE_ROCM', 'ON'))
-
-        # Context-transfer-engine (CTE) options (if enabled)
-        if '+cte' in self.spec:
-            if '+posix' in self.spec:
-                args.append(self.define('CTE_ENABLE_POSIX_ADAPTER', 'ON'))
-            if '+mpiio' in self.spec:
-                args.append(self.define('CTE_ENABLE_MPIIO_ADAPTER', 'ON'))
-                if 'openmpi' in self.spec:
-                    args.append(self.define('CTE_OPENMPI', 'ON'))
-                elif 'mpich' in self.spec:
-                    args.append(self.define('CTE_MPICH', 'ON'))
-            if '+stdio' in self.spec:
-                args.append(self.define('CTE_ENABLE_STDIO_ADAPTER', 'ON'))
-            if '+hdf5' in self.spec:
-                args.append(self.define('CTE_ENABLE_VFD', 'ON'))
-            if '+compress' in self.spec:
-                args.append(self.define('CTE_ENABLE_COMPRESS', 'ON'))
-            if '+encrypt' in self.spec:
-                args.append(self.define('CTE_ENABLE_ENCRYPT', 'ON'))
-            if '+python' in self.spec:
-                args.append(self.define('CTE_ENABLE_PYTHON', 'ON'))
-            if '+cuda' in self.spec:
-                args.append(self.define('CTE_ENABLE_CUDA', 'ON'))
-            if '+rocm' in self.spec:
-                args.append(self.define('CTE_ENABLE_ROCM', 'ON'))
-            if '+fuse' in self.spec:
-                args.append(self.define('CLIO_CTE_ENABLE_FUSE_ADAPTER', 'ON'))
-
-        # Context-assimilation-engine (CAE) options (if enabled)
+        # Context-assimilation-engine (CAE) object-store importers.
         if '+cae' in self.spec:
-            if '+posix' in self.spec:
-                args.append(self.define('CAE_ENABLE_POSIX_ADAPTER', 'ON'))
-            if '+mpiio' in self.spec:
-                args.append(self.define('CAE_ENABLE_MPIIO_ADAPTER', 'ON'))
-                if 'openmpi' in self.spec:
-                    args.append(self.define('CAE_OPENMPI', 'ON'))
-                elif 'mpich' in self.spec:
-                    args.append(self.define('CAE_MPICH', 'ON'))
-            if '+stdio' in self.spec:
-                args.append(self.define('CAE_ENABLE_STDIO_ADAPTER', 'ON'))
-            if '+hdf5' in self.spec:
-                args.append(self.define('CAE_ENABLE_VFD', 'ON'))
-            if '+cuda' in self.spec:
-                args.append(self.define('CAE_ENABLE_CUDA', 'ON'))
-            if '+rocm' in self.spec:
-                args.append(self.define('CAE_ENABLE_ROCM', 'ON'))
-            if '+s3' in self.spec:
+            if '+s3_cae' in self.spec:
                 args.append(self.define('CAE_ENABLE_S3', 'ON'))
             if '+gcs' in self.spec:
                 args.append(self.define('CAE_ENABLE_GCS', 'ON'))
+
+        # The S3 bdev tier lives in the runtime's bdev module, not under CAE,
+        # so it is gated outside the '+cae' block above.
+        if '+s3_bdev' in self.spec:
+            args.append(self.define('CLIO_ENABLE_AMAZON_DRIVE', 'ON'))
 
         return args
 

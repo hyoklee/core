@@ -24,6 +24,7 @@
 #include <vector>
 #include <mutex>
 #include <clio_cte/filesystem/filesystem_tasks.h>
+#include <clio_cte/filesystem/fs_shard.h>
 #include <clio_cte/filesystem/shm_fs_cache.h>
 
 namespace clio::cte::filesystem {
@@ -213,7 +214,35 @@ class Client : public clio::cte::core::Client {
 #endif  // CTP_IS_HOST
 
 #if CTP_IS_HOST
-  /** Create/initialize the filesystem container over a CTE core pool. */
+  /**
+   * Ask the local filesystem container which pool it stores its page blobs
+   * through (the top of its interposition chain, e.g. replication).
+   * @param out receives the pool id on success
+   * @return true when the home answered with a valid pool id
+   */
+  bool GetDataPoolId(clio::run::PoolId *out) {
+    auto *ipc = CLIO_CPU_IPC;
+    auto task = ipc->NewTask<MonitorTask>(clio::run::CreateTaskId(), pool_id_,
+                                          clio::run::PoolQuery::Local(),
+                                          std::string("next_pool"));
+    auto fut = ipc->Send(task);
+    fut.Wait();
+    if (fut->GetReturnCode() != 0 || fut->results_.empty()) {
+      return false;
+    }
+    const std::string v = fut->results_.begin()->second;
+    const size_t dot = v.find('.');
+    if (dot == std::string::npos) {
+      return false;
+    }
+    *out = clio::run::PoolId(
+        static_cast<clio::run::u32>(std::strtoul(v.c_str(), nullptr, 10)),
+        static_cast<clio::run::u32>(
+            std::strtoul(v.c_str() + dot + 1, nullptr, 10)));
+    return !out->IsNull();
+  }
+
+  /** Create/initialize the filesystem container over a CTE core pool. */  /** Create/initialize the filesystem container over a CTE core pool. */
   clio::run::Future<CreateTask> AsyncCreate(const clio::run::PoolQuery &pool_query,
                                       const std::string &pool_name,
                                       const clio::run::PoolId &custom_pool_id,
@@ -230,8 +259,19 @@ class Client : public clio::cte::core::Client {
                                   clio::run::u32 mode = 0644) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<OpenTask>(clio::run::CreateTaskId(), pool_id_,
-                                       clio::run::PoolQuery::Local(), path, flags,
+                                       FsPathQuery(), path, flags,
                                        mode);
+    return ipc->Send(task);
+  }
+
+  /**
+   * fsync the namespace log on every container (see SyncMetaTask).
+   * @return future; rc != 0 if any container failed to sync
+   */
+  clio::run::Future<SyncMetaTask> AsyncSyncMeta() {
+    auto *ipc = CLIO_CPU_IPC;
+    auto task = ipc->NewTask<SyncMetaTask>(clio::run::CreateTaskId(), pool_id_,
+                                           clio::run::PoolQuery::Broadcast());
     return ipc->Send(task);
   }
 
@@ -239,11 +279,42 @@ class Client : public clio::cte::core::Client {
   clio::run::Future<AdvanceSizeTask> AsyncAdvanceSize(
       clio::run::u64 tag_packed, clio::run::u64 size) {
     auto *ipc = CLIO_CPU_IPC;
+    // Local: the local container forwards to the inode's live home (the
+    // encoded one, or its successor while that node is down).
+    return AsyncAdvanceSizeAt(clio::run::PoolQuery::Local(), tag_packed, size,
+                              0u);
+  }
+
+  /**
+   * Size advance / append reservation sent to an explicit container (the
+   * runtime's forwarding step; clients use AsyncAdvanceSize /
+   * AsyncReserveAppend).
+   * @param query where to run it
+   * @param tag_packed the file's packed TagId
+   * @param size new size (raise) or length (reserve)
+   * @param reserve nonzero for an append reservation
+   */
+  clio::run::Future<AdvanceSizeTask> AsyncAdvanceSizeAt(
+      const clio::run::PoolQuery &query, clio::run::u64 tag_packed,
+      clio::run::u64 size, clio::run::u32 reserve) {
+    auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<AdvanceSizeTask>(clio::run::CreateTaskId(),
-                                              pool_id_,
-                                              clio::run::PoolQuery::Local(),
-                                              tag_packed, size);
+                                              pool_id_, query, tag_packed,
+                                              size, reserve);
     return ipc->Send(task);
+  }
+
+  /**
+   * Reserve `len` bytes at the end of a file, cluster-wide: the home grows
+   * the logical size atomically and reports the old end in old_size_ (the
+   * offset an O_APPEND write must use).
+   * @param tag_packed the file's packed TagId
+   * @param len        bytes being appended
+   */
+  clio::run::Future<AdvanceSizeTask> AsyncReserveAppend(
+      clio::run::u64 tag_packed, clio::run::u64 len) {
+    return AsyncAdvanceSizeAt(clio::run::PoolQuery::Local(), tag_packed, len,
+                              1u);
   }
 
   /** Batched sieve-flushed creation (see MultiCreateTask). */
@@ -261,7 +332,7 @@ class Client : public clio::cte::core::Client {
                                           clio::run::u64 advance_size = 0) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<CloseTask>(clio::run::CreateTaskId(), pool_id_,
-                                        clio::run::PoolQuery::Local(), handle,
+                                        FsHandleQuery(handle), handle,
                                         advance_size);
     return ipc->Send(task);
   }
@@ -276,7 +347,7 @@ class Client : public clio::cte::core::Client {
                           clio::run::u64 advance_size = 0) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<CloseTask>(clio::run::CreateTaskId(), pool_id_,
-                                        clio::run::PoolQuery::Local(), handle,
+                                        FsHandleQuery(handle), handle,
                                         advance_size);
     // Flag must be set before Send (same ordering rule as the PutBlob
     // staging flags).
@@ -288,7 +359,7 @@ class Client : public clio::cte::core::Client {
                                   clio::run::u64 size, ctp::ipc::ShmPtr<> data) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<ReadTask>(clio::run::CreateTaskId(), pool_id_,
-                                       clio::run::PoolQuery::Local(), handle, offset,
+                                       FsHandleQuery(handle), handle, offset,
                                        size, data);
     return ipc->Send(task);
   }
@@ -297,24 +368,15 @@ class Client : public clio::cte::core::Client {
                                     clio::run::u64 size, ctp::ipc::ShmPtr<> data) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<WriteTask>(clio::run::CreateTaskId(), pool_id_,
-                                        clio::run::PoolQuery::Local(), handle, offset,
+                                        FsHandleQuery(handle), handle, offset,
                                         size, data);
-    return ipc->Send(task);
-  }
-
-  clio::run::Future<AppendTask> AsyncAppend(clio::run::u64 handle, clio::run::u64 size,
-                                      ctp::ipc::ShmPtr<> data) {
-    auto *ipc = CLIO_CPU_IPC;
-    auto task = ipc->NewTask<AppendTask>(clio::run::CreateTaskId(), pool_id_,
-                                         clio::run::PoolQuery::Local(), handle, size,
-                                         data);
     return ipc->Send(task);
   }
 
   clio::run::Future<GetattrTask> AsyncGetattr(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<GetattrTask>(clio::run::CreateTaskId(), pool_id_,
-                                          clio::run::PoolQuery::Local(), path);
+                                          FsPathQuery(), path);
     return ipc->Send(task);
   }
 
@@ -324,7 +386,7 @@ class Client : public clio::cte::core::Client {
                                           clio::run::u64 old_extent = 0) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<TruncateTask>(clio::run::CreateTaskId(), pool_id_,
-                                           clio::run::PoolQuery::Local(), path,
+                                           FsPathQuery(), path,
                                            new_size, tag_packed, old_extent);
     return ipc->Send(task);
   }
@@ -332,7 +394,7 @@ class Client : public clio::cte::core::Client {
   clio::run::Future<UnlinkTask> AsyncUnlink(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<UnlinkTask>(clio::run::CreateTaskId(), pool_id_,
-                                         clio::run::PoolQuery::Local(), path);
+                                         FsPathQuery(), path);
     return ipc->Send(task);
   }
 
@@ -342,10 +404,17 @@ class Client : public clio::cte::core::Client {
                                               clio::run::u32 flags) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<UtimensTask>(clio::run::CreateTaskId(), pool_id_,
-                                          clio::run::PoolQuery::Local(), path,
+                                          FsPathQuery(), path,
                                           atime_ns, mtime_ns, flags);
     return ipc->Send(task);
   }
+
+  /**
+   * Create every missing ancestor directory of `path` (mkdir -p of its
+   * parent). Existing directories are left alone.
+   * @param path a normalized clio-fs path
+   */
+  void MakeParents(const std::string &path);
 
   /** Fire-and-forget utimens (TASK_FIRE_AND_FORGET; see AsyncCloseDetached).
    *  Timestamp stamping is pure metadata with no caller-visible output — the
@@ -355,7 +424,7 @@ class Client : public clio::cte::core::Client {
                             clio::run::u64 mtime_ns, clio::run::u32 flags) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<UtimensTask>(clio::run::CreateTaskId(), pool_id_,
-                                          clio::run::PoolQuery::Local(), path,
+                                          FsPathQuery(), path,
                                           atime_ns, mtime_ns, flags);
     task.get()->task_flags_.SetBits(TASK_FIRE_AND_FORGET);
     ipc->Send(task);
@@ -367,7 +436,7 @@ class Client : public clio::cte::core::Client {
                                           clio::run::u32 mode = 0xFFFFFFFFu) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<ChownTask>(clio::run::CreateTaskId(), pool_id_,
-                                        clio::run::PoolQuery::Local(), path, uid,
+                                        FsPathQuery(), path, uid,
                                         gid, mode);
     return ipc->Send(task);
   }
@@ -382,14 +451,14 @@ class Client : public clio::cte::core::Client {
   clio::run::Future<MkdirTask> AsyncMkdir(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<MkdirTask>(clio::run::CreateTaskId(), pool_id_,
-                                        clio::run::PoolQuery::Local(), path);
+                                        FsPathQuery(), path);
     return ipc->Send(task);
   }
 
   clio::run::Future<RmdirTask> AsyncRmdir(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<RmdirTask>(clio::run::CreateTaskId(), pool_id_,
-                                        clio::run::PoolQuery::Local(), path);
+                                        FsPathQuery(), path);
     return ipc->Send(task);
   }
 
@@ -397,7 +466,7 @@ class Client : public clio::cte::core::Client {
                                       const std::string &dst) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<RenameTask>(clio::run::CreateTaskId(), pool_id_,
-                                         clio::run::PoolQuery::Local(), src, dst);
+                                         FsPathQuery(), src, dst);
     return ipc->Send(task);
   }
 
@@ -405,7 +474,7 @@ class Client : public clio::cte::core::Client {
                                   const std::string &link) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<LinkTask>(clio::run::CreateTaskId(), pool_id_,
-                                       clio::run::PoolQuery::Local(), target, link);
+                                       FsPathQuery(), target, link);
     return ipc->Send(task);
   }
 
@@ -413,7 +482,7 @@ class Client : public clio::cte::core::Client {
                                               const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<SymlinkTask>(clio::run::CreateTaskId(), pool_id_,
-                                          clio::run::PoolQuery::Local(), target,
+                                          FsPathQuery(), target,
                                           path);
     return ipc->Send(task);
   }
@@ -421,7 +490,7 @@ class Client : public clio::cte::core::Client {
   clio::run::Future<ReadlinkTask> AsyncReadlink(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<ReadlinkTask>(clio::run::CreateTaskId(), pool_id_,
-                                           clio::run::PoolQuery::Local(), path);
+                                           FsPathQuery(), path);
     return ipc->Send(task);
   }
 
@@ -431,7 +500,7 @@ class Client : public clio::cte::core::Client {
                                                 clio::run::u32 flags) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<SetxattrTask>(clio::run::CreateTaskId(), pool_id_,
-                                           clio::run::PoolQuery::Local(), path,
+                                           FsPathQuery(), path,
                                            name, value, flags);
     return ipc->Send(task);
   }
@@ -440,7 +509,7 @@ class Client : public clio::cte::core::Client {
                                                 const std::string &name) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<GetxattrTask>(clio::run::CreateTaskId(), pool_id_,
-                                           clio::run::PoolQuery::Local(), path,
+                                           FsPathQuery(), path,
                                            name);
     return ipc->Send(task);
   }
@@ -448,7 +517,7 @@ class Client : public clio::cte::core::Client {
   clio::run::Future<ListxattrTask> AsyncListxattr(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<ListxattrTask>(clio::run::CreateTaskId(), pool_id_,
-                                            clio::run::PoolQuery::Local(), path);
+                                            FsPathQuery(), path);
     return ipc->Send(task);
   }
 
@@ -457,19 +526,25 @@ class Client : public clio::cte::core::Client {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<RemovexattrTask>(clio::run::CreateTaskId(),
                                               pool_id_,
-                                              clio::run::PoolQuery::Local(),
+                                              FsPathQuery(),
                                               path, name);
     return ipc->Send(task);
   }
 
-  // ---- deferred-append pipeline ----
-  /** Kick off (or tick) the periodic local pending-append drain. */
-  clio::run::Future<AppendSequenceTask> AsyncAppendSequence(
-      double period_us = 0.0,
-      const clio::run::PoolQuery &pool_query = clio::run::PoolQuery::Local()) {
+  /**
+   * Internal: run one ShardOp on the container `pool_query` names (the
+   * owner of the directory or inode the request addresses).
+   * @param op FsShardOp code
+   * @param req encoded request
+   * @param pool_query owner container
+   * @param period_us nonzero = periodic task with this period
+   */
+  clio::run::Future<ShardOpTask> AsyncShardOp(
+      clio::run::u32 op, const std::string &req,
+      const clio::run::PoolQuery &pool_query, double period_us = 0.0) {
     auto *ipc = CLIO_CPU_IPC;
-    auto task = ipc->NewTask<AppendSequenceTask>(clio::run::CreateTaskId(), pool_id_,
-                                                 pool_query);
+    auto task = ipc->NewTask<ShardOpTask>(clio::run::CreateTaskId(), pool_id_,
+                                          pool_query, op, req);
     if (period_us > 0.0) {
       task->SetPeriod(period_us, clio::run::kMicro);
       task->SetFlags(TASK_PERIODIC);
@@ -477,48 +552,17 @@ class Client : public clio::cte::core::Client {
     return ipc->Send(task);
   }
 
-  /** Collect one tag's pending appends at its sequencer (ManyToOne batch). */
-  clio::run::Future<AppendCollectTask> AsyncAppendCollect(
-      const clio::cte::core::TagId &tag_id,
-      const std::vector<AppendEntry> &entries, const clio::run::PoolQuery &pool_query) {
-    auto *ipc = CLIO_CPU_IPC;
-    auto task = ipc->NewTask<AppendCollectTask>(clio::run::CreateTaskId(), pool_id_,
-                                                pool_query, tag_id, entries);
-    return ipc->Send(task);
-  }
-
-  /** Plan + dispatch one tag's batch (suspendable; submitted by AppendCollect). */
-  clio::run::Future<AppendPlanTask> AsyncAppendPlan(
-      const clio::cte::core::TagId &tag_id,
-      const std::vector<AppendEntry> &entries, const clio::run::PoolQuery &pool_query) {
-    auto *ipc = CLIO_CPU_IPC;
-    auto task = ipc->NewTask<AppendPlanTask>(clio::run::CreateTaskId(), pool_id_,
-                                             pool_query, tag_id, entries);
-    return ipc->Send(task);
-  }
-
-  /** Apply a slice of the merge plan (GetBlob->PutBlob->DelBlob). */
-  clio::run::Future<AppendExecutionTask> AsyncAppendExecution(
-      const clio::cte::core::TagId &tag_id,
-      const clio::cte::core::TagId &staging_tag_id,
-      const std::vector<AppendPlanStep> &steps, const clio::run::PoolQuery &pool_query) {
-    auto *ipc = CLIO_CPU_IPC;
-    auto task = ipc->NewTask<AppendExecutionTask>(
-        clio::run::CreateTaskId(), pool_id_, pool_query, tag_id, staging_tag_id, steps);
-    return ipc->Send(task);
-  }
-
   clio::run::Future<ReaddirTask> AsyncReaddir(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<ReaddirTask>(clio::run::CreateTaskId(), pool_id_,
-                                          clio::run::PoolQuery::Local(), path);
+                                          FsPathQuery(), path);
     return ipc->Send(task);
   }
 
   clio::run::Future<StatSizeTask> AsyncStatSize(const std::string &path) {
     auto *ipc = CLIO_CPU_IPC;
     auto task = ipc->NewTask<StatSizeTask>(clio::run::CreateTaskId(), pool_id_,
-                                           clio::run::PoolQuery::Local(), path);
+                                           FsPathQuery(), path);
     return ipc->Send(task);
   }
 
@@ -684,7 +728,8 @@ class Client : public clio::cte::core::Client {
       if (fut->GetReturnCode() == 0) {
         ret = static_cast<FsSsize>(fut->bytes_written_);
       } else {
-        errno = EIO;
+        // The chimod reports a full store as ENOSPC; all else is EIO.
+        errno = fut->GetReturnCode() == ENOSPC ? ENOSPC : EIO;
         ret = -1;
       }
       PoolFreeStaging(staging, count);
@@ -971,6 +1016,15 @@ class Client : public clio::cte::core::Client {
   /** Bind the filesystem pool on first tracked use. */
   static bool EnsureInit();
 
+  /**
+   * open(2) for a `clio::`-prefixed path (the interception adapters). With
+   * O_CREAT, missing parent directories are created first: the path mirrors
+   * a host path whose directories exist on the host.
+   * @param raw_path path, optionally with the `clio::` prefix
+   * @param flags open flags
+   * @param mode creation mode
+   * @return a descriptor, or -1 with errno set
+   */
   int OpenFd(const std::string &raw_path, int flags, int mode);
   FsSsize ReadFd(int fd, void *buf, size_t count);
   FsSsize WriteFd(int fd, const void *buf, size_t count);
@@ -980,9 +1034,57 @@ class Client : public clio::cte::core::Client {
   FsOff TellFd(int fd);
   FsOff SizeFd(int fd);
   int CloseFd(int fd);
-  /** fsync(2): drain this file's deferred writes, reporting a latched
-   *  failure exactly once. */
+  /** fsync(2): drain this file's deferred writes (reporting a latched failure
+   *  exactly once), then make the file durable (SyncPathDurable). */
   int SyncFd(int fd);
+
+  // ---- fsync(2) durability (shared by the interceptors and FUSE) ----
+
+  /**
+   * Whether CTE performance.fsync_mode is "deferred", as learned from the
+   * first SyncTag reply: fsync then skips the device sync and leaves
+   * durability to the periodic flushes.
+   * @return true once a reply said "deferred"
+   */
+  static bool FsyncDeferred();
+
+  /**
+   * Make one CTE tag durable: SyncTag, broadcast to every core container.
+   * @param tag the tag (null is a no-op)
+   * @param lost_node out (optional): a container's node was down
+   * @param liveness_change_ns out (optional): wall-clock ns of the last
+   *        liveness change the sync saw (SyncTagTask::liveness_change_ns_)
+   * @return 0, -ENOSPC when no persistent tier had room, or -EIO
+   */
+  static int SyncTagDurable(const clio::cte::core::TagId &tag,
+                            bool *lost_node = nullptr,
+                            clio::run::u64 *liveness_change_ns = nullptr);
+
+  /**
+   * fsync(2)'s size step: fsync the size log at the file's stream home.
+   * @param tag the file's tag (null, or an id without a home: nothing to do)
+   * @return 0 or -EIO
+   */
+  static int SyncFileSize(const clio::cte::core::TagId &tag);
+
+  /**
+   * The CTE tag of a file or directory (its id is its inode number).
+   * @param path the path
+   * @param want_dir true: only a directory resolves
+   * @return the tag, or null when the path does not resolve
+   */
+  clio::cte::core::TagId TagOfPath(const std::string &path, bool want_dir);
+
+  /**
+   * fsync(2)'s durability step: the file's blobs (pages and inode record),
+   * its size, then the directory blocks naming it, so the bytes, the size
+   * and the name all survive power loss. Deferred writes must already be
+   * drained (Flush).
+   * @param tag the file's tag (null: only the directory)
+   * @param dir the directory whose entries must be durable
+   * @return 0, -ENOSPC or -EIO
+   */
+  int SyncDurable(const clio::cte::core::TagId &tag, const std::string &dir);
   int FtruncateFd(int fd, FsOff length);
   int TruncatePath(const std::string &raw_path, FsOff length);
   int RemovePath(const std::string &raw_path);
@@ -1066,10 +1168,72 @@ class Client : public clio::cte::core::Client {
     return v;
   }
 
+  /**
+   * What a caller wants done about a byte range the tier does not hold.
+   *
+   * The two consumers need OPPOSITE answers from the same lookup, and getting
+   * it backwards is silent data corruption rather than an error:
+   *
+   *   kZeroFillHoles -- POSIX filesystem semantics. This client IS the
+   *     filesystem, so a range inside the file with nothing behind it was
+   *     never written and reads as zeros. Correct for CfsIo.
+   *
+   *   kRefuseHoles -- cache-over-authoritative semantics. The tier is a cache
+   *     in front of a file that holds the real bytes, so "not here" means "ask
+   *     the authoritative copy", NEVER "the answer is zeros". Correct for the
+   *     HDF5 VFD, which write-throughs to a native file.
+   */
+  enum class ShmHolePolicy { kZeroFillHoles, kRefuseHoles };
+
+  /**
+   * Read committed bytes from shared memory, refusing rather than inventing
+   * anything the tier does not hold. See ShmHolePolicy::kRefuseHoles.
+   *
+   * @return bytes read, or -1 meaning "not fast-pathable, use the
+   *         authoritative source" -- which for this policy also covers "some
+   *         of that range is not cached".
+   */
+  FsSsize TryReadShmResident(const std::string &path, clio::run::u64 off,
+                             void *buf, size_t count) {
+    return TryReadShmImpl(path, off, buf, count, ShmHolePolicy::kRefuseHoles);
+  }
+
   // FsSsize, not ssize_t: MSVC has no ssize_t, and this layer's whole
   // vocabulary was ported to FsSsize/FsOff so it builds on Windows.
   FsSsize TryReadShm(const std::string &path, clio::run::u64 off, void *buf,
                      size_t count) {
+    return TryReadShmImpl(path, off, buf, count, ShmHolePolicy::kZeroFillHoles);
+  }
+
+  FsSsize TryReadShmImpl(const std::string &path, clio::run::u64 off, void *buf,
+                         size_t count, ShmHolePolicy policy) {
+    // Read-your-own-writes, here rather than only in Read().
+    //
+    // CFS writes defer by default, and in-flight bytes are visible ONLY
+    // through this registry -- the page blob still holds the previously
+    // committed content until they land. Read() consults it before calling
+    // this function, so for that caller the check below costs an atomic load
+    // and returns 0. But TryReadShmResident is a PUBLIC entry point the VFD
+    // calls directly, and it never runs Read(): an in-place rewrite followed
+    // by a read in the same session would otherwise find the stale committed
+    // page, succeed, and hand back pre-write bytes. kShmFilePendingAppend does
+    // not cover it either, because an in-place rewrite is not an append.
+    //
+    // Depending on the caller for a correctness precondition is what made that
+    // reachable, so the function now establishes it itself.
+    const clio::run::u64 defer_key = FileKey(path);
+    const int served =
+        DeferTryServe(defer_key, off, static_cast<char *>(buf), count);
+    if (served > 0) {
+      // Fully covered by in-flight writes: those bytes ARE the current value.
+      return static_cast<FsSsize>(count);
+    }
+    if (served == -1) {
+      // Partial coverage: the bytes outside the in-flight writes are stale
+      // until those writes land, so this is the one case that has to wait.
+      DeferAwaitKey(defer_key);
+    }
+
     if (!ShmReadFastPathEnabled()) {
       return -1;
     }
@@ -1116,6 +1280,12 @@ class Client : public clio::cte::core::Client {
     char *dst = static_cast<char *>(buf);
     clio::run::u64 done = 0;
     clio::run::u64 cur = off;
+    // Bound on residency probes per request. Each probe is metadata-only and
+    // replaces a whole-request data RPC, so a few are a clear win -- but they
+    // are still round trips, and a heavily perforated range would spend more
+    // on asking than the single RPC it is trying to avoid. Past the bound,
+    // take the RPC, which answers everything in one go.
+    unsigned residency_probes = 0;
     while (done < want) {
       clio::run::u64 page_off = cur % kFsPageSize;
       clio::run::u64 to_read = kFsPageSize - page_off;
@@ -1125,10 +1295,44 @@ class Client : public clio::cte::core::Client {
       if (!cte->TryReadBlobShm(rec.tag_id_, PageName(cur), dst + done,
                                static_cast<size_t>(to_read),
                                static_cast<size_t>(page_off))) {
-        // Abandon the WHOLE request rather than mixing sources. A hole reads
-        // as zeros and a missing page is indistinguishable from an uncached
-        // one, so the only safe reading of a failure here is "let the runtime
-        // answer".
+        // A miss here used to abandon the WHOLE request, because "hole" and
+        // "cached elsewhere" were indistinguishable from this side and only
+        // one of them can be answered with zeros. GetResidency draws that
+        // distinction at the tier, which is the only place that knows it.
+        //
+        // Zeroing is correct for an absent page, and specifically here:
+        //   * the range is already clamped to the LOGICAL size above, so this
+        //     page lies inside the file, and a page inside the file with no
+        //     blob behind it was never written -- POSIX says zeros. This is
+        //     the same rule the runtime's own read path applies when it
+        //     pre-zeros before GetBlob.
+        //   * uncommitted writes cannot be hiding here. Read() serves or
+        //     awaits the deferred registry BEFORE calling this path, and
+        //     IsFastPathable() refuses a record carrying kShmFilePendingAppend.
+        //
+        // Anything other than a definite absence -- present but unreachable,
+        // or a failed probe -- still falls back, because those are exactly the
+        // cases where zeros would be wrong.
+        // kRefuseHoles: the authoritative copy has these bytes, so there is
+        // nothing to decide -- do not probe, do not invent, just refuse.
+        if (policy == ShmHolePolicy::kRefuseHoles) {
+          ShmReadMisses().fetch_add(1, std::memory_order_relaxed);
+          return -1;
+        }
+        if (residency_probes < kMaxResidencyProbes) {
+          ++residency_probes;
+          auto res = cte->AsyncGetResidency(rec.tag_id_, PageName(cur),
+                                            static_cast<clio::run::u64>(page_off),
+                                            static_cast<clio::run::u64>(to_read));
+          res.Wait();
+          if (res->GetReturnCode() == 0 && res->exists_ == 0) {
+            std::memset(dst + done, 0, static_cast<size_t>(to_read));
+            ShmReadHoles().fetch_add(1, std::memory_order_relaxed);
+            done += to_read;
+            cur += to_read;
+            continue;
+          }
+        }
         ShmReadMisses().fetch_add(1, std::memory_order_relaxed);
         return -1;
       }
@@ -1149,6 +1353,18 @@ class Client : public clio::cte::core::Client {
     });
     ShmReadHits().fetch_add(1, std::memory_order_relaxed);
     return static_cast<FsSsize>(done);
+  }
+
+  /** Max GetResidency probes in one ShmRead (see the call site). */
+  static constexpr unsigned kMaxResidencyProbes = 8;
+
+  /** Pages served as holes: absent at the tier, so zeros are the answer and no
+   *  data round trip was needed. Counted apart from hits because they are a
+   *  different thing -- bytes produced locally, not bytes read from the tier --
+   *  and folding them into hits would overstate what the cache served. */
+  static std::atomic<clio::run::u64> &ShmReadHoles() {
+    static std::atomic<clio::run::u64> n{0};
+    return n;
   }
 
   // Zero-IPC read accounting. A silently-disabled fast path and a working one

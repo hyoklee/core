@@ -36,6 +36,7 @@
 #define CLIO_CTE_COMPRESSOR_COMPRESSOR_TASKS_H_
 
 #include <clio_runtime/clio_runtime.h>
+#include <clio_ctp/util/msan.h>
 #include <clio_runtime/task.h>
 #include <clio_runtime/admin/admin_tasks.h>
 #include <clio_cte/core/core_tasks.h>
@@ -98,14 +99,20 @@ struct CompressorConfig {
   }
 
   /**
-   * Load configuration from compose YAML.
-   * Reads next_pool_id from the pool config.
+   * Load configuration from compose YAML: next_pool_id, tracking_enabled
+   * and the model/trace paths (qtable_model_path, linreg_model_path,
+   * distribution_model_path, dnn_model_weights_path, trace_folder_path).
    */
   void LoadConfig(const clio::run::PoolConfig &pool_config) {
     // Parse next_pool_id from compose YAML config
     if (!pool_config.config_.empty()) {
       try {
         YAML::Node node = YAML::Load(pool_config.config_);
+        // yaml-cpp is a prebuilt .so: the scalars its scanner just
+        // produced carry no MSan shadow, so every key lookup and
+        // .as<>() below reads memory it has no record of. One walk
+        // here covers the whole tree.
+        ctp::MsanUnpoisonYaml(node);
         if (node["next_pool_id"]) {
           std::string next_str = node["next_pool_id"].as<std::string>();
           // Parse "major.minor" format
@@ -119,6 +126,17 @@ struct CompressorConfig {
         if (node["tracking_enabled"]) {
           tracking_enabled_ = node["tracking_enabled"].as<bool>();
         }
+        // Model and trace paths. They round-trip in serialize() but were
+        // never read here, so a compose-deployed compressor always fell back
+        // to the fixed heuristic (#1189).
+        auto read_path = [&node](const char *key, std::string *out) {
+          if (node[key]) *out = node[key].as<std::string>();
+        };
+        read_path("qtable_model_path", &qtable_model_path_);
+        read_path("linreg_model_path", &linreg_model_path_);
+        read_path("distribution_model_path", &distribution_model_path_);
+        read_path("dnn_model_weights_path", &dnn_model_weights_path_);
+        read_path("trace_folder_path", &trace_folder_path_);
       } catch (...) {
         // Config parsing is best-effort
       }

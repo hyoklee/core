@@ -42,6 +42,28 @@ using namespace std::chrono_literals;
 
 namespace {
 
+// Ceiling for the SHM-path read below. The number is not a wall-clock target
+// (see the gates at the assertion); it only has to sit far enough under the
+// ~72 us transport floor to prove no round trip happened. AddressSanitizer
+// instruments every load and store on that path, which measured 5.7-6.3 us in
+// the asan CI build against a bound picked from uninstrumented code -- a
+// failure that says nothing about the fast path. Sanitized builds get a bound
+// scaled for the instrumentation and still an order of magnitude below the
+// floor; the ratio gate is untouched and enforces the real claim either way.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#define CLIO_TEST_SANITIZED 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+    __has_feature(memory_sanitizer)
+#define CLIO_TEST_SANITIZED 1
+#endif
+#endif
+#ifdef CLIO_TEST_SANITIZED
+constexpr double kShmReadMaxUs = 20.0;
+#else
+constexpr double kShmReadMaxUs = 5.0;
+#endif
+
 // A RAM target is what makes page payloads SHM-resident and therefore
 // direct-readable; a file target would (correctly) refuse the fast path.
 constexpr clio::run::u64 kRamTargetBytes = 256ULL * 1024 * 1024;
@@ -109,7 +131,11 @@ bool InitRuntime() {
   }
   tried = true;
 
-  const std::string work = "/tmp/clio_cfs_shm_read_test";
+  // Per user: another user's leftover directory at a fixed name cannot
+  // be removed or reused on a shared machine.
+  const char *user_env = std::getenv("USER");
+  const std::string work =
+      std::string("/tmp/clio_cfs_shm_read_test_") + (user_env != nullptr ? user_env : "user");
   std::filesystem::remove_all(work);
   std::filesystem::create_directories(work);
   const std::string yaml = work + "/compose.yaml";
@@ -388,10 +414,10 @@ TEST_CASE("clio-fs SHM read: correctness and latency", "[cfs][shm][noleak]") {
   // condition just makes the suite flaky by runner class.
   //
   // What is machine-independent is that NO ROUND TRIP HAPPENED. The transport
-  // floor alone is ~72 us, so anything in single-digit microseconds cannot
+  // floor alone is ~72 us, so anything comfortably under kShmReadMaxUs cannot
   // have gone to the runtime; and the fast path must beat the RPC path it
   // replaces by a wide margin on whatever hardware this is.
-  REQUIRE(shm_us < 5.0);
+  REQUIRE(shm_us < kShmReadMaxUs);
   REQUIRE(rpc_us / shm_us > 20.0);
 
   cfs_io->CloseFd(fd);
@@ -796,6 +822,86 @@ TEST_CASE("clio-fs descriptor layer: sequential read, seek, tell",
   REQUIRE(cfs_io->SeekFd(fd, 0, SEEK_SET) == -1);
   REQUIRE(cfs_io->TellFd(fd) == -1);
 
+  cfs_io->RemovePath(path);
+}
+
+// A sparse file must be served BY the fast path, not around it.
+//
+// Before GetResidency, one absent page anywhere in a request sent the ENTIRE
+// request to the RPC path: a miss in the SHM mirror could not distinguish "no
+// such bytes" from "bytes exist but are not reachable from here", and only the
+// first can be answered with zeros. So a file with any hole in it lost the fast
+// path for every read touching the hole, however much of the rest was resident.
+//
+// This asserts both halves: that the bytes are right, and that they came from
+// the fast path. Checking only the bytes would pass just as happily against the
+// old fall-back-to-RPC behaviour, which is also correct -- the hole counter is
+// what separates "still correct" from "correct AND not paying a round trip".
+TEST_CASE("clio-fs SHM read serves holes in a sparse file",
+          "[cfs][shm][residency][noleak]") {
+  REQUIRE(InitRuntime());
+  auto *cfs_io = CLIO_CFS_CLIENT;
+  REQUIRE(cfs_io != nullptr);
+
+  if (CLIO_CPU_IPC == nullptr ||
+      CLIO_CPU_IPC->GetMetadataAllocator() == nullptr) {
+    std::printf("[residency] SKIP: no metadata SHM segment on this platform\n");
+    return;
+  }
+
+  const std::string path = "clio::/tmp/clio_cfs_sparse_test.bin";
+  const size_t kPage = static_cast<size_t>(clio::cte::filesystem::kFsPageSize);
+  cfs_io->RemovePath(path);
+
+  // Two FULL pages, three pages apart. Whole pages on purpose: a partially
+  // written page leaves a blob that EXISTS but is short, which is a different
+  // case (present-but-not-covering) and correctly still takes the RPC path.
+  // Pages 1 and 2 have no blob at all, which is the hole this is about.
+  std::vector<char> page(kPage);
+  for (size_t i = 0; i < kPage; ++i) {
+    page[i] = static_cast<char>((i * 17 + 3) % 251);
+  }
+  int fd = cfs_io->OpenFd(path, O_CREAT | O_RDWR | O_TRUNC, 0644);
+  REQUIRE(fd >= 0);
+  REQUIRE(cfs_io->PwriteFd(fd, page.data(), kPage, 0) ==
+          static_cast<ssize_t>(kPage));
+  REQUIRE(cfs_io->PwriteFd(fd, page.data(), kPage,
+                           static_cast<off_t>(3 * kPage)) ==
+          static_cast<ssize_t>(kPage));
+  cfs_io->CloseFd(fd);
+  cfs_io->Flush(path);
+
+  fd = cfs_io->OpenFd(path, O_RDONLY, 0644);
+  REQUIRE(fd >= 0);
+
+  const clio::run::u64 holes_before =
+      clio::cte::filesystem::Client::ShmReadHoles().load(
+          std::memory_order_relaxed);
+
+  std::vector<char> got(4 * kPage, '\xAA');
+  const ssize_t nr = cfs_io->PreadFd(fd, got.data(), 4 * kPage, 0);
+  REQUIRE(nr == static_cast<ssize_t>(4 * kPage));
+
+  // Written pages come back verbatim; the gap reads as zeros, which is what
+  // POSIX says an unwritten region inside a file contains.
+  REQUIRE(std::memcmp(got.data(), page.data(), kPage) == 0);
+  REQUIRE(std::memcmp(got.data() + 3 * kPage, page.data(), kPage) == 0);
+  for (size_t i = kPage; i < 3 * kPage; ++i) {
+    if (got[i] != 0) {
+      FAIL("hole byte at offset " << i << " is " << static_cast<int>(got[i])
+                                  << ", expected 0");
+      break;
+    }
+  }
+
+  const clio::run::u64 holes_after =
+      clio::cte::filesystem::Client::ShmReadHoles().load(
+          std::memory_order_relaxed);
+  REQUIRE(holes_after > holes_before);
+  std::printf("[residency] holes served from the fast path: %llu\n",
+              static_cast<unsigned long long>(holes_after - holes_before));
+
+  cfs_io->CloseFd(fd);
   cfs_io->RemovePath(path);
 }
 

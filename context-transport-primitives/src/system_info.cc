@@ -68,17 +68,9 @@
 #endif
 
 #include "clio_ctp/constants/macros.h"
-// MSan: inform sanitizer that mmap-backed memory is initialized by the kernel
-#if defined(__has_feature)
-#if __has_feature(memory_sanitizer)
-#include <sanitizer/msan_interface.h>
-#define CTP_MSAN_UNPOISON(ptr, size) __msan_unpoison((ptr), (size))
-#else
-#define CTP_MSAN_UNPOISON(ptr, size) ((void)0)
-#endif
-#else
-#define CTP_MSAN_UNPOISON(ptr, size) ((void)0)
-#endif
+// MSan: mark memory that uninstrumented code (the kernel, libstdc++, Poco)
+// filled in as initialized -- see the header.
+#include "clio_ctp/util/msan.h"
 #if CTP_ENABLE_PROCFS_SYSINFO
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -93,12 +85,15 @@
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #if __linux__
 #include <sys/sysinfo.h>
+#include <sys/sysmacros.h>
 #else
+#include <sys/mount.h>
 #include <sys/sysctl.h>
 #endif
 #include <sys/types.h>
@@ -108,6 +103,7 @@
 #include <linux/memfd.h>
 #endif
 #if __APPLE__
+#include <mach-o/dyld.h>
 #include <pthread.h>
 #endif
 // WINDOWS
@@ -385,9 +381,14 @@ size_t SystemInfo::GetRamAvailable() {
 #if CTP_ENABLE_PROCFS_SYSINFO
 #ifdef __linux__
   std::ifstream meminfo("/proc/meminfo");
+  // libstdc++.so is not MSan-instrumented, so neither the stream's own state
+  // nor the bytes getline() copies into `line` are recorded as initialized;
+  // the rfind() below would be reported on every call.
+  CTP_MSAN_UNPOISON_OBJ(meminfo);
   if (!meminfo.is_open()) return 0;
   std::string line;
   while (std::getline(meminfo, line)) {
+    CTP_MSAN_UNPOISON_STRING(line);
     if (line.rfind("MemAvailable:", 0) == 0) {
       size_t kb = 0;
       std::sscanf(line.c_str(), "MemAvailable: %zu", &kb);
@@ -664,8 +665,13 @@ bool SystemInfo::CreateNewSharedMemory(File &fd, const std::string &name,
   end.QuadPart = static_cast<LONGLONG>(size);
   if (!SetFilePointerEx(hfile, end, nullptr, FILE_BEGIN) ||
       !SetEndOfFile(hfile)) {
+    // Same reason as the CreateFileMappingA path below: preserve the error
+    // across the cleanup call so the caller reports this failure, not
+    // CloseHandle's.
+    const DWORD size_err = GetLastError();
     CloseHandle(hfile);
     fd.windows_fd_ = nullptr;
+    SetLastError(size_err);
     return false;
   }
 
@@ -676,6 +682,7 @@ bool SystemInfo::CreateNewSharedMemory(File &fd, const std::string &name,
       static_cast<DWORD>(size >> 32),              // size, high-order DWORD
       static_cast<DWORD>(size & 0xFFFFFFFFull),    // size, low-order DWORD
       win_name.c_str());                           // mapping object name
+  const DWORD map_err = GetLastError();
 
   // The section holds its own reference to the file, so the file handle has
   // done its job. Closing it here keeps File a union of one handle and leaves
@@ -683,7 +690,14 @@ bool SystemInfo::CreateNewSharedMemory(File &fd, const std::string &name,
   CloseHandle(hfile);
 
   if (fd.windows_fd_ == nullptr) {
+    // Restore the error AFTER the cleanup call. The caller reports the failure
+    // with GetLastSharedMemoryError(), which reads GetLastError() -- so the
+    // DeleteFileA below would otherwise be what gets reported, and the real
+    // reason would be lost. That is how a create failure came to be blamed on
+    // "Win32 error 203" (ERROR_ENVVAR_NOT_FOUND), a code nothing in this
+    // function can produce.
     DeleteFileA(shm_path.c_str());
+    SetLastError(map_err);
     return false;
   }
   return true;
@@ -818,7 +832,10 @@ void *SystemInfo::MapSharedMemory(const File &fd, size_t size, i64 off) {
                      fd.posix_fd_, off);
 #endif
   if (ptr == MAP_FAILED) {
+    // Keep errno for the caller's GetLastSharedMemoryError() (#1173).
+    int saved_errno = errno;
     perror("mmap");
+    errno = saved_errno;
     return nullptr;
   }
 #if defined(__linux__) && defined(MADV_DONTDUMP)
@@ -857,6 +874,9 @@ void *SystemInfo::MapSharedMemory(const File &fd, size_t size, i64 off) {
                    (LPSTR)&msg_buf, 0, NULL);
     printf("MapViewOfFile failed with error: %s\n", (char *)msg_buf);
     LocalFree(msg_buf);
+    // FormatMessage/printf/LocalFree may overwrite the thread's last error;
+    // put back the MapViewOfFile code for GetLastSharedMemoryError() (#1173).
+    SetLastError(error);
   }
   return ret;
 #endif
@@ -866,7 +886,38 @@ void SystemInfo::UnmapMemory(void *ptr, size_t size) {
 #if CTP_ENABLE_PROCFS_SYSINFO
   munmap(ptr, size);
 #elif CTP_ENABLE_WINDOWS_SYSINFO
-  VirtualFree(ptr, size, MEM_RELEASE);
+  // This is the counterpart of TWO allocators, because on POSIX one munmap()
+  // serves both: MapSharedMemory() (MapViewOfFile) and MapPrivateMemory()
+  // (VirtualAlloc). Win32 has a separate deallocator for each, and the one
+  // that used to be here -- VirtualFree(ptr, size, MEM_RELEASE) -- was wrong
+  // for both:
+  //
+  //   * A MapViewOfFile region is MEM_MAPPED. VirtualFree cannot free it at
+  //     all; only UnmapViewOfFile can.
+  //   * For a VirtualAlloc region, MEM_RELEASE REQUIRES dwSize to be 0.
+  //     Passing the region's size fails with ERROR_INVALID_PARAMETER.
+  //
+  // Both failures were silent -- the return value is discarded -- so every
+  // view and every private mapping leaked for the life of the process. That
+  // was invisible while Windows segments were pagefile-backed, but once they
+  // gained a sparse backing file (#1063) a leaked view keeps a live section on
+  // that file, and CreateNewSharedMemory's CREATE_ALWAYS cannot truncate a
+  // file with a mapped section: ERROR_USER_MAPPED_FILE. See #1069.
+  //
+  // Ask the OS which kind of region this is rather than threading a flag
+  // through every caller: the callers are shared with the POSIX build, where
+  // the distinction does not exist.
+  if (ptr == nullptr) {
+    return;
+  }
+  MEMORY_BASIC_INFORMATION mbi;
+  if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == sizeof(mbi) &&
+      mbi.Type == MEM_MAPPED) {
+    UnmapViewOfFile(ptr);
+    return;
+  }
+  VirtualFree(ptr, 0, MEM_RELEASE);
+  (void)size;
 #endif
 }
 
@@ -1169,6 +1220,115 @@ void SystemInfo::TerminateChild(SpawnedProcess &proc, int grace_ms) {
   proc.win_thread = 0;
 #endif
   proc.valid = false;
+}
+
+bool SystemInfo::WaitForChild(SpawnedProcess &proc, int timeout_ms,
+                              int *exit_code) {
+  if (!proc.valid) return false;
+  bool exited = false;
+#if CTP_ENABLE_PROCFS_SYSINFO
+  int status = 0;
+  pid_t r = 0;
+  for (int waited = 0; proc.pid > 0; waited += 10) {
+    r = waitpid(proc.pid, &status, WNOHANG);
+    if (r != 0 || waited >= timeout_ms) break;
+    struct timespec ts = {0, 10 * 1000 * 1000};  // 10 ms
+    nanosleep(&ts, nullptr);
+  }
+  if (r == proc.pid) {
+    exited = WIFEXITED(status);
+    if (exited && exit_code != nullptr) *exit_code = WEXITSTATUS(status);
+    proc.pid = -1;
+  }
+#elif CTP_ENABLE_WINDOWS_SYSINFO
+  HANDLE hp = reinterpret_cast<HANDLE>(proc.win_process);
+  if (hp != NULL &&
+      WaitForSingleObject(hp, static_cast<DWORD>(timeout_ms)) ==
+          WAIT_OBJECT_0) {
+    DWORD code = 0;
+    exited = GetExitCodeProcess(hp, &code) != 0;
+    if (exited && exit_code != nullptr) *exit_code = static_cast<int>(code);
+  }
+#endif
+  TerminateChild(proc, 0);  // kills a timed-out child; releases handles
+  return exited;
+}
+
+void SystemInfo::IgnoreFileSizeSignal() {
+#if CTP_ENABLE_PROCFS_SYSINFO
+  signal(SIGXFSZ, SIG_IGN);
+#endif
+}
+
+bool SystemInfo::SetProcessFileSizeLimit(int pid, uint64_t soft_bytes,
+                                         uint64_t *prev_soft) {
+#if CTP_ENABLE_PROCFS_SYSINFO && defined(__linux__)
+  struct rlimit cur;
+  if (prlimit(static_cast<pid_t>(pid), RLIMIT_FSIZE, nullptr, &cur) != 0) {
+    return false;
+  }
+  if (prev_soft != nullptr) *prev_soft = static_cast<uint64_t>(cur.rlim_cur);
+  struct rlimit lim = {static_cast<rlim_t>(soft_bytes), cur.rlim_max};
+  return prlimit(static_cast<pid_t>(pid), RLIMIT_FSIZE, &lim, nullptr) == 0;
+#else
+  (void)pid;
+  (void)soft_bytes;
+  (void)prev_soft;
+  return false;
+#endif
+}
+
+bool SystemInfo::GetFileIdentity(const std::string &path, FileIdentity *id) {
+#if CTP_ENABLE_PROCFS_SYSINFO
+  struct stat st;
+  if (::stat(path.c_str(), &st) != 0) return false;
+  id->device = static_cast<uint64_t>(st.st_dev);
+  id->file = static_cast<uint64_t>(st.st_ino);
+  return true;
+#elif CTP_ENABLE_WINDOWS_SYSINFO
+  // Open for attributes only, sharing everything, so the check never
+  // conflicts with the handles the caller holds on the same file.
+  HANDLE h = CreateFileA(path.c_str(), FILE_READ_ATTRIBUTES,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                         nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS,
+                         nullptr);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  BY_HANDLE_FILE_INFORMATION info;
+  const BOOL ok = GetFileInformationByHandle(h, &info);
+  CloseHandle(h);
+  if (!ok) return false;
+  id->device = static_cast<uint64_t>(info.dwVolumeSerialNumber);
+  id->file = (static_cast<uint64_t>(info.nFileIndexHigh) << 32) |
+             static_cast<uint64_t>(info.nFileIndexLow);
+  return true;
+#else
+  (void)path;
+  (void)id;
+  return false;
+#endif
+}
+
+std::string SystemInfo::GetExecutablePath() {
+#if CTP_ENABLE_PROCFS_SYSINFO && defined(__APPLE__)
+  uint32_t size = PATH_MAX;
+  std::string buf(size, '\0');
+  if (_NSGetExecutablePath(buf.data(), &size) != 0) return "";
+  char resolved[PATH_MAX];
+  if (realpath(buf.c_str(), resolved) == nullptr) return "";
+  return resolved;
+#elif CTP_ENABLE_PROCFS_SYSINFO
+  char path[PATH_MAX];
+  ssize_t n = readlink("/proc/self/exe", path, sizeof(path) - 1);
+  if (n <= 0) return "";
+  return std::string(path, static_cast<size_t>(n));
+#elif CTP_ENABLE_WINDOWS_SYSINFO
+  char path[MAX_PATH];
+  DWORD n = GetModuleFileNameA(nullptr, path, MAX_PATH);
+  if (n == 0 || n >= MAX_PATH) return "";
+  return std::string(path, n);
+#else
+  return "";
+#endif
 }
 
 #if CTP_ENABLE_WINDOWS_SYSINFO
@@ -1580,6 +1740,47 @@ SharedLibrary &SharedLibrary::operator=(SharedLibrary &&other) noexcept {
   return *this;
 }
 
+#if CTP_ENABLE_PROCFS_SYSINFO
+/**
+ * Name the block device backing a path, without running a subprocess
+ * (issue #809). This used to popen("df -P <path> | tail | awk"): every call
+ * forked a shell that inherited every descriptor the process had open without
+ * close-on-exec, including the flock()ed descriptor of an HDF5 file -- whose
+ * lock then outlived H5Fclose() until the shell exited, so an immediate reopen
+ * failed with EAGAIN. The bdev health poll calls this repeatedly.
+ * @param path a file or directory
+ * @return the backing device's name (e.g. "nvme0n1p1", "disk1s1"), or "" if
+ *         it is not a real block device (overlay, tmpfs, ...)
+ */
+static std::string BackingDeviceName(const std::string &path) {
+#if defined(__linux__)
+  struct stat st;
+  if (stat(path.c_str(), &st) != 0) return "";
+  // /sys/dev/block/MAJ:MIN links to the device's sysfs node, whose last
+  // component is the device name df reports under /dev.
+  const std::string link = "/sys/dev/block/" +
+                           std::to_string(major(st.st_dev)) + ":" +
+                           std::to_string(minor(st.st_dev));
+  char target[PATH_MAX];
+  ssize_t n = readlink(link.c_str(), target, sizeof(target) - 1);
+  if (n <= 0) return "";
+  std::string t(target, static_cast<size_t>(n));
+  size_t slash = t.find_last_of('/');
+  return slash == std::string::npos ? t : t.substr(slash + 1);
+#elif defined(__APPLE__)
+  // statfs reports the mount's source, which is what df prints.
+  struct statfs sfs;
+  if (statfs(path.c_str(), &sfs) != 0) return "";
+  std::string from = sfs.f_mntfromname;
+  if (from.rfind("/dev/", 0) != 0) return "";
+  return from.substr(5);
+#else
+  (void)path;
+  return "";
+#endif
+}
+#endif
+
 /// @brief Retrieves storage device hardware health statistics.
 ///
 /// Reads a JSON file left by an external admin service
@@ -1588,33 +1789,19 @@ SharedLibrary &SharedLibrary::operator=(SharedLibrary &&other) noexcept {
 /// elevated privileges; this function is purely a non-root consumer.
 ///
 /// @param path  Path to the file or block device whose health to query.
-///              If not already a /dev/ node, df is used to find the backing
-///              device so the correct per-device JSON file is located.
+///              If not already a /dev/ node, the backing device is looked up
+///              so the correct per-device JSON file is located.
 /// @return      JSON string with health stats, or "{}" if unavailable.
 std::string SystemInfo::GetDeviceHealthStats(const std::string &path) {
 #if CTP_ENABLE_PROCFS_SYSINFO
   std::string device = path;
 
-  // If the path is not a raw block device, find the mount's backing device.
+  // If the path is not a raw block device, find the mount's backing device
+  // (left as the path itself when it has none, e.g. overlay in containers).
   if (path.find("/dev/") != 0) {
-    // Quote path to handle spaces safely.
-    std::string cmd =
-        "df -P \"" + path + "\" 2>/dev/null | tail -1 | awk '{print $1}'";
-    char buffer[256];
-    FILE *pipe = popen(cmd.c_str(), "r");
-    if (pipe) {
-      if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        std::string df_out = buffer;
-        if (!df_out.empty() && df_out.back() == '\n') {
-          df_out.pop_back();
-        }
-        // Only use the df output if it returned a real /dev/ node
-        // (ignore things like 'overlay' in containers).
-        if (df_out.find("/dev/") == 0) {
-          device = df_out;
-        }
-      }
-      pclose(pipe);
+    const std::string backing = BackingDeviceName(path);
+    if (!backing.empty()) {
+      device = "/dev/" + backing;
     }
   }
 
@@ -1658,6 +1845,10 @@ namespace {
 // Minimal JSON string escaping so an error message embedded in the fallback
 // payload can never produce invalid JSON (quotes/backslashes/control chars).
 std::string JsonEscape(const std::string &s) {
+  // The only caller escapes a Poco exception's displayText(). Poco is not
+  // MSan-instrumented, so the message characters it composed carry no shadow
+  // and every byte examined below would be reported.
+  CTP_MSAN_UNPOISON_STRING(s);
   std::string out;
   out.reserve(s.size() + 8);
   for (char c : s) {
@@ -1722,6 +1913,8 @@ std::string SystemInfo::PredictDriveFailure(const std::string &drive_type,
     std::istream &rs = session.receiveResponse(res);
     std::string body;
     Poco::StreamCopier::copyToString(rs, body);
+    // Response bytes came off the wire through uninstrumented Poco.
+    CTP_MSAN_UNPOISON_STRING(body);
     return body.empty() ? "{}" : body;
   } catch (const Poco::Exception &e) {
     return std::string("{\"error\": \"Prediction server unreachable: ") +

@@ -46,6 +46,7 @@
 #endif
 
 #include "clio_ctp/util/config_parse.h"
+#include "clio_ctp/util/msan.h"
 #include "clio_runtime/admin/admin_client.h"
 #include "clio_runtime/clio_runtime.h"
 #include "clio_runtime/config_manager.h"
@@ -125,8 +126,12 @@ size_t SweepDeadRuntimeArtifacts(int pid, clio::run::u32 port) {
     if (!matches) {
       std::error_code ec;
       auto target = std::filesystem::read_symlink(full_path, ec);
+      // Uninstrumented libstdc++.so filled this path; see IpcManager::
+      // UnlinkOwnPidEntries, which scans the same directory the same way.
+      CTP_MSAN_UNPOISON_PATH(target);
       if (!ec) {
-        const std::string t = target.string();
+        std::string t = target.string();
+        CTP_MSAN_UNPOISON_STRING(t);
         if (!proc_prefix.empty() && t.rfind(proc_prefix, 0) == 0) {
           matches = true;  // owned by the dead runtime
         } else if (t.rfind("/proc/", 0) == 0) {
@@ -181,7 +186,13 @@ int EscalateLocalKill(clio::run::u32 port) {
     HLOG(kWarning,
          "stop: runtime (pid {}) unresponsive - escalating to SIGTERM", pid);
     kill(pid, SIGTERM);
-    for (int i = 0; i < 100 && PidIsRunning(pid); ++i) {
+    // SIGTERM starts the runtime's graceful stop, whose own watchdog forces
+    // the process out within the default 5 s grace + 15 s teardown margin
+    // (RuntimeManager::RequestStop). SIGKILL must wait longer than that: at
+    // 10 s it killed live-but-slow runtimes mid-shutdown (exit 137 on loaded
+    // macOS runners, #991) that would have exited cleanly on their own.
+    constexpr int kSigtermWaitMs = 25000;
+    for (int i = 0; i < kSigtermWaitMs / 100 && PidIsRunning(pid); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     if (PidIsRunning(pid)) {

@@ -19,6 +19,7 @@ on:
       - '.github/workflows/build-pip.yml'
       - 'CMakeLists.txt'
       - 'context-transfer-engine/adapter/libfuse/**'
+      - 'context-transfer-engine/wrapper/python/**'
 
 permissions:
   contents: write
@@ -79,7 +80,7 @@ jobs:
         include:
           - runner: ubuntu-latest
             arch: x86_64
-            cibw_build: "cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64"
+            cibw_build: "cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64 cp314-manylinux_x86_64"
             cibw_image: manylinux_2_28
             cibw_environment: >-
               CMAKE_PREFIX_PATH=/usr/local
@@ -88,7 +89,7 @@ jobs:
               CXXFLAGS=-march=x86-64
           - runner: ubuntu-24.04-arm
             arch: aarch64
-            cibw_build: "cp310-manylinux_aarch64 cp311-manylinux_aarch64 cp312-manylinux_aarch64 cp313-manylinux_aarch64"
+            cibw_build: "cp310-manylinux_aarch64 cp311-manylinux_aarch64 cp312-manylinux_aarch64 cp313-manylinux_aarch64 cp314-manylinux_aarch64"
             cibw_image: manylinux_2_28
             cibw_environment: >-
               CMAKE_PREFIX_PATH=/usr/local
@@ -150,9 +151,13 @@ jobs:
   # Build Windows wheels via cibuildwheel
   #------------------------------------------------------------
   build-wheels-windows:
-    name: Build Windows wheels
+    name: Build Windows wheels (${{ matrix.abi }})
     runs-on: windows-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [cp310, cp311, cp312, cp313, cp314]
 
     steps:
     - name: Checkout repository
@@ -197,7 +202,7 @@ jobs:
 
     - name: Build Windows wheels
       env:
-        CIBW_BUILD: "cp310-win_amd64 cp311-win_amd64 cp312-win_amd64 cp313-win_amd64"
+        CIBW_BUILD: "${{ matrix.abi }}-win_amd64"
         CIBW_ENVIRONMENT_WINDOWS: >-
           CMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
           VCPKG_DEFAULT_TRIPLET=x64-windows
@@ -223,7 +228,7 @@ jobs:
     - name: Upload Windows wheels
       uses: actions/upload-artifact@v4
       with:
-        name: wheels-win_amd64
+        name: wheels-win_amd64-${{ matrix.abi }}
         path: installers/pip/wheelhouse/*.whl
 
   #------------------------------------------------------------
@@ -254,7 +259,7 @@ jobs:
           # below has to match so delocate accepts the bundle.
           - runner: macos-14
             arch: arm64
-            cibw_build: "cp310-macosx_arm64 cp311-macosx_arm64 cp312-macosx_arm64 cp313-macosx_arm64"
+            cibw_build: "cp310-macosx_arm64 cp311-macosx_arm64 cp312-macosx_arm64 cp313-macosx_arm64 cp314-macosx_arm64"
             brew_prefix: /opt/homebrew
             macosx_deployment_target: '14.0'
 
@@ -358,6 +363,12 @@ jobs:
             arch: x86_64
             distro: fedora:40
             pkg_manager: dnf
+          # Fedora 43 ships Python 3.14 as its python3: the cp314 wheel's
+          # install-and-import leg.
+          - runner: ubuntu-latest
+            arch: x86_64
+            distro: fedora:43
+            pkg_manager: dnf
           # aarch64 tests
           # The aarch64 wheel is a separately built and separately tagged
           # artifact, so it needs its own glibc-2.28 regression test (#973).
@@ -383,6 +394,7 @@ jobs:
         sparse-checkout: |
           installers/pip
           CI
+          context-transfer-engine/wrapper/python
 
     - name: Download wheels
       uses: actions/download-artifact@v4
@@ -400,8 +412,11 @@ jobs:
 
     - name: Test wheel in ${{ matrix.distro }}
       run: |
+        mkdir -p build/capacity-results
         docker run --rm \
           -v "$PWD/wheels:/wheels:ro" \
+          -v "$PWD/context-transfer-engine/wrapper/python:/capacity-tests:ro" \
+          -v "$PWD/build/capacity-results:/capacity-results" \
           ${{ matrix.distro }} \
           bash -c '
             set -e
@@ -460,6 +475,7 @@ jobs:
             WHEEL=$(ls /wheels/iowarp_core-*-${PYTAG}-*.whl | head -1)
             echo "Installing built wheel: $WHEEL"
             pip install --quiet --find-links /wheels --no-cache-dir "$WHEEL"
+            pip install --quiet --no-cache-dir psutil
 
             echo "=== Import test ==="
             python -c "import iowarp_core; print(\"Version:\", iowarp_core.get_version())"
@@ -531,10 +547,29 @@ jobs:
             LIB_DIR=$(python -c "import iowarp_core; print(iowarp_core.get_lib_dir())")
             export LD_LIBRARY_PATH="$LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-            echo "=== Cache + replication chimods present ==="
-            # Both chimods ship by default (#886/#899); a missing lib means
-            # the pip_package component lost them.
-            for mod in cache replication; do
+            echo "=== Every chimod the default config composes is present ==="
+            # The runtime refuses to start when a composed module is missing,
+            # so a module that the shipped clio_default.yaml composes but the
+            # pip_package component omits breaks clio_run start (#1240). Derive
+            # the list from the shipped config so a new module cannot slip by.
+            DATA_DIR=$(python -c "import iowarp_core, os; print(os.path.join(os.path.dirname(iowarp_core.__file__), \"data\"))")
+            MODS=$(sed -n "s/^  - mod_name: *\([A-Za-z0-9_]*\).*/\1/p" "$DATA_DIR/clio_default.yaml")
+            if [ -z "$MODS" ]; then
+              echo "FAIL: no mod_name entries found in $DATA_DIR/clio_default.yaml"
+              exit 1
+            fi
+            for mod in $MODS; do
+              if [ ! -f "$LIB_DIR/lib${mod}_runtime.so" ]; then
+                echo "FAIL: default config composes $mod but lib${mod}_runtime.so is missing from the wheel"
+                exit 1
+              fi
+              echo "  $mod: ok"
+            done
+
+            echo "=== Cache, replication, stream, filesystem chimods present ==="
+            # They ship by default (#886/#899; filesystem needs stream); a
+            # missing lib means the pip_package component lost them.
+            for mod in cache replication stream filesystem; do
               if ! ls "$LIB_DIR"/libclio_cte_${mod}_* >/dev/null 2>&1; then
                 echo "FAIL: libclio_cte_${mod}_* missing from wheel lib dir"
                 exit 1
@@ -562,8 +597,21 @@ jobs:
               ldd "$so" 2>/dev/null | grep -v "linux-vdso\|ld-linux\|libc.so\|libm.so\|libstdc++\|libgcc_s\|libpthread\|librt\|libdl" || true
             done
 
+            MODULE_DIR=$(python -c "import iowarp_core; print(iowarp_core.get_ext_dir())")
+            python /capacity-tests/test_cte_capacity.py \
+              --module-dir "$MODULE_DIR" --bin-dir "$BIN_DIR" \
+              --output-dir /capacity-results
+
             echo "=== All tests passed ==="
           '
+
+    - name: Preserve capacity regression evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: capacity-linux-${{ matrix.arch }}-${{ strategy.job-index }}
+        path: build/capacity-results/
+        if-no-files-found: warn
 
   #------------------------------------------------------------
   # Test macOS wheels natively (Docker is unavailable on GHA macOS).
@@ -588,8 +636,16 @@ jobs:
           - runner: macos-14
             arch: arm64
             python: '3.12'
+          - runner: macos-14
+            arch: arm64
+            python: '3.14'
 
     steps:
+    - name: Check out capacity regression
+      uses: actions/checkout@v4
+      with:
+        sparse-checkout: context-transfer-engine/wrapper/python
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
@@ -613,6 +669,7 @@ jobs:
         WHEEL=$(ls wheels/iowarp_core-*-${PYTAG}-*.whl | head -1)
         echo "Installing built wheel: $WHEEL"
         pip install --quiet --find-links wheels --no-cache-dir "$WHEEL"
+        pip install --quiet --no-cache-dir psutil
 
         echo "=== Import test ==="
         python -c "import iowarp_core; print('Version:', iowarp_core.get_version())"
@@ -653,7 +710,21 @@ jobs:
         fi
         echo "All bundled dylibs are well-formed"
 
+        MODULE_DIR=$(python -c "import iowarp_core; print(iowarp_core.get_ext_dir())")
+        BIN_DIR=$(python -c "import iowarp_core; print(iowarp_core.get_bin_dir())")
+        python context-transfer-engine/wrapper/python/test_cte_capacity.py \
+          --module-dir "$MODULE_DIR" --bin-dir "$BIN_DIR" \
+          --output-dir build/capacity-results
+
         echo "=== All tests passed ==="
+
+    - name: Preserve capacity regression evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: capacity-macos-${{ matrix.arch }}-${{ matrix.python }}
+        path: build/capacity-results/
+        if-no-files-found: warn
 
   #------------------------------------------------------------
   # Test Windows wheels natively (Linux Docker doesn't run on Windows
@@ -666,9 +737,18 @@ jobs:
   #------------------------------------------------------------
   test-wheels-windows:
     needs: build-wheels-windows
-    name: Test Windows wheels
+    name: Test Windows wheels (Python ${{ matrix.python }})
     runs-on: windows-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest-maintained ABI we ship and the newest.
+        include:
+          - python: '3.12'
+            abi: cp312
+          - python: '3.14'
+            abi: cp314
 
     steps:
     # FIRST step on purpose: actions/checkout cleans the workspace, so running
@@ -677,20 +757,22 @@ jobs:
     # because the job needs only the retry helper, not the tree -- without a
     # checkout at all the helper is absent and the step dies with "The argument
     # 'CI/Retry.ps1' is not recognized as the name of a script file".
-    - name: Check out CI helpers
+    - name: Check out CI helpers and capacity regression
       uses: actions/checkout@v4
       with:
-        sparse-checkout: CI
+        sparse-checkout: |
+          CI
+          context-transfer-engine/wrapper/python
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        python-version: ${{ matrix.python }}
 
     - name: Download Windows wheels
       uses: actions/download-artifact@v4
       with:
-        name: wheels-win_amd64
+        name: wheels-win_amd64-${{ matrix.abi }}
         path: wheels/
 
     # WinFsp runtime for the fuse adapter smoke test (#899) — end users
@@ -712,6 +794,8 @@ jobs:
         Write-Host "Installing built wheel: $wheel"
         pip install --quiet --find-links wheels --no-cache-dir $wheel
         if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
+        pip install --quiet --no-cache-dir psutil
+        if ($LASTEXITCODE -ne 0) { throw "capacity test dependency install failed" }
 
         Write-Host "=== Import test ==="
         python -c "import iowarp_core; print('Version:', iowarp_core.get_version())"
@@ -761,6 +845,13 @@ jobs:
         python -c "import iowarp_core, glob, os, sys; dirs = [iowarp_core.get_lib_dir(), iowarp_core.get_bin_dir()]; missing = [m for m in ('cache', 'replication') if not any(glob.glob(os.path.join(d, f'*clio_cte_{m}_*')) for d in dirs)]; sys.exit(f'missing chimods: {missing}' if missing else 0)"
         if ($LASTEXITCODE -ne 0) { throw "cache/replication chimod DLLs missing from wheel" }
 
+        $moduleDir = python -c "import iowarp_core; print(iowarp_core.get_ext_dir())"
+        if ($LASTEXITCODE -ne 0) { throw "get_ext_dir failed" }
+        python context-transfer-engine/wrapper/python/test_cte_capacity.py `
+          --module-dir "$moduleDir" --bin-dir "$binDir" `
+          --output-dir build/capacity-results
+        if ($LASTEXITCODE -ne 0) { throw "capacity binding regression failed" }
+
         Write-Host "=== All Windows tests passed ==="
         # The bench --help calls above leave $LASTEXITCODE = 1 (they print
         # usage and exit non-zero, which we treat as success here). pwsh
@@ -768,6 +859,14 @@ jobs:
         # which makes GitHub Actions mark the step as failed even though
         # every check above passed. Force success explicitly.
         exit 0
+
+    - name: Preserve capacity regression evidence
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: capacity-windows-${{ matrix.python }}
+        path: build/capacity-results/
+        if-no-files-found: warn
 
   #------------------------------------------------------------
   # Publish to PyPI on version tags
@@ -807,7 +906,8 @@ jobs:
     - name: Download Windows wheels
       uses: actions/download-artifact@v4
       with:
-        name: wheels-win_amd64
+        pattern: wheels-win_amd64-*
+        merge-multiple: true
         path: dist/
 
     - name: Download macOS arm64 wheels
@@ -860,7 +960,8 @@ jobs:
     - name: Download Windows wheels
       uses: actions/download-artifact@v4
       with:
-        name: wheels-win_amd64
+        pattern: wheels-win_amd64-*
+        merge-multiple: true
         path: dist/
 
     - name: Download macOS arm64 wheels

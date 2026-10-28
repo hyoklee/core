@@ -877,6 +877,14 @@ typedef ctp::ipc::multi_ext_spsc_queue<Future<Task>, CLIO_QUEUE_ALLOC_T>
 
 namespace clio::run {
 
+/**
+ * Drop one in-flight task from a SHM client's count (#1192). Defined in
+ * ipc_manager.cc; RunContext's destructor calls it so this header does not
+ * need IpcManager.
+ * @param pid the client process the task was admitted from
+ */
+void ReleaseClientInflight(u32 pid);
+
 // ============================================================================
 // RunContext (uses Future<Task> and TaskLane* - both must be complete above)
 // ============================================================================
@@ -941,17 +949,47 @@ class RunContext {
   //      and read at SendOut.
   ClientOrigin origin_;            /**< Origin transport mode (completion path) */
   u32 client_pid_;                 /**< Client PID for per-client routing */
+  /** Admitted from a SHM client: this context holds one in-flight count on
+   *  client_pid_ (released by the destructor). Runtime-side only. */
+  bool counts_client_inflight_ = false;
   /** Client's net_key (task vaddr) captured at RecvIn and restored onto
    *  task_id_.net_key_ at SendOut, because AllocLoadTask reassigns the server
    *  task's identity. The ZMQ recv thread keys pending_zmq_futures_ by this, so
    *  the response must carry it for the client to match (else it hangs). */
   uintptr_t client_net_key_;
+  /** #968: the client's OWN task identity, captured at RecvIn alongside
+   *  client_net_key_ and stamped back onto the response at SendOut.
+   *
+   *  net_key_ is the client task's heap address, so it is recycled as soon as
+   *  that task is freed. Demuxing a response by net_key alone therefore has no
+   *  way to tell "the reply to the task I am waiting for" from "a late reply to
+   *  a previous task that happened to live at this address". unique_ is
+   *  monotonic per client process and is never recycled, so echoing it lets the
+   *  client recv thread corroborate the address match against a real identity.
+   *  0 means the peer did not echo one (nothing to check). */
+  u32 client_task_unique_;
+  u32 client_task_major_;  /**< Companion to client_task_unique_ (per-thread) */
   ctp::lbm::ShmTransferInfo input_;   /**< SHM transfer info (client -> worker) */
   ctp::lbm::ShmTransferInfo output_;  /**< SHM transfer info (worker -> client) */
   ctp::lbm::Transport* response_transport_; /**< Transport for the response */
+  /** Keeps a client dial-back transport alive while this task may still send
+   *  its response on it (issue #1065): the dial-back table is LRU-bounded and
+   *  may evict the entry while the task runs. Null when response_transport_ is
+   *  owned elsewhere (the inbound IPC socket). Runtime-local, never
+   *  serialized. */
+  std::shared_ptr<ctp::lbm::Transport> response_transport_owner_;
   char response_identity_[64];     /**< ZMQ echo-back identity (fallback path) */
   u32 response_identity_len_;
   int response_fd_;                /**< Socket fd for routing response (IPC) */
+  /** Client identity for TCP dial-back DEALER routing. Captured at RecvIn
+   *  (from the incoming ROUTER's identity frame) so SendOut can evict the
+   *  cached dial-back connection when a response is undeliverable (issue #722).
+   *  Empty for IPC responses (which use response_fd_). */
+  std::string client_identity_;
+  /** Client's response-listener port (SaveTaskArchive::client_port_). Used by
+   *  SendOut to evict the cached dial-back DEALER when the client is
+   *  unreachable (issue #722). Only meaningful for TCP responses. */
+  int client_response_port_;
   /** #722 bounded-drop of an undeliverable client response. When SendOut's
    *  network Send keeps failing (a client that submitted over TCP/IPC then
    *  disconnected), these bound the re-queue: after kMaxClientResponseRetries
@@ -959,6 +997,12 @@ class RunContext {
    *  (task freed via RAII) instead of re-queued forever. Non-serialized;
    *  meaningful only on the server's outbound response future. */
   u32 send_fail_count_;            /**< Consecutive response-Send failures */
+  /** #968: how many times SendOut has put a response for THIS future on the
+   *  wire. A successful send should happen exactly once; a second one means the
+   *  client is being handed two replies for one request, and the second lands
+   *  on whatever now owns that net_key. Counted so the anomaly is reported
+   *  where it happens rather than inferred from the client's miss tally. */
+  u32 responses_sent_;
   ctp::Timepoint first_send_fail_; /**< Time of the first failure (for timeout) */
   ctp::abitfield32_t gpu_flags_;   /**< GPU device-completion bit (gpu2gpu) */
   uintptr_t gpu_task_device_ptr_;  /**< Device addr of the task POD (kDeviceMem) */
@@ -969,6 +1013,12 @@ class RunContext {
    *  0 for every task the probe did not open — which is every CPU-origin task,
    *  and all tasks when the probe is off. */
   uintptr_t probe_rec_;
+  /** Cycle stamp for the latency report (CLIO_EVLAT): set when this task's
+   *  completion event is pushed onto its parent's event queue, read when the
+   *  parent's worker pops it (channel evq_wait); and on an origin task, set
+   *  at SendIn and read when the remote reply completes it (channel
+   *  rtt_remote). 0 when unset. */
+  unsigned long long notify_ns_ = 0;
 
  private:
   std::atomic<bool> is_notified_; /**< Atomic flag to prevent duplicate event
@@ -1018,10 +1068,14 @@ class RunContext {
         origin_(ClientOrigin::kClientShm),
         client_pid_(0),
         client_net_key_(0),
+        client_task_unique_(0),
+        client_task_major_(0),
         response_transport_(nullptr),
         response_identity_len_(0),
         response_fd_(-1),
+        client_response_port_(0),
         send_fail_count_(0),
+        responses_sent_(0),
         gpu_task_device_ptr_(0),
         gpu_task_size_(0),
         probe_rec_(0),
@@ -1130,6 +1184,10 @@ class RunContext {
    * not here.
    */
   ~RunContext() {
+    // #1192: a task admitted from a SHM client pins that client's segments
+    // (its ShmPtrs may be resolved to raw pointers held across yields) until
+    // the task is gone.
+    if (counts_client_inflight_) ReleaseClientInflight(client_pid_);
 #if defined(CLIO_ENABLE_BOOST_COROUTINES)
     coro_handle_ = clio::run::detail::FiberHandle{};
     // fiber_state_ (and its boost::context::fiber) destructs next, freeing the
@@ -1846,8 +1904,13 @@ public:
  * back to the worker with an optional delay before resumption.
  *
  * Usage:
- *   co_await clio::run::yield();       // Yield immediately
+ *   co_await clio::run::yield(1.0);    // Yield, resume on the next pass
  *   co_await clio::run::yield(25.0);   // Yield with 25 microsecond delay
+ *
+ * A delay of 0 does NOT mean "yield immediately": the worker treats it as
+ * "waiting for a Future" and never re-queues the task itself, so a bare
+ * yield() suspends until some event resumes it -- possibly forever. Always
+ * pass a positive delay to yield cooperatively.
  */
 class YieldAwaiter {
  private:
@@ -1907,11 +1970,12 @@ class YieldAwaiter {
  * This function provides a clean syntax for yielding control within
  * ChiMod runtime coroutines.
  *
- * @param us Microseconds to delay before resumption (default: 0)
+ * @param us Microseconds to delay before resumption; must be > 0 for a
+ *           cooperative yield (0 waits for an event, see YieldAwaiter)
  * @return YieldAwaiter object that can be co_awaited
  *
  * Usage:
- *   co_await clio::run::yield();       // Yield immediately
+ *   co_await clio::run::yield(1.0);    // Yield, resume on the next pass
  *   co_await clio::run::yield(25.0);   // Yield with 25 microsecond delay
  */
 inline YieldAwaiter yield(double us = 0.0) { return YieldAwaiter(us); }

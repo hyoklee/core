@@ -79,6 +79,16 @@ add_executable(test_evict
     test_evict.cc
 )
 
+# Organizer phase hint (Method::kReorganizeHint) API test
+add_executable(test_reorganize_hint
+    test_reorganize_hint.cc
+)
+
+# Gray-Scott data organizer (organizer: grayscott) policy + end-to-end test
+add_executable(test_grayscott_organizer
+    test_grayscott_organizer.cc
+)
+
 # PutBlob's make-room-and-retry trigger: the caller side of kEvict, which had
 # no non-test caller until now.
 add_executable(test_evict_trigger
@@ -118,6 +128,13 @@ add_executable(test_concurrent_same_blob
     test_concurrent_same_blob.cc
 )
 
+# Torn-read regression (RELIABILITY.md defects 8 and 11): readers of a blob
+# being overwritten in place must see one whole version, on the runtime path
+# (reader drain) and on the zero-IPC fast path (content seqlock).
+add_executable(test_torn_read
+    test_torn_read.cc
+)
+
 # Vectored PutBlob/GetBlob (#820): N regions in one task, one write-token
 # acquire. Asserts equivalence with N single puts, list-order overlap
 # resolution, and union-range allocation.
@@ -136,6 +153,11 @@ add_executable(test_bdev_fragmentation
 # Drives the stale-mirror window that made cte_bdev_fragmentation flaky.
 add_executable(test_bdev_free_visibility
     test_bdev_free_visibility.cc
+)
+
+# Residency op (VFD_VOL_PLAN §1): present vs absent vs unreachable.
+add_executable(test_residency_op
+    test_residency_op.cc
 )
 
 # Batching benchmark (#820): many small writes at ONE blob, A/B'd on the same
@@ -364,6 +386,30 @@ target_link_libraries(test_evict
     ${CMAKE_THREAD_LIBS_INIT}    # Threading support
 )
 
+# Link test_reorganize_hint - same dependency set as test_evict
+target_link_libraries(test_reorganize_hint
+    clio_cte_core_runtime         # CTE core runtime library
+    clio_cte_core_client          # CTE core client library
+    clio::run::admin_runtime      # Admin module runtime (required for runtime mode)
+    clio::run::admin_client       # Admin module client
+    clio::run::bdev_runtime       # Bdev module runtime (required for runtime mode)
+    clio::run::bdev_client        # Bdev client for BdevType enum
+    ctp::cxx                    # ClioCtp library
+    ${CMAKE_THREAD_LIBS_INIT}    # Threading support
+)
+
+# Link test_grayscott_organizer - same dependency set
+target_link_libraries(test_grayscott_organizer
+    clio_cte_core_runtime         # CTE core runtime library
+    clio_cte_core_client          # CTE core client library
+    clio::run::admin_runtime      # Admin module runtime (required for runtime mode)
+    clio::run::admin_client       # Admin module client
+    clio::run::bdev_runtime       # Bdev module runtime (required for runtime mode)
+    clio::run::bdev_client        # Bdev client for BdevType enum
+    ctp::cxx                    # ClioCtp library
+    ${CMAKE_THREAD_LIBS_INIT}    # Threading support
+)
+
 # Link test_evict_trigger - same dependency set as test_evict
 target_link_libraries(test_evict_trigger
     clio_cte_core_runtime         # CTE core runtime library
@@ -455,6 +501,21 @@ target_link_libraries(test_concurrent_same_blob
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
+# Link test_torn_read (defects 8/11) - same deps.
+target_link_libraries(test_torn_read
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+target_include_directories(test_torn_read PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+
 # Link test_vectored_blob_io (#820 vectored blob I/O) - same deps.
 target_link_libraries(test_vectored_blob_io
     clio_cte_core_runtime
@@ -469,6 +530,18 @@ target_link_libraries(test_vectored_blob_io
 
 # Link test_bdev_fragmentation (#820) - same deps.
 target_link_libraries(test_bdev_fragmentation
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+# Link test_residency_op - same deps.
+target_link_libraries(test_residency_op
     clio_cte_core_runtime
     clio_cte_core_client
     clio::run::admin_runtime
@@ -839,6 +912,16 @@ set_tests_properties(
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1;WAKEUP_ITERS=400"
 )
 
+add_test(NAME cte_torn_read
+    COMMAND test_torn_read)
+set_tests_properties(
+    cte_torn_read
+    PROPERTIES
+        TIMEOUT 300
+        LABELS "regression;concurrent;cte"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1"
+)
+
 add_test(NAME cte_concurrent_same_blob_all
     COMMAND test_concurrent_same_blob)
 
@@ -848,6 +931,27 @@ set_tests_properties(
         TIMEOUT 300  # 5 minute timeout -> a hang trips this
         LABELS "regression;concurrent;cte"
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1;SAME_BLOB_THREADS=8;SAME_BLOB_ITERS=100"
+)
+
+# issue #820: run the SAME rigorous same-blob correctness test again, this time
+# THROUGH the batching merge path (CLIO_CTE_BATCHING + CLIO_BATCH_LANE). Without
+# these env vars BuildBatch returns at its policy gate and SmashBatch /
+# CompleteBatchParents / the inline-exec sink never run -- which is why coverage
+# of the merge path was ~0. Reusing this test means the merged path is checked
+# by the strongest correctness assertion there is (each thread's disjoint region
+# must survive intact), not a bespoke smoke test.
+# Same-blob writes racing the periodic FlushData move to a persistent tier
+# (RELIABILITY.md defect 14): the flush must hold the write token across its
+# place-and-swap and size the move under it.
+add_test(NAME cte_concurrent_same_blob_flush
+    COMMAND test_concurrent_same_blob)
+
+set_tests_properties(
+    cte_concurrent_same_blob_flush
+    PROPERTIES
+        TIMEOUT 300  # 5 minute timeout -> a hang trips this
+        LABELS "regression;concurrent;cte"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1;SAME_BLOB_THREADS=8;SAME_BLOB_ITERS=100;SAME_BLOB_FLUSH=1"
 )
 
 # issue #820: run the SAME rigorous same-blob correctness test again, this time
@@ -889,6 +993,13 @@ set_tests_properties(cte_bdev_fragmentation PROPERTIES
 
 # issue #919: placement must see space freed since the last StatTargets tick.
 # Four fill/stat/delete/put cycles; a stray periodic tick can rescue one, not all.
+add_test(NAME cte_residency_op
+    COMMAND test_residency_op)
+set_tests_properties(cte_residency_op PROPERTIES
+    TIMEOUT 300
+    LABELS "cte;residency"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1")
+
 add_test(NAME cte_bdev_free_visibility
     COMMAND test_bdev_free_visibility)
 set_tests_properties(cte_bdev_free_visibility PROPERTIES
@@ -1114,7 +1225,156 @@ set_tests_properties(
         LABELS "unit;cache;cte"
         ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1"
 )
+
+#------------------------------------------------------------------------------
+# Cache chimod compose-time config (pure, no runtime). CacheConfig::LoadConfig
+# is header-only and is the only cache entry point a deployment's YAML reaches,
+# but test_cache_interpose above composes the pool from a C++ CacheConfig and
+# never parses a line of it. No daemon, no shared memory — runs in
+# milliseconds.
+#------------------------------------------------------------------------------
+add_executable(test_cache_config_units test_cache_config_units.cc)
+target_include_directories(test_cache_config_units PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+    ${CMAKE_SOURCE_DIR}/context-transfer-engine/cache/include
+)
+# Client-only: the config lives in the header, so the runtime half of the
+# chimod is not needed to parse it.
+target_link_libraries(test_cache_config_units
+    clio_cte_cache_client
+    clio_cte_core_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+add_test(NAME cte_cache_config_units
+    COMMAND test_cache_config_units)
+
+set_tests_properties(
+    cte_cache_config_units
+    PROPERTIES
+        TIMEOUT 60
+        LABELS "unit;cache;cte;config"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+)
+
+install(TARGETS test_cache_config_units
+    RUNTIME DESTINATION bin
+)
 endif()  # TARGET clio_cte_cache_client
+
+add_executable(test_cte_reorganize_no_loss test_cte_reorganize_no_loss.cc)
+target_include_directories(test_cte_reorganize_no_loss PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test)
+target_link_libraries(test_cte_reorganize_no_loss
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME cte_reorganize_no_loss COMMAND test_cte_reorganize_no_loss)
+set_tests_properties(cte_reorganize_no_loss PROPERTIES
+    TIMEOUT 300
+    LABELS "unit;cte"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1")
+
+add_executable(test_fs_dir_block test_fs_dir_block.cc)
+target_include_directories(test_fs_dir_block PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+    ${CMAKE_SOURCE_DIR}/context-transfer-engine/filesystem/include)
+target_link_libraries(test_fs_dir_block
+    clio_cte_core_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME cte_fs_dir_block COMMAND test_fs_dir_block)
+set_tests_properties(cte_fs_dir_block PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;cte"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}")
+
+add_executable(test_cte_conditional_put test_cte_conditional_put.cc)
+target_include_directories(test_cte_conditional_put PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test)
+target_link_libraries(test_cte_conditional_put
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME cte_conditional_put COMMAND test_cte_conditional_put)
+set_tests_properties(cte_conditional_put PROPERTIES
+    TIMEOUT 300
+    LABELS "unit;cte"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1")
+
+if(TARGET clio_cte_stream_client)
+add_executable(test_stream_append test_stream_append.cc)
+target_include_directories(test_stream_append PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+    ${CMAKE_SOURCE_DIR}/context-transfer-engine/stream/include
+)
+target_link_libraries(test_stream_append
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio_cte_stream_runtime
+    clio_cte_stream_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+add_test(NAME cte_stream_append COMMAND test_stream_append)
+set_tests_properties(
+    cte_stream_append
+    PROPERTIES
+        TIMEOUT 300
+        LABELS "unit;stream;cte"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1"
+)
+endif()  # TARGET clio_cte_stream_client
+
+#------------------------------------------------------------------------------
+# Checkpoint chimod (vector.Copy lazy copies): a fault-handled tag resolves
+# missing blobs from its source tag -- get fault, put-side materialise-then-
+# merge, copy/source independence, and the source-absent fallback.
+if(TARGET clio_cte_checkpoint_client)
+add_executable(test_checkpoint_fault test_checkpoint_fault.cc)
+target_include_directories(test_checkpoint_fault PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+    ${CMAKE_SOURCE_DIR}/context-transfer-engine/checkpoint/include
+)
+target_link_libraries(test_checkpoint_fault
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio_cte_checkpoint_runtime
+    clio_cte_checkpoint_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+add_test(NAME cte_checkpoint_fault
+    COMMAND test_checkpoint_fault)
+
+set_tests_properties(
+    cte_checkpoint_fault
+    PROPERTIES
+        TIMEOUT 300
+        LABELS "unit;checkpoint;cte"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1"
+)
+endif()  # TARGET clio_cte_checkpoint_client
 
 #------------------------------------------------------------------------------
 # Indexer chimod behavioral coverage (issue #905): scope, async drain +
@@ -1196,6 +1456,14 @@ endif()  # full 4-layer cache stack
 # Add score-driven eviction tests (Method::kEvict)
 add_test(NAME cte_evict
     COMMAND test_evict)
+
+add_test(NAME cte_reorganize_hint
+    COMMAND test_reorganize_hint)
+
+add_test(NAME cte_grayscott_organizer
+    COMMAND test_grayscott_organizer)
+set_tests_properties(cte_grayscott_organizer PROPERTIES TIMEOUT 180 LABELS "cte")
+set_tests_properties(cte_reorganize_hint PROPERTIES TIMEOUT 120 LABELS "cte")
 
 set_tests_properties(
     cte_evict
@@ -1317,8 +1585,7 @@ endif()
 # lose their own labels (e.g. "regression;cte", "query;core;cte"). Fixing it is
 # NOT a drive-by: the coverage gate excludes -LE "query|stress|functional", so
 # restoring labels changes which tests the gate runs. Tracked separately.
-set_tests_properties(
-    cte_core_pool_creation
+set_property(TEST cte_core_pool_creation
     cte_core_target_registration
     cte_core_blob_put
     cte_core_blob_get
@@ -1364,8 +1631,7 @@ set_tests_properties(
     cte_reorganize_all
     cte_data_organizer_all
     cte_io_emulation_all
-    PROPERTIES LABELS "msan_skip"
-)
+  APPEND PROPERTY LABELS "msan_skip")
 
 # Tests that start a full CLIO Runtime runtime share /tmp/clio_iowarp SHM
 # segments and TCP/IPC ports, so they must NOT run in parallel. They also
@@ -1529,11 +1795,26 @@ if(CLIO_CORE_ENABLE_ROCM)
   )
   target_compile_options(test_cte_devmem_putget PRIVATE
     "$<$<COMPILE_LANGUAGE:CUDA>:SHELL:--generate-code=arch=compute_89,code=sm_89>"
+    # HIP_STANDARD 20 on the target does NOT reach the command line here (the
+    # source gets its language from set_source_files_properties, and no -std
+    # was emitted at all -- verified in compile_commands.json). Say it
+    # outright: without C++20 this TU pulls in task.h -> <coroutine> and dies
+    # with "the <coroutine> header requires -fcoroutines".
+    "$<$<COMPILE_LANGUAGE:HIP>:-std=c++20>"
   )
+  # CUDA_STANDARD 17 here was a copy-paste from the CUDA branch above and was
+  # wrong twice over: it names the CUDA language on a HIP target, and 17 is
+  # too old for a runtime whose task/ipc headers are C++20 coroutines -- this
+  # target failed with "<coroutine> requires -fcoroutines" while the rest of
+  # the ROCm build was clean. HIP_STANDARD is the property that actually
+  # applies under HIP_PLATFORM=amd; the CUDA_* ones are kept (at 20) because
+  # HIP_PLATFORM=nvidia really does route this through the CUDA language.
   set_target_properties(test_cte_devmem_putget PROPERTIES
     CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
-    CUDA_STANDARD 17
+    CUDA_STANDARD 20
     CUDA_STANDARD_REQUIRED ON
+    HIP_STANDARD 20
+    HIP_STANDARD_REQUIRED ON
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
   )
   target_include_directories(test_cte_devmem_putget PUBLIC
@@ -1938,3 +2219,113 @@ install(TARGETS test_safe_bdev_recovery_e2e
 )
 
 endif()  # TARGET clio_safe_bdev_runtime
+
+# Batched POD paging: PodMultiPutBlob / PodMultiGetBlob / PodMultiScore.
+# Needs the compressor client for the interposed-batch case.
+if(TARGET clio_cte_compressor_client)
+add_executable(test_pod_multi_paging test_pod_multi_paging.cc)
+target_include_directories(test_pod_multi_paging PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+    ${CMAKE_SOURCE_DIR}/context-transfer-engine/compressor/include
+)
+target_link_libraries(test_pod_multi_paging
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio_cte_compressor_runtime
+    clio_cte_compressor_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+add_test(NAME cte_pod_multi_paging
+    COMMAND test_pod_multi_paging)
+
+set_tests_properties(
+    cte_pod_multi_paging
+    PROPERTIES
+        TIMEOUT 300
+        LABELS "unit;cte;pod"
+        ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1"
+)
+endif()
+
+#------------------------------------------------------------------------------
+# Regression: renaming a published directory under a parent whose name has not
+# arrived yet must re-key the whole index subtree (pending_rekey_).
+#------------------------------------------------------------------------------
+add_executable(test_tag_name_rekey test_tag_name_rekey.cc)
+target_include_directories(test_tag_name_rekey PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test)
+target_link_libraries(test_tag_name_rekey
+    clio_cte_core_runtime
+    clio_cte_core_client
+    clio::run::admin_runtime
+    clio::run::admin_client
+    clio::run::bdev_runtime
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT})
+add_test(NAME cte_tag_name_rekey COMMAND test_tag_name_rekey)
+set_tests_properties(cte_tag_name_rekey PROPERTIES
+    TIMEOUT 120
+    LABELS "unit;cte"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_TEST_DATA_DIR=${CMAKE_BINARY_DIR};CLIO_BIND_ADDR=127.0.0.1")
+
+# Well-known CTE ChiMod pool ids are distinct (issue #1186): a compile-time
+# check over whichever optional modules this build includes.
+add_executable(test_well_known_pool_ids test_well_known_pool_ids.cc)
+target_link_libraries(test_well_known_pool_ids clio_cte_core_client)
+foreach(_wk_mod filesystem replication cache indexer stream checkpoint)
+  if(TARGET clio_cte_${_wk_mod}_client)
+    target_link_libraries(test_well_known_pool_ids clio_cte_${_wk_mod}_client)
+    string(TOUPPER "${_wk_mod}" _wk_upper)
+    target_compile_definitions(test_well_known_pool_ids PRIVATE
+        CLIO_HAVE_${_wk_upper})
+  endif()
+endforeach()
+add_test(NAME cte_well_known_pool_ids COMMAND test_well_known_pool_ids)
+set_tests_properties(cte_well_known_pool_ids PROPERTIES
+    TIMEOUT 30 LABELS "unit;cte")
+
+# fsync through the descriptor layer must reach a persistent tier (#1188).
+# Spawns its own clio_run daemon, composed with a RAM tier over a file tier;
+# UNIX-only for the same reason as cfs_shm_read (RuntimeServer).
+if(UNIX)
+add_executable(test_cfs_fsync_durable
+    test_cfs_fsync_durable.cc
+)
+target_include_directories(test_cfs_fsync_durable PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+target_compile_definitions(test_cfs_fsync_durable PRIVATE
+    CLIO_RUN_EXE="$<TARGET_FILE:clio_run>")
+target_link_libraries(test_cfs_fsync_durable
+    clio_cte_filesystem_client
+    clio_cte_core_client
+    # Config helpers of the client live in the runtime library (see
+    # test_cfs_shm_read above).
+    clio_cte_core_runtime
+    clio::run::admin_client
+    clio::run::bdev_client
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+add_dependencies(test_cfs_fsync_durable
+    clio_run
+    clio_cte_core_runtime
+    clio_cte_filesystem_runtime
+    clio_bdev_runtime
+    clio_admin_runtime)
+add_test(NAME cfs_fsync_durable
+    COMMAND test_cfs_fsync_durable
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+set_tests_properties(cfs_fsync_durable PROPERTIES
+    RESOURCE_LOCK "clio_runtime"
+    TIMEOUT 180
+    ENVIRONMENT "${_cfs_shm_read_env}"
+    LABELS "unit;cte;cfs;msan_skip")
+endif()  # UNIX

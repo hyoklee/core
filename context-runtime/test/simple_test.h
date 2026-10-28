@@ -45,11 +45,31 @@
 #include <exception>
 #include <sstream>
 
+#include "clio_ctp/util/msan.h"
+
 #ifdef CTP_ALLOC_TRACK_SIZE
 #include <chrono>
 #include <thread>
 #include "clio_ctp/memory/allocator/malloc_allocator.h"
 #endif
+
+#ifdef CTP_ALLOC_TRACK_SIZE
+// The elastic-worker exemption below needs the runtime's worker count. It
+// used to come from #ifdef CLIO_WORK_ORCHESTRATOR, but most tests include
+// this header BEFORE the runtime headers, so the macro was undefined here,
+// the count was always 0 and the exemption was silently dead: every elastic
+// spawn failed whichever test it landed in (#1208, the ~147 KB "leaks" of
+// #942). Including the runtime header instead broke tests that see the
+// runtime's headers without linking it. So the runtime exports a plain C
+// function and this header references it WEAKLY: tests linked with the
+// runtime get the real count, the rest see a null function and 0.
+#if defined(__GNUC__) && !defined(_WIN32)
+extern "C" size_t clio_runtime_worker_count() __attribute__((weak));
+#define CLIO_SIMPLE_TEST_WEAK_WORKER_COUNT 1
+#else
+#define CLIO_SIMPLE_TEST_WEAK_WORKER_COUNT 0
+#endif
+#endif  // CTP_ALLOC_TRACK_SIZE
 
 namespace SimpleTest {
 
@@ -77,7 +97,10 @@ inline size_t RuntimeHeapBytes() {
 // no runtime. Used to tell a genuine leak apart from an elastic worker being
 // spawned mid-test -- see the leak check below.
 inline size_t RuntimeWorkerCount() {
-#ifdef CLIO_WORK_ORCHESTRATOR
+#if CLIO_SIMPLE_TEST_WEAK_WORKER_COUNT
+  return clio_runtime_worker_count != nullptr ? clio_runtime_worker_count()
+                                              : 0;
+#elif defined(CLIO_WORK_ORCHESTRATOR)
   auto *orch = CLIO_WORK_ORCHESTRATOR;
   return orch == nullptr ? 0 : static_cast<size_t>(orch->GetTotalWorkerCount());
 #else
@@ -109,6 +132,10 @@ struct TestStats {
     int failed_tests = 0;
     
     void print_summary() const {
+        // Formatting these counts runs libstdc++'s num_put on stack the tests
+        // just poisoned, and libstdc++.so is not instrumented -- same reason
+        // run_all_tests guards its opening line. Nothing under test runs here.
+        ctp::MsanInterceptorCheckGuard msan_guard;
         std::cout << "\n=== Test Summary ===" << std::endl;
         std::cout << "Total tests: " << total_tests << std::endl;
         std::cout << "Passed: " << passed_tests << std::endl;
@@ -130,7 +157,15 @@ static FinalizeFunc g_test_finalize = nullptr;
 // Test failure exception
 class TestFailure : public std::exception {
 public:
-    explicit TestFailure(const std::string& message) : message_(message) {}
+    explicit TestFailure(const std::string& message) : message_(message) {
+        // Every failure message is composed in a std::ostringstream, and
+        // basic_stringbuf::str() runs inside the uninstrumented libstdc++.so:
+        // the characters it hands back carry no MSan shadow, so PRINTING the
+        // explanation of a failure is itself reported -- twice, burying the
+        // one line that says what actually broke. Cleared once here rather
+        // than at each of the macros that build a message.
+        CTP_MSAN_UNPOISON_STRING(message_);
+    }
     const char* what() const noexcept override { return message_.c_str(); }
 private:
     std::string message_;
@@ -256,10 +291,27 @@ inline int run_all_tests(const std::string& filter = "") {
         }
     }
 
-    if (!filter.empty()) {
-        std::cout << "Running " << matching_tests << " test(s) matching filter '" << filter << "'..." << std::endl;
-    } else {
-        std::cout << "Running " << tests.size() << " test(s)..." << std::endl;
+    {
+        // First locale-dependent ostream write in the process, which is where
+        // libstdc++ lazily builds std::ctype's widen cache -- on a 256-byte
+        // stack buffer it then memcmps. That buffer lands on stack our
+        // instrumented frames already poisoned, and libstdc++.so is not
+        // instrumented, so MSan reports the memcmp. Nothing on our side owns
+        // that memory, so the interceptor check is the only thing we can turn
+        // off; the cache is built once, so this one scope covers the whole run.
+        // print_summary() below needs the same treatment for the same reason.
+        ctp::MsanInterceptorCheckGuard msan_guard;
+        // The stream buffer behind std::cout is libstdc++.so's, but our own
+        // instrumented copy of basic_streambuf::sputn reads its put-area
+        // pointers on every <<. Clearing the base sub-object once here covers
+        // the whole run, tests' own output included.
+        CTP_MSAN_UNPOISON(std::cout.rdbuf(), sizeof(std::streambuf));
+        CTP_MSAN_UNPOISON(std::cerr.rdbuf(), sizeof(std::streambuf));
+        if (!filter.empty()) {
+            std::cout << "Running " << matching_tests << " test(s) matching filter '" << filter << "'..." << std::endl;
+        } else {
+            std::cout << "Running " << tests.size() << " test(s)..." << std::endl;
+        }
     }
 
 #ifdef CTP_ALLOC_TRACK_SIZE
@@ -287,10 +339,16 @@ inline int run_all_tests(const std::string& filter = "") {
         const bool leak_check =
             executed_count > 0 &&
             test.first.find("[noleak]") == std::string::npos;
-        const size_t heap_before =
-            leak_check ? detail::StabilizeRuntimeHeap() : 0;
+        // Worker count FIRST, heap second. The monitor thread spawns elastic
+        // workers asynchronously (often on the previous test's load); one
+        // that landed while the heap was settling was in workers_before but
+        // not in heap_before, so the next test was charged its ~147 KB with
+        // no worker-count change to excuse it (#1208). Read in this order,
+        // any spawn from here on raises the count.
         const size_t workers_before =
             leak_check ? detail::RuntimeWorkerCount() : 0;
+        const size_t heap_before =
+            leak_check ? detail::StabilizeRuntimeHeap() : 0;
         ++executed_count;
 #endif
 

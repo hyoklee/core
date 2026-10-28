@@ -82,6 +82,39 @@
 #define CTP_DLL CTP_DLL_IMPORT
 #endif
 
+/**
+ * Keep an inline function PRIVATE TO ITS SHARED OBJECT -- for the handful of
+ * header functions whose BODY depends on CTP_ENABLE_CUDA / CTP_ENABLE_ROCM.
+ *
+ * Those flags are deliberately per-target for CUDA (see the CTP_ENABLE_SYCL
+ * note in the top-level CMakeLists: under SYCL they must be global because one
+ * compiler builds every TU; under CUDA a host-only consumer genuinely wants
+ * the non-GPU body). But an `inline` function has EXTERNAL linkage and a weak,
+ * default-visibility symbol, so "per-target" is a fiction at run time: the
+ * dynamic linker binds ONE definition for the whole process -- the first one
+ * in load order -- and every caller in every library gets that body.
+ *
+ * Measured: the merge of #959 added `ctp::IsDevicePointer(out)` to
+ * cte/core/core_client.h. clio_cte_core_client is built WITHOUT
+ * CTP_ENABLE_CUDA, so it emitted the `return false` body, and it sits ahead of
+ * libclio_run_cxx in test binaries' DT_NEEDED order. IpcGpu2Cpu::RecvIn then
+ * read `task_on_device == false` for a cudaMalloc'd task, treated the device
+ * address as host memory and dereferenced it -- SIGSEGV in
+ * cte_devmem_putget_cuda and in the kvhdf5 CTE contract test, on a line that
+ * had not changed in years. cudaPointerGetAttributes, called on the very next
+ * line, correctly reported cudaMemoryTypeDevice.
+ *
+ * Hidden visibility makes the call direct instead of going through the PLT, so
+ * each library gets the body ITS OWN flags selected -- which is what the
+ * per-target define was always meant to mean. Nothing outside the defining
+ * library ever needs to take the address of these.
+ */
+#if CTP_COMPILER_MSVC
+#define CTP_SO_LOCAL
+#else
+#define CTP_SO_LOCAL __attribute__((visibility("hidden")))
+#endif
+
 /** DLL import / export for singletons */
 #ifdef CTP_COMPILING_DLL
 #define CTP_DLL_SINGLETON CTP_DLL_EXPORT
@@ -158,6 +191,26 @@
 #define CTP_IS_DEVICE_PASS 1
 #else
 #define CTP_IS_DEVICE_PASS 0
+#endif
+
+/** CTP_IS_HOST means "this pass compiles host code", and the SYCL device pass
+ *  does not -- so it has to be re-derived here, once CTP_IS_SYCL_DEVICE is
+ *  known. It is first defined further up from CTP_IS_GPU alone, which was
+ *  right when CUDA and ROCm were the only device passes.
+ *
+ *  This is not cosmetic. `#if !CTP_IS_HOST` is how a dozen headers elide
+ *  host-only bodies from the device pass -- ShmMetadataCache::Create,
+ *  CoreClient's staging allocator, the host half of IpcManager. nvcc and
+ *  clang-CUDA fully type-check host function bodies in the device pass, so
+ *  those guards are load-bearing there and the code compiles only because
+ *  CTP_IS_HOST is 0. DPC++ type-checks them too, but saw CTP_IS_HOST as 1
+ *  and so parsed bodies that resolve CLIO_IPC to the GPU IpcManager and then
+ *  call host-only members on it. Every one of those failures is this macro. */
+#undef CTP_IS_HOST
+#if CTP_IS_DEVICE_PASS
+#define CTP_IS_HOST 0
+#else
+#define CTP_IS_HOST 1
 #endif
 
 /** Throw on host; drop on any device pass. CUDA/ROCm/SYCL device code cannot do
@@ -356,7 +409,11 @@
 #define CLS_CROSS_CONST CLS_CONST
 
 /** Class constant macro */
-#if CTP_IS_HOST
+#if CTP_IS_HOST || CTP_IS_SYCL_DEVICE
+// SYCL has no __constant__ address-space keyword, and needs none: a
+// `const` namespace-scope scalar with a constant initializer is usable
+// from a kernel as-is (it is not device-mutable state, which is the thing
+// SYCL actually forbids).
 #define GLOBAL_CONST inline const
 #define GLOBAL_CROSS_CONST inline const
 #else
@@ -411,5 +468,13 @@ class assert_hack {
 /** A hack for static asserts */
 #define STATIC_ASSERT(TRUTH, MSG, T) \
   static_assert(assert_hack<TRUTH, __TU(T)>::value, MSG)
+
+
+/* The CUDA device-code spellings, for SYCL. LAST in this file on purpose:
+ * it includes macros.h itself (for CTP_IS_SYCL_COMPILER), so it has to come
+ * after everything it tests, and every TU needs it before ctp/types/atomic.h
+ * -- the first header that spells `atomicAdd` in device code. Inert unless a
+ * SYCL compiler is driving. */
+#include "clio_ctp/util/sycl_cuda_compat.h"
 
 #endif  // CTP_MACROS_H
