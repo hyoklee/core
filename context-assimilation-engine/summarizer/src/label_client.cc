@@ -328,7 +328,8 @@ std::string Trim(const std::string &s) {
 }  // namespace
 
 std::string ResolveApiKey(const InferenceTarget &target) {
-  std::string key;
+  // Each source returns its own token; a function-scope result would leave
+  // only its exception cleanup on the closing brace, which gcov never counts.
   if (!target.api_key_file_.empty()) {
     // Compose pool configs are not env-expanded, so do it here: the
     // documented example is "${HOME}/.alcf_access_token".
@@ -336,15 +337,16 @@ std::string ResolveApiKey(const InferenceTarget &target) {
     if (in) {
       std::ostringstream ss;
       ss << in.rdbuf();
-      key = Trim(ss.str());
+      std::string key = Trim(ss.str());
+      if (!key.empty()) return key;
     }
   }
   // A missing, unreadable, or blank file falls through to the env var.
-  if (key.empty() && !target.api_key_env_.empty()) {
+  if (!target.api_key_env_.empty()) {
     const char *env = std::getenv(target.api_key_env_.c_str());
-    if (env != nullptr) key = Trim(env);
+    if (env != nullptr) return Trim(env);
   }
-  return key;
+  return {};
 }
 
 bool LabelGenerate(const InferenceTarget &target, const std::string &model,
