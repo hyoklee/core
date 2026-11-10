@@ -163,10 +163,99 @@ clio::run::TaskResume Runtime::ReadBlockBlob(clio::run::u64 dir,
         *out = std::move(*cte_copy);
       }
     }
+    // issue #1322: the CTE copy reflects the stand-in's changes only once the
+    // replication hand-back has delivered them. A home that loads the block
+    // before that adopted its stale journal copy and then committed over the
+    // stand-in's newer entries (fsynced creates lost cluster-wide). Ask the
+    // stand-in directly, as EnsureInode does for inode records.
+    if (NumContainers() > 1 && BlockHome(dir, k) == container_id_ &&
+        SteadyMs() < standin_until_ms_.load(std::memory_order_acquire)) {
+      auto si_copy = std::make_shared<InodeTableBlock>();
+      int si_rc = 0;
+      CLIO_CO_AWAIT(ReadBlockStandIn(dir, k, si_copy.get(), si_rc));
+      if (si_rc == 0 && si_copy->version_ > out->version_) {
+        HLOG(kWarning, "filesystem: block {}/{} took the stand-in's copy "
+             "(version {} over {})", dir, k, si_copy->version_,
+             out->version_);
+        *out = std::move(*si_copy);
+      }
+    }
     rc = 0;
     CLIO_CO_RETURN;
   }
   CLIO_CO_AWAIT(ReadBlockCte(dir, k, out, rc));
+  CLIO_CO_RETURN;
+  CLIO_TASK_BODY_END
+}
+
+static bool TraceDirBlock();
+
+clio::run::TaskResume Runtime::ReadBlockStandIn(clio::run::u64 dir,
+                                                clio::run::u32 k,
+                                                InodeTableBlock *out,
+                                                int &rc) {
+  CLIO_TASK_BODY_BEGIN
+  rc = ENOENT;
+  {
+    bool ready = false;
+    CLIO_CO_AWAIT(AwaitCteReady(ready));
+    if (!ready) CLIO_CO_RETURN;
+  }
+  {
+    const clio::run::u32 n = NumContainers();
+    // The stand-in is the first live container after the home (the CTE's
+    // FailoverContainer rule), as in FetchStandInRecord.
+    clio::run::u32 c = container_id_;
+    for (clio::run::u32 i = 1; i < n; ++i) {
+      const clio::run::u32 cand = (container_id_ + i) % n;
+      if (clio::cte::core::ContainerNodeAlive(pool_id_, cand)) {
+        c = cand;
+        break;
+      }
+    }
+    if (c == container_id_) CLIO_CO_RETURN;
+    {
+      FsReq fr;
+      fr.dir_id_ = dir;
+      fr.block_ = k;
+      FsResp fresp;
+      CLIO_CO_AWAIT(CallShard(c, kTableStandInFetch, fr, fresp));
+      const bool ok = fresp.rc_ == 0 &&
+                      DecodeTableBlock(fresp.str_.data(), fresp.str_.size(),
+                                       out) &&
+                      out->dir_ == dir && out->index_ == k;
+      if (TraceDirBlock()) {
+        HLOG(kWarning, "[DIRBLOCK] stand-in fetch {}/{} on container {} -> "
+             "{}: rc {} version {}", dir, k, container_id_, c, fresp.rc_,
+             ok ? out->version_ : 0);
+      }
+      if (ok) {
+        rc = 0;
+        CLIO_CO_RETURN;
+      }
+    }
+    const auto q = clio::run::PoolQuery::DirectId(
+        static_cast<clio::run::ContainerId>(c));
+    const clio::cte::core::TagId tag = FsUnpack(dir);
+    auto sz = cte_.AsyncGetBlobSize(tag, TableBlockName(k), q);
+    CLIO_CO_AWAIT(sz);
+    if (TraceDirBlock()) {
+      HLOG(kWarning, "[DIRBLOCK] stand-in probe {}/{} on container {} -> {}: "
+           "size rc {} size {}", dir, k, container_id_, c,
+           sz->GetReturnCode(), sz->size_);
+    }
+    if (sz->GetReturnCode() != 0 || sz->size_ == 0) CLIO_CO_RETURN;
+    std::string bytes(sz->size_, '\0');
+    auto g = cte_.AsyncGetBlob(tag, TableBlockName(k), 0, bytes.size(), 0u,
+                               bytes.data(), q);
+    CLIO_CO_AWAIT(g);
+    if (g->GetReturnCode() != 0) CLIO_CO_RETURN;
+    if (!DecodeTableBlock(bytes.data(), bytes.size(), out) ||
+        out->dir_ != dir || out->index_ != k) {
+      CLIO_CO_RETURN;
+    }
+    rc = 0;
+  }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
 }
@@ -377,8 +466,16 @@ clio::run::TaskResume Runtime::LoadBlock(clio::run::u64 dir, clio::run::u32 k,
           CLIO_CO_RETURN;
         }
         // Its home moved (failover or return): this copy is not current.
-        if (s.committing_) busy = busy_commit = true;
-        else blocks_.erase(it);
+        if (s.committing_) {
+          busy = busy_commit = true;
+        } else {
+          if (s.home_ && !mine) {
+            // We stood in for the home that is back now: keep our newer
+            // image until it fetches it (#1322).
+            handback_[key] = {EncodeTableBlock(s.blk_, false), SteadyMs()};
+          }
+          blocks_.erase(it);
+        }
       }
       const char *stage = "";
       if (!busy) {
@@ -464,6 +561,7 @@ void Runtime::DropHomeBlocksAfterFailover() {
   // does -- journal and the handed-back CTE copy, newest version wins --
   // and resyncs its holders. Blocks with unwritten changes or work in
   // flight are kept: dropping them would lose acknowledged changes.
+  standin_until_ms_.store(SteadyMs() + 600000, std::memory_order_release);
   size_t dropped = 0, kept = 0;
   {
     std::lock_guard<std::mutex> g(ns_mu_);
@@ -704,6 +802,39 @@ clio::run::TaskResume Runtime::ServeBlockFetch(const FsReq &req,
   CLIO_TASK_BODY_END
 }
 
+int Runtime::ServeStandInFetch(const FsReq &req, FsResp &resp) {
+  // issue #1322: a returning home asks the container that served its block
+  // while it was away. The newest copy is that container's in-memory home
+  // slot (or, once evicted, its journal image); its CTE copy may lag.
+  const TableBlockKey key{req.dir_id_, req.block_};
+  std::string img;
+  {
+    std::lock_guard<std::mutex> g(ns_mu_);
+    const clio::run::u64 now = SteadyMs();
+    for (auto ht = handback_.begin(); ht != handback_.end();) {
+      ht = (now - ht->second.second > 600000) ? handback_.erase(ht) : ++ht;
+    }
+    auto hb = handback_.find(key);
+    auto it = blocks_.find(key);
+    if (hb != handback_.end() &&
+        (it == blocks_.end() || !it->second->home_)) {
+      img = hb->second.first;
+    } else if (it != blocks_.end() && it->second->home_) {
+      img = EncodeTableBlock(it->second->blk_, false);
+    } else {
+      auto jt = journaled_.find(key);
+      if (jt != journaled_.end()) img = jt->second;
+    }
+  }
+  if (img.empty()) {
+    resp.rc_ = ENOENT;
+    return ENOENT;
+  }
+  resp.str_ = std::move(img);
+  resp.rc_ = 0;
+  return 0;
+}
+
 int Runtime::ApplyTablePush(const FsReq &req) {
   std::vector<TableDelta> deltas;
   if (!DecodeTableDeltas(req.str_, &deltas)) return EINVAL;
@@ -808,9 +939,29 @@ clio::run::TaskResume Runtime::PushToHolders(
       }
     }
     for (auto &xf : fs) {
+      const auto &h = todo[xf.first];
+      // Wait for the push only while the holder's lease lasts. A peer whose
+      // own filesystem pool is not composed yet (it restarted too, so it
+      // caches nothing) holds the push in its deferred queue for up to
+      // 120 s before dropping it; awaiting that blocked every commit -- and
+      // so the restarted home's compose -- for ~128 s on a cluster-wide
+      // crash restart (stress_crash_under_pressure). Past the lease the
+      // holder must ask the home before using its copy, so it is gone.
+      // Backoff starts at 25 us: a flat 20 ms poll put a 20 ms floor under
+      // every commit (atime updates included), and a 28,800-file tree walk
+      // went from ~5 ms to ~30 ms a file (dirs_crash_restart timed out).
+      double poll_us = 25.0;
+      while (!xf.second.IsComplete() && SteadyMs() < h.second) {
+        CLIO_CO_AWAIT(clio::run::yield(poll_us));
+        poll_us = std::min(poll_us * 2.0, 20000.0);
+      }
+      if (!xf.second.IsComplete()) {
+        gone->push_back(h.first);
+        ParkPush(std::move(xf.second));
+        continue;
+      }
       CLIO_CO_AWAIT(xf.second);
       FsResp resp;
-      const auto &h = todo[xf.first];
       if (!ReadShardResp(xf.second, &resp)) {
         wait.push_back(h);  // unreachable: retry until it gets it or expires
       } else if (resp.rc_ == ENOENT) {
@@ -831,6 +982,19 @@ clio::run::TaskResume Runtime::PushToHolders(
   }
   CLIO_CO_RETURN;
   CLIO_TASK_BODY_END
+}
+
+void Runtime::ParkPush(clio::run::Future<ShardOpTask> &&f) {
+  // Keep an abandoned in-flight push alive until it settles, then drop it;
+  // never destroy a future whose task is still out on the network.
+  std::lock_guard<std::mutex> g(parked_mu_);
+  auto &v = parked_pushes_;
+  v.erase(std::remove_if(v.begin(), v.end(),
+                         [](const clio::run::Future<ShardOpTask> &p) {
+                           return p.IsComplete();
+                         }),
+          v.end());
+  v.push_back(std::move(f));
 }
 
 void Runtime::PushTargetsLocked(const TableBlockSlot &slot, bool resync,
