@@ -35,7 +35,6 @@
 #include <clio_runtime/ipc_manager.h>
 #ifndef _WIN32
 #include <fnmatch.h>
-#include <sys/stat.h>
 #endif
 #include <clio_cae/core/constants.h>  // For kCaePoolId
 #include <clio_cae/core/core_client.h>
@@ -44,6 +43,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
 #include <vector>
 
 // Include clio_cte headers after closing any clio_cae namespace to avoid Method
@@ -311,13 +312,14 @@ clio::run::TaskResume Hdf5FileAssimilator::Schedule(const AssimilationCtx& ctx,
 
 hid_t Hdf5FileAssimilator::OpenHdf5File(const std::string& file_path) {
   HLOG(kDebug, "OpenHdf5File: Checking if file exists: '{}'", file_path);
-  // Check if file exists
-  struct stat st;
-  if (stat(file_path.c_str(), &st) != 0) {
+  // Check if file exists (std::filesystem: portable across POSIX and Windows)
+  std::error_code ec;
+  const auto file_size = std::filesystem::file_size(file_path, ec);
+  if (ec) {
     HLOG(kError, "Hdf5FileAssimilator: File does not exist: '{}'", file_path);
     return -1;
   }
-  HLOG(kDebug, "OpenHdf5File: File exists, size: {} bytes", st.st_size);
+  HLOG(kDebug, "OpenHdf5File: File exists, size: {} bytes", file_size);
 
   // Open HDF5 file for reading (serial, read-only)
   HLOG(kDebug, "OpenHdf5File: Calling H5Fopen...");
@@ -732,13 +734,121 @@ std::string Hdf5FileAssimilator::GetUrlPath(const std::string& url) {
   return url.substr(pos + 2);
 }
 
+#ifdef _WIN32
+namespace {
+
+/**
+ * Match one character against a bracket expression in a glob pattern.
+ *
+ * Supports "[abc]", ranges "[a-z]" and negation "[!abc]" / "[^abc]", with a
+ * leading ']' taken literally, mirroring fnmatch(3). An unterminated bracket
+ * is treated as a literal '[' character, as fnmatch does.
+ *
+ * @param pattern The full glob pattern.
+ * @param pos In: index of the opening '['. Out: index just past the
+ *            expression (or past the literal '[' when unterminated).
+ * @param c The character to test.
+ * @return true if c matches the bracket expression.
+ */
+bool MatchBracket(const std::string& pattern, size_t& pos, char c) {
+  size_t i = pos + 1;
+  bool negate = false;
+  if (i < pattern.size() && (pattern[i] == '!' || pattern[i] == '^')) {
+    negate = true;
+    ++i;
+  }
+  bool matched = false;
+  bool first = true;
+  while (i < pattern.size() && (first || pattern[i] != ']')) {
+    first = false;
+    char lo = pattern[i];
+    char hi = lo;
+    if (i + 2 < pattern.size() && pattern[i + 1] == '-' &&
+        pattern[i + 2] != ']') {
+      hi = pattern[i + 2];
+      i += 2;
+    }
+    if (lo <= c && c <= hi) {
+      matched = true;
+    }
+    ++i;
+  }
+  if (i >= pattern.size()) {  // no closing ']': literal '['
+    pos = pos + 1;
+    return c == '[';
+  }
+  pos = i + 1;
+  return matched != negate;
+}
+
+/**
+ * Portable glob matcher equivalent to fnmatch(pattern, str, 0).
+ *
+ * '*' matches any sequence (including '/'), '?' any single character,
+ * "[...]" a bracket expression, and '\\' escapes the next pattern character.
+ * Uses the classic single-backtrack-point algorithm for '*'.
+ *
+ * @param pattern Glob pattern.
+ * @param str String to test.
+ * @return true if the whole string matches the whole pattern.
+ */
+bool GlobMatch(const std::string& pattern, const std::string& str) {
+  const size_t npos = std::string::npos;
+  size_t p = 0, s = 0, star_p = npos, star_s = 0;
+  while (s < str.size()) {
+    if (p < pattern.size()) {
+      size_t next_p = p + 1;
+      bool matched = false;
+      char pc = pattern[p];
+      if (pc == '*') {
+        star_p = p;
+        star_s = s;
+        ++p;
+        continue;
+      } else if (pc == '?') {
+        matched = true;
+      } else if (pc == '[') {
+        next_p = p;
+        matched = MatchBracket(pattern, next_p, str[s]);
+      } else {
+        if (pc == '\\' && p + 1 < pattern.size()) {
+          pc = pattern[p + 1];
+          next_p = p + 2;
+        }
+        matched = (pc == str[s]);
+      }
+      if (matched) {
+        p = next_p;
+        ++s;
+        continue;
+      }
+    }
+    if (star_p == npos) {
+      return false;
+    }
+    p = star_p + 1;  // backtrack: let the last '*' absorb one more char
+    s = ++star_s;
+  }
+  while (p < pattern.size() && pattern[p] == '*') {
+    ++p;
+  }
+  return p == pattern.size();
+}
+
+}  // namespace
+#endif
+
 bool Hdf5FileAssimilator::MatchGlobPattern(const std::string& str,
                                            const std::string& pattern) {
+#ifdef _WIN32
+  // MSVC/icx-cl have no fnmatch(3); use the portable matcher above.
+  return GlobMatch(pattern, str);
+#else
   // Use fnmatch for glob pattern matching (supports *, ?, [])
-  // FNM_PATHNAME: '/' must be matched explicitly
-  // FNM_PERIOD: leading '.' must be matched explicitly
+  // No FNM_PATHNAME: '*' also matches '/', so "*/RawData" spans groups.
   int result = fnmatch(pattern.c_str(), str.c_str(), 0);
   return result == 0;
+#endif
 }
 
 bool Hdf5FileAssimilator::MatchesFilter(

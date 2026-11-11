@@ -339,6 +339,18 @@ if(HDF5_ENABLED)
 
   # Set test labels
   set_tests_properties(cae_hdf5_assim PROPERTIES LABELS "format;cae;hdf5;msan_skip")
+
+  # OMNI-driven round trip against a real HDF5 file (CAE_OMNI_FILE). Skips
+  # (return code 77) when no OMNI file is given, so the default sweep is
+  # unaffected; see omni_roundtrip/test_omni_hdf5_roundtrip.cc.
+  add_cae_unit_test(cae_omni_hdf5_roundtrip
+    ${CMAKE_CURRENT_SOURCE_DIR}/omni_roundtrip/test_omni_hdf5_roundtrip.cc
+    EXTRA_LIBS ${HDF5_LIBRARIES}
+    EXTRA_INCLUDES ${HDF5_INCLUDE_DIRS}
+  )
+  set_tests_properties(cae_omni_hdf5_roundtrip PROPERTIES
+    LABELS "format;cae;hdf5;msan_skip"
+    SKIP_RETURN_CODE 77)
 endif()
 
 #------------------------------------------------------------------------------

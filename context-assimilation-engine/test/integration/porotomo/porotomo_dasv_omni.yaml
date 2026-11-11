@@ -1,0 +1,48 @@
+# OMNI file: selective CAE ingestion of one PoroTomo DAS file from the public
+# OEDI S3 bucket (GDR submission 980, DOI 10.15121/1778858, CC BY 4.0).
+#
+# The CAE HDF5 assimilator opens local files only, so fetch the object first
+# (46 MB, one 30-second vertical-DAS record from the Brady Hot Springs well):
+#
+#   ./download_porotomo.sh ~/cae_test_data/porotomo
+#
+# Then, with a runtime composed with CTE + CAE (see clio_porotomo_config.yaml):
+#
+#   clio_cae porotomo_dasv_omni.yaml
+#
+# Transfer 1 pulls only what a strain-rate waterfall figure needs from the
+# native file: the 30000 x 384 float32 /das array, the /t time axis and the /z
+# depth axis. The per-channel bookkeeping (/channel, /trace, /x, /y) and the
+# scalar /crs placeholder stay on disk.
+#
+# Transfer 2 ingests the GDR "standardized" copy of the same record, where the
+# payload lives under /DasRawData and the acquisition metadata is stored as
+# group attributes (no datasets).
+version: "1.0"
+
+transfers:
+  - name: "porotomo_dasv_native"
+    description: "DASV strain rate + time/depth axes for a waterfall plot"
+    src: "hdf5::/home/hyoklee/cae_test_data/porotomo/dasv_native_PoroTomo_iDAS025_160318160317.h5"
+    dst: "iowarp::porotomo_dasv"
+    format: "hdf5"
+    depends_on: ""
+    dataset_filter:
+      include_patterns:
+        - "/das"
+        - "/t"
+        - "/z"
+      exclude_patterns:
+        - "/crs"
+        - "/channel"
+        - "/trace"
+
+  - name: "porotomo_dasv_standardized"
+    description: "Same record in the GDR standardized DAS-HDF5 layout"
+    src: "hdf5::/home/hyoklee/cae_test_data/porotomo/dasv_std_PoroTomo_iDAS025_160318160317.h5"
+    dst: "iowarp::porotomo_dasv_std"
+    format: "hdf5"
+    depends_on: ""   # NOTE: a non-empty depends_on makes the HDF5 assimilator skip the transfer (see hdf5_file_assimilator.cc Schedule)
+    dataset_filter:
+      include_patterns:
+        - "/DasRawData/*"
