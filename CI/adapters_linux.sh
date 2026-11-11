@@ -33,9 +33,11 @@ git config --global --add safe.directory /workspace
 
 # FUSE backend + ELF interception headers (libelf/HDF5 already in image).
 # Retry update+install as one unit: `apt-get update` exits 0 even when every
-# index fetch failed ("Could not resolve 'archive.ubuntu.com'" -- the container
-# resolver was dead for three runs on 2026-11-11), so only the install result
-# says whether the package lists are real. Fail loudly if fuse3 never lands:
+# index fetch failed ("Could not resolve 'archive.ubuntu.com'" for three runs on
+# 2026-11-11 -- a runner-wide mirror outage: the host's own apt jobs failed on
+# "Temporary failure resolving 'azure.archive.ubuntu.com'" at the same time),
+# so only the install result says whether the package lists are real. Fail
+# loudly if fuse3 never lands:
 # without it clio_cte_fuse is silently skipped and the mount smoke fails later
 # with a far less useful message.
 apt_ok=0

@@ -84,12 +84,7 @@ jobs:
           # --shm-size: docker's default /dev/shm is 64 MB; the clio runtime
           # places its GB-scale SHM segments there, so give it room (also lets
           # the FUSE runtime breathe under the xfstests gate).
-          # --network host: on the bridge network the container's resolver has
-          # repeatedly failed ("Could not resolve 'archive.ubuntu.com'" on every
-          # mirror, 2026-11-11, three runs in a row), so apt could not install
-          # fuse3 and the FUSE mount smoke failed. The host resolves fine, so let
-          # the container share the host's network namespace and its resolver.
-          docker run --rm --shm-size=2g --network host \
+          docker run --rm --shm-size=2g \
             -v "${{ github.workspace }}":/workspace -w /workspace -u 0 \
             --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor=unconfined \
             iowarp/deps-cpu:latest bash /workspace/CI/adapters_linux.sh
