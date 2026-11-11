@@ -32,8 +32,11 @@ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgcon
 git config --global --add safe.directory /workspace
 
 # FUSE backend + ELF interception headers (libelf/HDF5 already in image)
-apt-get update -qq
-apt-get install -y -qq libfuse3-dev fuse3 pkg-config libelf-dev
+# Retry: DNS inside the freshly started container is sometimes not ready yet
+# ("Could not resolve archive.ubuntu.com"), which has failed this job on the
+# first apt call. ci-vfd.yml uses the same loop.
+for i in 1 2 3 4 5; do apt-get update -qq && break || sleep 10; done
+for i in 1 2 3 4 5; do apt-get install -y -qq libfuse3-dev fuse3 pkg-config libelf-dev && break || sleep 10; done
 
 # --------------------------------------------------------------- HDF5 tool gate
 # The HDF5 CLI tools are the differential oracle for both compat suites and for
