@@ -10641,8 +10641,9 @@ TEST_CASE("Autogen - Bdev CreateParams constructors", "[autogen][bdev][createpar
     REQUIRE(params.total_size_ == 1024 * 1024);
     REQUIRE(params.io_depth_ == 32);  // default
     REQUIRE(params.alignment_ == 4096);  // default
-    // Should have default perf metrics
-    REQUIRE(params.perf_metrics_.read_bandwidth_mbps_ == 100.0);
+    // Per-type refined defaults: kRam reports host-DRAM bandwidth to the DPE
+    // (ApplyDefaultPerfForType), not the conservative kFile numbers.
+    REQUIRE(params.perf_metrics_.read_bandwidth_mbps_ == 20000.0);
     INFO("Bdev basic 2-arg constructor verified");
   }
 
@@ -10653,8 +10654,8 @@ TEST_CASE("Autogen - Bdev CreateParams constructors", "[autogen][bdev][createpar
     REQUIRE(params.total_size_ == 1024 * 1024);
     REQUIRE(params.io_depth_ == 64);
     REQUIRE(params.alignment_ == 4096);  // default
-    // Should have default perf metrics
-    REQUIRE(params.perf_metrics_.read_bandwidth_mbps_ == 100.0);
+    // Per-type refined defaults (see the 2-arg section).
+    REQUIRE(params.perf_metrics_.read_bandwidth_mbps_ == 20000.0);
     INFO("Bdev basic 3-arg constructor verified");
   }
 
@@ -10685,9 +10686,9 @@ TEST_CASE("Autogen - Bdev CreateParams constructors", "[autogen][bdev][createpar
         clio::run::bdev::BdevType::kRam, 4096, 8, 1024, nullptr);
     REQUIRE(params.bdev_type_ == clio::run::bdev::BdevType::kRam);
     REQUIRE(params.total_size_ == 4096);
-    // Should get default perf metrics
-    REQUIRE(params.perf_metrics_.read_bandwidth_mbps_ == 100.0);
-    REQUIRE(params.perf_metrics_.write_bandwidth_mbps_ == 80.0);
+    // nullptr metrics fall back to the per-type refined defaults (kRam).
+    REQUIRE(params.perf_metrics_.read_bandwidth_mbps_ == 20000.0);
+    REQUIRE(params.perf_metrics_.write_bandwidth_mbps_ == 20000.0);
     INFO("Bdev constructor with nullptr PerfMetrics verified");
   }
 }
@@ -12630,6 +12631,23 @@ TEST_CASE("Autogen - PoolManager operations", "[autogen][poolmanager][ops]") {
   SECTION("IsInitialized") {
     REQUIRE(pool_manager->IsInitialized() == true);
     INFO("PoolManager is initialized");
+  }
+
+  SECTION("DescribeCreatesInProgress") {
+    // Issue #1180: a stalled GetOrCreatePool must be able to name the pool.
+    REQUIRE(pool_manager->DescribeCreatesInProgress().empty());
+    const auto a = pool_manager->BeginCreate("stuck_pool", "mod_a");
+    const auto b = pool_manager->BeginCreate("later_pool", "mod_b");
+    const std::string both = pool_manager->DescribeCreatesInProgress();
+    INFO("described: " << both);
+    REQUIRE(both.find("creating 'stuck_pool' (mod_a) for ") == 0);
+    REQUIRE(both.find("; creating 'later_pool' (mod_b) for ") !=
+            std::string::npos);
+    pool_manager->EndCreate(a);
+    REQUIRE(pool_manager->DescribeCreatesInProgress().find("stuck_pool") ==
+            std::string::npos);
+    pool_manager->EndCreate(b);
+    REQUIRE(pool_manager->DescribeCreatesInProgress().empty());
   }
 
   SECTION("GetPoolCount") {

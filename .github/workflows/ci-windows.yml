@@ -71,7 +71,21 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
       CAE_LABEL_TEST_SKIP: "1"
     steps:
+      # actions/checkout has no retry, and Windows runners intermittently fail
+      # the fetch with a transient schannel SEC_E_UNTRUSTED_ROOT (#1043). Let
+      # the first attempt fail, pause, and check out once more.
       - name: Checkout repository
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Wait before retrying checkout
+        if: steps.checkout.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 15
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v6
         with:
           submodules: recursive
@@ -109,6 +123,15 @@ jobs:
             if ($env:VCPKG_INSTALLATION_ROOT) {
               Add-MpPreference -ExclusionPath "$env:VCPKG_INSTALLATION_ROOT" -ErrorAction SilentlyContinue
             }
+            # PosixShmMmap backs each named Windows shared-memory segment with
+            # a sparse file under %TEMP%/clio_$USERNAME (SystemInfo::
+            # GetMemfdDir) and recreates that file on every shm_init. This is
+            # outside the workspace, so the exclusion above does not cover it.
+            # CDash has caught intermittent cte_shm_metadata_cache_all
+            # failures there (Win32 error 1224, ERROR_USER_MAPPED_FILE) that
+            # look like the same real-time-scan-holds-the-file-open flake as
+            # the link.exe case above, just on this directory instead.
+            Add-MpPreference -ExclusionPath "$env:TEMP\clio_$env:USERNAME" -ErrorAction SilentlyContinue
             Write-Host "Defender exclusions added for ${{ github.workspace }}"
           } catch {
             Write-Host "Could not add Defender exclusions (continuing): $_"
@@ -292,7 +315,21 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: x64-windows
       CAE_LABEL_TEST_SKIP: "1"
     steps:
+      # actions/checkout has no retry, and Windows runners intermittently fail
+      # the fetch with a transient schannel SEC_E_UNTRUSTED_ROOT (#1043). Let
+      # the first attempt fail, pause, and check out once more.
       - name: Checkout repository
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Wait before retrying checkout
+        if: steps.checkout.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 15
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v6
         with:
           submodules: recursive
@@ -330,6 +367,15 @@ jobs:
             if ($env:VCPKG_INSTALLATION_ROOT) {
               Add-MpPreference -ExclusionPath "$env:VCPKG_INSTALLATION_ROOT" -ErrorAction SilentlyContinue
             }
+            # PosixShmMmap backs each named Windows shared-memory segment with
+            # a sparse file under %TEMP%/clio_$USERNAME (SystemInfo::
+            # GetMemfdDir) and recreates that file on every shm_init. This is
+            # outside the workspace, so the exclusion above does not cover it.
+            # CDash has caught intermittent cte_shm_metadata_cache_all
+            # failures there (Win32 error 1224, ERROR_USER_MAPPED_FILE) that
+            # look like the same real-time-scan-holds-the-file-open flake as
+            # the link.exe case above, just on this directory instead.
+            Add-MpPreference -ExclusionPath "$env:TEMP\clio_$env:USERNAME" -ErrorAction SilentlyContinue
             Write-Host "Defender exclusions added for ${{ github.workspace }}"
           } catch {
             Write-Host "Could not add Defender exclusions (continuing): $_"
@@ -375,7 +421,8 @@ jobs:
         if: steps.cache-oneapi.outputs.cache-hit != 'true'
         shell: cmd
         run: |
-          git clone --depth=1 https://github.com/oneapi-src/oneapi-ci.git oneapi-ci
+          REM A network fetch: retried like every other install step (#1043).
+          pwsh CI/Retry.ps1 -Attempts 5 -DelaySeconds 10 git clone --depth=1 https://github.com/oneapi-src/oneapi-ci.git oneapi-ci || exit /b 1
           cd oneapi-ci
           scripts\install_windows.bat %WINDOWS_BASEKIT_URL% %WINDOWS_CPP_COMPONENTS%
       - name: Save oneAPI cache
@@ -520,7 +567,21 @@ jobs:
       VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
       CAE_LABEL_TEST_SKIP: "1"
     steps:
+      # actions/checkout has no retry, and Windows runners intermittently fail
+      # the fetch with a transient schannel SEC_E_UNTRUSTED_ROOT (#1043). Let
+      # the first attempt fail, pause, and check out once more.
       - name: Checkout repository
+        id: checkout
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Wait before retrying checkout
+        if: steps.checkout.outcome == 'failure'
+        shell: pwsh
+        run: Start-Sleep -Seconds 15
+      - name: Checkout repository (retry)
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v6
         with:
           submodules: recursive
@@ -558,6 +619,15 @@ jobs:
             if ($env:VCPKG_INSTALLATION_ROOT) {
               Add-MpPreference -ExclusionPath "$env:VCPKG_INSTALLATION_ROOT" -ErrorAction SilentlyContinue
             }
+            # PosixShmMmap backs each named Windows shared-memory segment with
+            # a sparse file under %TEMP%/clio_$USERNAME (SystemInfo::
+            # GetMemfdDir) and recreates that file on every shm_init. This is
+            # outside the workspace, so the exclusion above does not cover it.
+            # CDash has caught intermittent cte_shm_metadata_cache_all
+            # failures there (Win32 error 1224, ERROR_USER_MAPPED_FILE) that
+            # look like the same real-time-scan-holds-the-file-open flake as
+            # the link.exe case above, just on this directory instead.
+            Add-MpPreference -ExclusionPath "$env:TEMP\clio_$env:USERNAME" -ErrorAction SilentlyContinue
             Write-Host "Defender exclusions added for ${{ github.workspace }}"
           } catch {
             Write-Host "Could not add Defender exclusions (continuing): $_"

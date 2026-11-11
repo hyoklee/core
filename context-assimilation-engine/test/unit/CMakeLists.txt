@@ -207,6 +207,40 @@ set_tests_properties(cae_config_units PROPERTIES
   LABELS "coverage;cae;config;msan_skip"
 )
 
+
+#------------------------------------------------------------------------------
+# Test 4b: OMNI loader unit tests (pure, no runtime)
+#------------------------------------------------------------------------------
+# LoadOmni used to live inside util/clio_cae.cc next to main(), which made it
+# unlinkable from a test and left the file at 0% coverage. It is now its own
+# translation unit (cae_omni_loader) so the YAML validation can be tested.
+add_executable(test_cae_omni_loader
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_cae_omni_loader.cc
+)
+
+target_include_directories(test_cae_omni_loader
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+
+target_link_libraries(test_cae_omni_loader
+  PRIVATE
+    cae_omni_loader
+    clio_cae_core_client
+    clio::run::cxx
+    ctp::cxx
+    ${YAML_CPP_LIBS}
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+install(TARGETS test_cae_omni_loader DESTINATION bin)
+
+add_test(NAME cae_omni_loader COMMAND test_cae_omni_loader)
+set_tests_properties(cae_omni_loader PROPERTIES
+  TIMEOUT 60
+  LABELS "coverage;cae;omni;msan_skip"
+)
 #------------------------------------------------------------------------------
 # Test 4c: Summarizer Config/Task Unit Tests (pure, no runtime)
 #------------------------------------------------------------------------------
@@ -334,7 +368,9 @@ if(HDF5_ENABLED)
   add_cae_unit_test(cae_hdf5_assim
     ${CMAKE_CURRENT_SOURCE_DIR}/hdf5_assim/test_hdf5_assim.cc
     EXTRA_LIBS ${HDF5_LIBRARIES}
-    EXTRA_INCLUDES ${HDF5_INCLUDE_DIRS}
+    # The CTE root: the hdf5_vol step checks the VOL connector's cache layout
+    # through adapter/hdf5_vol/clio_vol_layout.h.
+    EXTRA_INCLUDES ${HDF5_INCLUDE_DIRS} ${CMAKE_SOURCE_DIR}/context-transfer-engine
   )
 
   # Set test labels
@@ -382,6 +418,83 @@ endif()
 set_tests_properties(cae_cloud_factory_guard PROPERTIES LABELS "cloud;cae;factory;msan_skip")
 
 #------------------------------------------------------------------------------
+# http(s) sources: config-file rules (http_auth.h) and the offline parts of the
+# download engine (http_fetch.cc). No runtime, no network.
+#------------------------------------------------------------------------------
+if(NOT WIN32)
+  add_executable(cae_http_auth_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/http_auth/test_http_auth.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/src/factory/http_fetch.cc
+  )
+  target_include_directories(cae_http_auth_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
+    ${CMAKE_SOURCE_DIR}/context-runtime/test         # simple_test.h
+  )
+  find_package(Threads REQUIRED)
+  target_link_libraries(cae_http_auth_test PRIVATE ctp::cxx Threads::Threads)
+  set_target_properties(cae_http_auth_test PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+  )
+  add_test(NAME cae_http_auth COMMAND cae_http_auth_test)
+  set_tests_properties(cae_http_auth PROPERTIES TIMEOUT 60 LABELS "cae;http")
+  install(TARGETS cae_http_auth_test DESTINATION bin)
+
+  # The download engine, HttpFileAssimilator::Run and the factory's http(s)
+  # dispatch end to end against an HTTP server on 127.0.0.1 inside the test,
+  # through the real curl. No runtime is started and nothing leaves the host.
+  add_executable(cae_http_fetch_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/http_fetch/test_http_fetch.cc
+  )
+  target_include_directories(cae_http_fetch_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/context-runtime/test         # simple_test.h
+  )
+  target_link_libraries(cae_http_fetch_test PRIVATE
+    clio_cae_core_runtime
+    clio_cte_core_client
+    clio::run::cxx
+    Threads::Threads
+  )
+  set_target_properties(cae_http_fetch_test PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+  )
+  add_test(NAME cae_http_fetch COMMAND cae_http_fetch_test)
+  set_tests_properties(cae_http_fetch PROPERTIES
+    TIMEOUT 120
+    LABELS "cae;http;msan_skip"
+    ENVIRONMENT "LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH}"
+  )
+  install(TARGETS cae_http_fetch_test DESTINATION bin)
+endif()
+
+#------------------------------------------------------------------------------
+# In-process AWS credential/region resolver (aws_creds.h). Pure functions --
+# env + INI parsing, no runtime, no network, no real ~/.aws -- so it is built
+# hermetically (no CLIO client libs, no live runtime), like cae_hdf5_export.
+# Gated on CAE_ENABLE_S3 because the resolver only matters to the in-process
+# s3:// read path.
+#------------------------------------------------------------------------------
+if(CAE_ENABLE_S3)
+  add_executable(cae_s3_creds_test
+    ${CMAKE_CURRENT_SOURCE_DIR}/aws_creds/test_aws_creds.cc
+  )
+  target_include_directories(cae_s3_creds_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include  # clio_cae/core/factory/aws_creds.h
+    ${CMAKE_SOURCE_DIR}/context-runtime/test         # simple_test.h
+  )
+  target_link_libraries(cae_s3_creds_test PRIVATE
+    ctp::cxx)  # simple_test.h pulls in clio_ctp (malloc allocator)
+  set_target_properties(cae_s3_creds_test PROPERTIES
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+  )
+  add_test(NAME cae_s3_creds COMMAND cae_s3_creds_test)
+  set_tests_properties(cae_s3_creds PROPERTIES TIMEOUT 60 LABELS "cloud;cae;s3")
+  install(TARGETS cae_s3_creds_test DESTINATION bin)
+endif()
+
+#------------------------------------------------------------------------------
 # Test: S3 (s3://) Assimilation (Conditional, self-skips without S3_ENDPOINT)
 #------------------------------------------------------------------------------
 # Seeds an object into an S3-compatible store (MinIO) and imports it through
@@ -400,6 +513,14 @@ if(CAE_ENABLE_S3)
   add_dependencies(cae_s3_assim cae_s3_tool)
   set_property(TEST cae_s3_assim APPEND PROPERTY
     ENVIRONMENT "CAE_S3_TOOL=$<TARGET_FILE:cae_s3_tool>")
+
+  # The same import STRIPED: three concurrent 1 MiB ranged GETs for the 3 MB
+  # object, checked chunk by chunk against the seeded bytes.
+  add_test(NAME cae_s3_assim_striped COMMAND cae_s3_assim)
+  set_tests_properties(cae_s3_assim_striped PROPERTIES
+    LABELS "cloud;cae;s3;msan_skip"
+    TIMEOUT 300
+    ENVIRONMENT "CLIO_WITH_RUNTIME=1;CLIO_SERVER_CONF=${CMAKE_CURRENT_SOURCE_DIR}/clio_config.yaml;LD_LIBRARY_PATH=${CMAKE_BINARY_DIR}/bin:$ENV{LD_LIBRARY_PATH};CLIO_BIND_ADDR=127.0.0.1;CLIO_PORT=10501;CAE_S3_TOOL=$<TARGET_FILE:cae_s3_tool>;CAE_S3_STREAMS=3;CAE_S3_PART_MB=1")
 
   install(FILES
     ${CMAKE_CURRENT_SOURCE_DIR}/s3_assim/s3_assim_omni.yaml
@@ -926,7 +1047,7 @@ if(HDF5_ENABLED)
   message(STATUS "  HDF5 Format Test:         ENABLED")
   message(STATUS "  ExportData HDF5 Tests:    ENABLED")
 else()
-  message(STATUS "  HDF5 Format Test:         DISABLED (set -DWRP_CORE_ENABLE_HDF5=ON to enable)")
+  message(STATUS "  HDF5 Format Test:         DISABLED (set -DCLIO_CORE_ENABLE_HDF5=ON to enable)")
   message(STATUS "  ExportData HDF5 Tests:    ENABLED (tests not-compiled path)")
 endif()
 message(STATUS "")
@@ -1031,6 +1152,123 @@ if(CAE_SUMMARIZATION_ENABLED)
   install(TARGETS test_summarizer_inference DESTINATION bin)
 endif()
 
+# PageMap (pagify): unified page numbering, incl. partial and mixed pages.
+#------------------------------------------------------------------------------
+add_executable(test_page_map
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_page_map.cc
+)
+
+target_include_directories(test_page_map
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+
+target_link_libraries(test_page_map
+  PRIVATE
+    clio_cae_core_client
+    clio_cte_core_client
+    clio::run::cxx
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+install(TARGETS test_page_map DESTINATION bin)
+
+add_test(NAME cae_page_map COMMAND test_page_map)
+set_tests_properties(cae_page_map PROPERTIES
+  TIMEOUT 60
+  LABELS "coverage;cae;pagemap"
+)
+
+#------------------------------------------------------------------------------
+# Pagify: page-number -> blob slices -> constructed page
+#------------------------------------------------------------------------------
+add_executable(test_pagify
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_pagify.cc
+)
+
+target_include_directories(test_pagify
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+
+target_link_libraries(test_pagify
+  PRIVATE
+    clio_cae_core_client
+    clio_cte_core_client
+    clio::run::cxx
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+install(TARGETS test_pagify DESTINATION bin)
+
+add_test(NAME cae_pagify COMMAND test_pagify)
+set_tests_properties(cae_pagify PROPERTIES
+  TIMEOUT 60
+  LABELS "coverage;cae;pagemap;pagify"
+)
+
+#------------------------------------------------------------------------------
+# pagify through the CAE's CTE interceptor (end to end)
+#------------------------------------------------------------------------------
+add_executable(test_cae_pagify
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_cae_pagify.cc
+)
+
+target_include_directories(test_cae_pagify
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+
+target_link_libraries(test_cae_pagify
+  PRIVATE
+    clio_cae_core_client
+    clio_cte_core_client
+    clio::run::cxx
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+install(TARGETS test_cae_pagify DESTINATION bin)
+
+add_test(NAME cae_pagify_interpose COMMAND test_cae_pagify)
+set_tests_properties(cae_pagify_interpose PROPERTIES
+  TIMEOUT 120
+  LABELS "coverage;cae;pagify;interpose"
+)
+#------------------------------------------------------------------------------
+# By-reference (zero-copy) assimilation: CTE misses served from the file
+#------------------------------------------------------------------------------
+add_executable(test_cae_reference
+  ${CMAKE_CURRENT_SOURCE_DIR}/test_cae_reference.cc
+)
+
+target_include_directories(test_cae_reference
+  PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/context-runtime/test
+)
+
+target_link_libraries(test_cae_reference
+  PRIVATE
+    clio_cae_core_client
+    clio_cte_core_client
+    clio::run::cxx
+    ctp::cxx
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+install(TARGETS test_cae_reference DESTINATION bin)
+
+add_test(NAME cae_reference COMMAND test_cae_reference)
+set_tests_properties(cae_reference PROPERTIES
+  TIMEOUT 120
+  LABELS "coverage;cae;reference;onfault"
+)
 #------------------------------------------------------------------------------
 # ChunkedDatasetWriter (.h5 export) tests
 #------------------------------------------------------------------------------
@@ -1063,7 +1301,7 @@ if(HDF5_ENABLED)
   )
 
   add_test(NAME cae_hdf5_export COMMAND cae_hdf5_export_test)
-  set_tests_properties(cae_hdf5_export PROPERTIES TIMEOUT 60)
+  set_tests_properties(cae_hdf5_export PROPERTIES TIMEOUT 60 LABELS "cae;hdf5")
 
   install(TARGETS cae_hdf5_export_test DESTINATION bin)
 endif()
@@ -1085,6 +1323,7 @@ if(HDF5_ENABLED)
       ${HDF5_INCLUDE_DIRS}
       ${CMAKE_CURRENT_SOURCE_DIR}/../../../context-transfer-engine/adapter/kvhdf5/include
   )
+  set_tests_properties(cae_export_data PROPERTIES LABELS "cae;hdf5")
 endif()
 
 #------------------------------------------------------------------------------
@@ -1115,7 +1354,7 @@ if(HDF5_ENABLED)
   )
 
   add_test(NAME cae_hdf5_import COMMAND cae_hdf5_import_test)
-  set_tests_properties(cae_hdf5_import PROPERTIES TIMEOUT 60)
+  set_tests_properties(cae_hdf5_import PROPERTIES TIMEOUT 60 LABELS "cae;hdf5")
 
   install(TARGETS cae_hdf5_import_test DESTINATION bin)
 endif()
@@ -1136,4 +1375,5 @@ if(HDF5_ENABLED)
       ${HDF5_INCLUDE_DIRS}
       ${CMAKE_CURRENT_SOURCE_DIR}/../../../context-transfer-engine/adapter/kvhdf5/include
   )
+  set_tests_properties(cae_import_data PROPERTIES LABELS "cae;hdf5")
 endif()

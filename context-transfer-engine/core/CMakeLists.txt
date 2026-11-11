@@ -6,6 +6,7 @@ add_clio_module_runtime(
     src/core_runtime.cc
     src/core_config.cc
     src/core_viz.cc
+    src/core_tag_xattr.cc
     # Data placement engine: one source file per placement policy
     src/dpe/dpe.cc
     src/dpe/random_dpe.cc
@@ -14,6 +15,10 @@ add_clio_module_runtime(
     # Data organizer (issue #738): one source file per organization policy
     src/data_organizer/data_organizer.cc
     src/data_organizer/frecency_organizer.cc
+    src/data_organizer/cyclic_organizer.cc
+    src/data_organizer/hotset_organizer.cc
+    src/data_organizer/scatter_organizer.cc
+    src/data_organizer/grayscott_organizer.cc
     src/autogen/core_lib_exec.cc
     # GPU runtime concept removed — kernels submit tasks to the CPU runtime
     # via gpu2cpu_queue and the CPU executes them through the standard
@@ -48,6 +53,8 @@ add_clio_module_client(
     src/core_client.cc
     src/content_transfer_engine.cc
     src/tag.cc
+    src/record_log.cc
+    src/shm_read_stats.cc
 )
 
 # Tell clio_cte/api.h to emit dllexport (instead of the default dllimport

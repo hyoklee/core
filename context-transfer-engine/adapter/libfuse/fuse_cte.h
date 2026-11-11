@@ -54,6 +54,13 @@
 #include <unistd.h>    // getuid/getgid/read used by fuse_cte.cc on Linux
 #endif
 
+// O_NOATIME is a Linux-only open flag. macFUSE and WinFsp never hand it to
+// the open callbacks, so elsewhere it is 0 and "opened with O_NOATIME" is
+// simply never true.
+#if !defined(__linux__) && !defined(O_NOATIME)
+#define O_NOATIME 0
+#endif
+
 #include "clio_cte/core/core_client.h"
 #include "clio_cte/core/core_tasks.h"
 
@@ -507,6 +514,16 @@ using cte_statvfs_t = struct statvfs;
 // express. Signatures are exactly the fuse_operations member shapes.
 // ---------------------------------------------------------------------------
 int cte_fuse_bootstrap_clients();
+/**
+ * The key a path is cached under on this mount: its canonical form on a
+ * case-insensitive volume, the path itself otherwise. Valid once
+ * cte_fuse_bootstrap_clients (or the high-level init) has run.
+ * @param path path as spelled
+ * @return cache key
+ */
+std::string cte_fuse_cache_key(const std::string &path);
+/** @return true when the mounted volume compares names case-insensitively */
+bool cte_fuse_case_insensitive();
 int cte_fuse_getattr_stat(const char *path, cte_stat_t *stbuf,
                           struct fuse_file_info *fi);
 int cte_fuse_create(const char *path, cte_mode_t mode,
@@ -519,6 +536,8 @@ int cte_fuse_write(const char *path, const char *buf, size_t size,
 int cte_fuse_release(const char *path, struct fuse_file_info *fi);
 int cte_fuse_flush(const char *path, struct fuse_file_info *fi);
 int cte_fuse_fsync(const char *path, int datasync, struct fuse_file_info *fi);
+int cte_fuse_fsyncdir(const char *path, int datasync,
+                      struct fuse_file_info *fi);
 int cte_fuse_mkdir(const char *path, cte_mode_t mode);
 int cte_fuse_rmdir(const char *path);
 int cte_fuse_unlink(const char *path);

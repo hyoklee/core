@@ -64,6 +64,12 @@ struct PerformanceConfig {
                                     // (1=temp-nonvolatile)
   clio::run::u64
       transaction_log_capacity_bytes_;  // Total WAL capacity (default 32MB)
+  /** fsync(2) through clio-fs: false ("durable", the default) returns only
+   *  once the file's bytes sit on a tier at flush_data_min_persistence or
+   *  above and are synced to the device, with the metadata WAL that locates
+   *  them; true ("deferred") returns at once and leaves durability to the
+   *  periodic flush_data / flush_metadata tasks. */
+  bool fsync_deferred_;
 
   PerformanceConfig()
       : target_stat_interval_ms_(5000),
@@ -71,7 +77,7 @@ struct PerformanceConfig {
         // saturating the bdev pool's worker (50 ms default fired
         // 20×/s and starved real PutBlob/GetBlob traffic on a single-
         // worker setup).
-        stat_targets_period_ms_(5000),
+        stat_targets_period_ms_(1000),
         max_concurrent_operations_(64),
         score_threshold_(0.7f),
         score_difference_threshold_(0.05f),
@@ -79,7 +85,8 @@ struct PerformanceConfig {
         metadata_log_path_(""),
         flush_data_period_ms_(10000),
         flush_data_min_persistence_(1),
-        transaction_log_capacity_bytes_(32ULL * 1024ULL * 1024ULL) {}
+        transaction_log_capacity_bytes_(32ULL * 1024ULL * 1024ULL),
+        fsync_deferred_(false) {}
 };
 
 /**
@@ -89,11 +96,16 @@ struct TargetConfig {
   clio::run::u32 neighborhood_;  // Number of targets (nodes CTE can buffer to)
   clio::run::u32 default_target_timeout_ms_;  // Default timeout for target operations
   clio::run::u32 poll_period_ms_;  // Period to rescan targets for statistics
+  /** Route a blob whose owner node is dead to the first live successor
+   *  container (which holds a copy when the replication chimod keeps
+   *  remote_copies). Off: such operations fail until the owner returns. */
+  bool failover_to_successor_;
 
   TargetConfig()
       : neighborhood_(4),
         default_target_timeout_ms_(30000),
-        poll_period_ms_(5000) {}
+        poll_period_ms_(5000),
+        failover_to_successor_(false) {}
 };
 
 /**
@@ -117,12 +129,18 @@ struct StorageDeviceConfig {
   // Optional module name of the existing pool, for logging/validation only
   // (e.g. "clio_safe_bdev"). Not used to route — routing is purely by pool id.
   std::string existing_pool_module_;
+  // File tiers only: how far the backing file grows (and reserves) at a time.
+  // The bdev reserves its first unit when it is created, so on a RAM-backed
+  // filesystem (tmpfs) every file tier costs this much memory up front.
+  // YAML key: growth_unit (size string). Default matches the bdev's 1 GiB.
+  clio::run::u64 growth_unit_;
 
   StorageDeviceConfig()
       : capacity_limit_(0),
         score_(-1.0f),
         persistence_level_("volatile"),
-        existing_pool_id_(clio::run::PoolId::GetNull()) {}
+        existing_pool_id_(clio::run::PoolId::GetNull()),
+        growth_unit_(clio::run::u64(1) << 30) {}
   StorageDeviceConfig(const std::string &path, const std::string &bdev_type,
                       clio::run::u64 capacity, float score = -1.0f,
                       const std::string &persistence_level = "volatile")
@@ -131,7 +149,8 @@ struct StorageDeviceConfig {
         capacity_limit_(capacity),
         score_(score),
         persistence_level_(persistence_level),
-        existing_pool_id_(clio::run::PoolId::GetNull()) {}
+        existing_pool_id_(clio::run::PoolId::GetNull()),
+        growth_unit_(clio::run::u64(1) << 30) {}
 
   // True when this target should bind to an existing pool rather than create
   // its own bdev. Pool-id major 0 is reserved for "not set" (CTE/admin pools

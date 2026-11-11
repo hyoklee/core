@@ -44,6 +44,7 @@
 #include <unordered_map>
 #include <vector>
 #include <yaml-cpp/yaml.h>
+#include <clio_ctp/util/msan.h>
 
 namespace clio::cae::summarizer {
 
@@ -125,9 +126,17 @@ struct SummarizerConfig {
   // Named prompt templates referenced by LabelMatch::prompt_. The full LLM
   // input becomes "{prompt}\n\n{blob_text}".
   std::unordered_map<std::string, std::string> label_prompts_;
-  // HTTP(S) endpoint of the inference server (Ollama-compatible). The
-  // handler POSTs to "{label_endpoint_}/api/generate".
+  // HTTP(S) endpoint of the inference server. With label_api_ "ollama" the
+  // handler POSTs to "{label_endpoint_}/api/generate"; with "openai" to
+  // "{label_endpoint_}/chat/completions".
   std::string label_endpoint_;
+  // Wire protocol: "ollama" (default when empty) or "openai".
+  std::string label_api_;
+  // Bearer-token sources for label_api_ "openai". The token itself never
+  // appears in the compose YAML. The file wins over the env var; both are
+  // re-read per request so a refreshed token needs no restart.
+  std::string label_api_key_file_;
+  std::string label_api_key_env_;
 
   SummarizerConfig() : next_pool_id_(clio::run::PoolId::GetNull()) {}
 
@@ -139,7 +148,10 @@ struct SummarizerConfig {
       : next_pool_id_(other.next_pool_id_),
         label_matches_(other.label_matches_),
         label_prompts_(other.label_prompts_),
-        label_endpoint_(other.label_endpoint_) {
+        label_endpoint_(other.label_endpoint_),
+        label_api_(other.label_api_),
+        label_api_key_file_(other.label_api_key_file_),
+        label_api_key_env_(other.label_api_key_env_) {
     (void)pool_id;
   }
 
@@ -147,13 +159,17 @@ struct SummarizerConfig {
   void serialize(Archive &ar) {
     // EVERY field round-trips (the cache/replication silently-dropped-field
     // audit rule).
-    ar(next_pool_id_, label_matches_, label_prompts_, label_endpoint_);
+    ar(next_pool_id_, label_matches_, label_prompts_, label_endpoint_,
+       label_api_, label_api_key_file_, label_api_key_env_);
   }
 
   /**
    * Load configuration from compose YAML. Parses:
    *   - `next_pool_id`        ("major.minor")
    *   - `label_endpoint`      (LLM HTTP endpoint base URL)
+   *   - `label_api`           ("ollama" | "openai")
+   *   - `label_api_key_file`  (file holding the bearer token)
+   *   - `label_api_key_env`   (env var holding the bearer token)
    *   - `label_prompts`       (map of prompt-name → prompt template)
    *   - `label_matches`       (list of {tag_re, blob_re, model, prompt,
    *                            context_length, num_predict})
@@ -163,6 +179,11 @@ struct SummarizerConfig {
     if (pool_config.config_.empty()) return;
     try {
       YAML::Node node = YAML::Load(pool_config.config_);
+      // yaml-cpp is a prebuilt .so: the scalars its scanner just
+      // produced carry no MSan shadow, so every key lookup and
+      // .as<>() below reads memory it has no record of. One walk
+      // here covers the whole tree.
+      ctp::MsanUnpoisonYaml(node);
       if (node["next_pool_id"]) {
         std::string next_str = node["next_pool_id"].as<std::string>();
         auto dot = next_str.find('.');
@@ -174,6 +195,15 @@ struct SummarizerConfig {
       }
       if (node["label_endpoint"]) {
         label_endpoint_ = node["label_endpoint"].as<std::string>();
+      }
+      if (node["label_api"]) {
+        label_api_ = node["label_api"].as<std::string>();
+      }
+      if (node["label_api_key_file"]) {
+        label_api_key_file_ = node["label_api_key_file"].as<std::string>();
+      }
+      if (node["label_api_key_env"]) {
+        label_api_key_env_ = node["label_api_key_env"].as<std::string>();
       }
       if (node["label_prompts"] && node["label_prompts"].IsMap()) {
         for (const auto &kv : node["label_prompts"]) {

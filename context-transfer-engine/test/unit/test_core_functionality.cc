@@ -59,6 +59,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <vector>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -255,7 +257,7 @@ class CTECoreFunctionalTestFixture {
 
   /**
    * Helper method to copy data to shared memory pointer (FullPtr version)
-   * Primary version following MODULE_DEVELOPMENT_GUIDE.md pattern
+   * Primary version following module_dev_guide.md pattern
    */
   bool CopyToSharedMemory(ctp::ipc::FullPtr<char> ptr,
                           const std::vector<char> &data) {
@@ -265,7 +267,7 @@ class CTECoreFunctionalTestFixture {
     }
 
     // Access data directly through .ptr_ as specified in
-    // MODULE_DEVELOPMENT_GUIDE.md
+    // module_dev_guide.md
     if (ptr.ptr_ == nullptr) {
       INFO("Failed to get buffer data from ctp::ipc::FullPtr<char>");
       return false;
@@ -312,7 +314,7 @@ class CTECoreFunctionalTestFixture {
 
   /**
    * Helper method to copy data from shared memory pointer (FullPtr version)
-   * Following MODULE_DEVELOPMENT_GUIDE.md pattern
+   * Following module_dev_guide.md pattern
    */
   std::vector<char> CopyFromSharedMemory(ctp::ipc::FullPtr<char> ptr, size_t size) {
     std::vector<char> result;
@@ -323,7 +325,7 @@ class CTECoreFunctionalTestFixture {
     }
 
     // Access data directly through .ptr_ as specified in
-    // MODULE_DEVELOPMENT_GUIDE.md
+    // module_dev_guide.md
     if (ptr.ptr_ == nullptr) {
       INFO("Failed to get buffer data from ctp::ipc::FullPtr<char>");
       return result;
@@ -660,7 +662,7 @@ TEST_CASE("FUNCTIONAL - PutBlob Operations",
     auto test_data = fixture->CreateTestData(blob_size, 'B');  // 'B' for Basic
     REQUIRE(fixture->VerifyTestData(test_data, 'B'));
 
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     // Using CLIO_IPC->AllocateBuffer() which returns ctp::ipc::FullPtr<char>
     ctp::ipc::FullPtr<char> blob_data_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
     if (blob_data_fullptr.IsNull()) {
@@ -717,7 +719,7 @@ TEST_CASE("FUNCTIONAL - PutBlob Operations",
       REQUIRE(fixture->VerifyTestData(test_data, pattern));
 
       // Allocate and copy to shared memory using CLIO_CLIENT pattern
-      // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+      // Following module_dev_guide.md AllocateBuffer<T> specification
       ctp::ipc::FullPtr<char> blob_data_fullptr =
           CLIO_IPC->AllocateBuffer(blob_size);
       if (blob_data_fullptr.IsNull()) {
@@ -760,7 +762,7 @@ TEST_CASE("FUNCTIONAL - PutBlob Operations",
                                       << "'");
 
       auto chunk_data = fixture->CreateTestData(chunk_size, pattern);
-      // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+      // Following module_dev_guide.md AllocateBuffer<T> specification
       ctp::ipc::FullPtr<char> chunk_fullptr = CLIO_IPC->AllocateBuffer(chunk_size);
 
       if (chunk_fullptr.IsNull()) {
@@ -795,7 +797,7 @@ TEST_CASE("FUNCTIONAL - PutBlob Operations",
     const clio::run::u64 blob_size = 2048;
 
     auto test_data = fixture->CreateTestData(blob_size, 'A');  // 'A' for Async
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> blob_data_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
 
     if (blob_data_fullptr.IsNull()) {
@@ -833,7 +835,7 @@ TEST_CASE("FUNCTIONAL - PutBlob Operations",
     // Test empty blob name
     INFO("Testing empty blob name error case...");
     auto test_data = fixture->CreateTestData(512);
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> data_fullptr = CLIO_IPC->AllocateBuffer(512);
     ctp::ipc::ShmPtr<> data_ptr =
         data_fullptr.IsNull()
@@ -932,7 +934,7 @@ TEST_CASE("FUNCTIONAL - GetBlob Operations",
     REQUIRE(fixture->VerifyTestData(original_data, 'R'));
 
     // Store the blob first
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put_data_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
     if (put_data_fullptr.IsNull()) {
       INFO(
@@ -1012,7 +1014,7 @@ TEST_CASE("FUNCTIONAL - GetBlob Operations",
       auto blob_data = fixture->CreateTestData(blob_size, pattern);
       original_data_set.push_back(blob_data);
 
-      // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+      // Following module_dev_guide.md AllocateBuffer<T> specification
       ctp::ipc::FullPtr<char> put_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
       if (put_fullptr.IsNull()) {
         INFO("Skipping " << blob_name
@@ -1086,7 +1088,7 @@ TEST_CASE("FUNCTIONAL - GetBlob Operations",
     auto full_data = fixture->CreateTestData(total_size, 'F');  // 'F' for Full
 
     // Store the full blob
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put_fullptr = CLIO_IPC->AllocateBuffer(total_size);
     if (put_fullptr.IsNull()) {
       INFO(
@@ -1158,7 +1160,7 @@ TEST_CASE("FUNCTIONAL - GetBlob Operations",
 
     // Store blob for async retrieval
     auto test_data = fixture->CreateTestData(blob_size, 'A');  // 'A' for Async
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
 
     if (put_fullptr.IsNull()) {
@@ -1321,7 +1323,7 @@ TEST_CASE("FUNCTIONAL - PutBlob-GetBlob Integration Cycles",
     REQUIRE(fixture->VerifyTestData(original_data, 'I'));
 
     // Allocate shared memory and store data using CLIO_CLIENT pattern
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
     if (put_fullptr.IsNull()) {
       INFO("Skipping Put-Get cycle due to memory context allocation failure");
@@ -1413,7 +1415,7 @@ TEST_CASE("FUNCTIONAL - PutBlob-GetBlob Integration Cycles",
       auto blob_data = fixture->CreateTestData(blob_size, pattern);
       stored_data.push_back(blob_data);
 
-      // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+      // Following module_dev_guide.md AllocateBuffer<T> specification
       ctp::ipc::FullPtr<char> put_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
       if (put_fullptr.IsNull()) {
         INFO("Skipping " << blob_name
@@ -1506,7 +1508,7 @@ TEST_CASE("FUNCTIONAL - PutBlob-GetBlob Integration Cycles",
     INFO("Storing blobs in separate tags...");
 
     // Store in tag1
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put1_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
     ctp::ipc::ShmPtr<> put1_ptr = put1_fullptr.IsNull()
                                   ? ctp::ipc::ShmPtr<>::GetNull()
@@ -1525,7 +1527,7 @@ TEST_CASE("FUNCTIONAL - PutBlob-GetBlob Integration Cycles",
     }
 
     // Store in tag2
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put2_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
     ctp::ipc::ShmPtr<> put2_ptr = put2_fullptr.IsNull()
                                   ? ctp::ipc::ShmPtr<>::GetNull()
@@ -1603,7 +1605,7 @@ TEST_CASE("FUNCTIONAL - PutBlob-GetBlob Integration Cycles",
     const clio::run::u64 blob_size = 3072;  // 3KB
 
     auto test_data = fixture->CreateTestData(blob_size, 'A');  // 'A' for Async
-    // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+    // Following module_dev_guide.md AllocateBuffer<T> specification
     ctp::ipc::FullPtr<char> put_fullptr = CLIO_IPC->AllocateBuffer(blob_size);
 
     if (put_fullptr.IsNull() ||
@@ -1688,7 +1690,7 @@ TEST_CASE("FUNCTIONAL - PutBlob-GetBlob Integration Cycles",
       INFO("Storing chunk " << i << " at offset " << offset << " with pattern '"
                             << pattern << "'");
 
-      // Following MODULE_DEVELOPMENT_GUIDE.md AllocateBuffer<T> specification
+      // Following module_dev_guide.md AllocateBuffer<T> specification
       ctp::ipc::FullPtr<char> chunk_fullptr = CLIO_IPC->AllocateBuffer(chunk_size);
       if (chunk_fullptr.IsNull() ||
           !fixture->CopyToSharedMemory(chunk_fullptr, chunk_data[i])) {
@@ -2472,21 +2474,12 @@ TEST_CASE("FUNCTIONAL - Distributed Execution Validation",
   HLOG(kInfo, "  Average: {}", get_avg_completer);
 
   // Validation: If multiple nodes exist, average completer should be > 0
-  // indicating distributed execution.
-  //
-  // TEMP-DISABLED (#503): in the 4-node docker setup every CTE blob op
-  // resolves to the client node's single local container (completer == 0 for
-  // all ops) instead of fanning out cross-node, so these assertions fail. The
-  // Put/Get data-integrity checks above still run. Re-enable once #503/#502 is
-  // fixed (CTE blob ops should route to remote containers, or this should
-  // assert on resolved target-node distribution rather than local completer_).
+  // indicating distributed execution. (#503: blob ops did route cross-node,
+  // but a node executing a task routed to it by another never recorded
+  // itself as the completer, so every op reported container 0.)
   if (num_nodes > 1) {
-    HLOG(kWarning,
-         "[#503] Cross-node distribution validation temporarily disabled "
-         "(put_avg_completer={}, get_avg_completer={}, num_nodes={})",
-         put_avg_completer, get_avg_completer, num_nodes);
-    // REQUIRE(put_avg_completer > 0.0);
-    // REQUIRE(get_avg_completer > 0.0);
+    REQUIRE(put_avg_completer > 0.0);
+    REQUIRE(get_avg_completer > 0.0);
   } else {
     INFO("Single node test - distributed execution validation skipped");
   }
@@ -2516,6 +2509,39 @@ TEST_CASE("FUNCTIONAL - Distributed Execution Validation",
  * that fallback is what the distributed suites cover. */
 static clio::run::PoolQuery ShmCacheLocalQuery() {
   return clio::run::PoolQuery::Local();
+}
+
+/**
+ * A blob name derived from @p base that this node's container owns.
+ *
+ * A node's SHM mirror publishes only the blobs it owns (BlobHash % containers,
+ * 0bd41b182): a copy kept for another container may be stale, so it is
+ * erased, never served. On a multi-node pool (CTE_NUM_NODES > 1) a fixed name
+ * usually hashes to another node, so a Local put of it is correctly never
+ * cached here (#1229). Single node: @p base unchanged.
+ * @param client CTE client bound to the pool under test
+ * @param tag_id tag the blob lives in
+ * @param base name to derive from
+ * @return @p base, or @p base + "_<k>" for the first k this node owns
+ */
+static std::string LocalOwnedBlobName(clio::cte::core::Client &client,
+                                      const clio::cte::core::TagId &tag_id,
+                                      const std::string &base) {
+  const char *env = std::getenv("CTE_NUM_NODES");
+  const clio::run::u32 n =
+      env != nullptr && std::atoi(env) > 1 ? std::atoi(env) : 1;
+  if (n <= 1) return base;
+  // The container a Local task completes on is this node's.
+  auto probe = client.AsyncGetOrCreateTag(
+      "shm_owner_probe_tag", clio::cte::core::TagId::GetNull(),
+      ShmCacheLocalQuery());
+  probe.Wait();
+  const clio::run::u32 me =
+      static_cast<clio::run::u32>(probe->completer_.load());
+  for (clio::run::u32 k = 0;; ++k) {
+    std::string name = base + "_" + std::to_string(k);
+    if (clio::cte::core::BlobHash(tag_id, name) % n == me) return name;
+  }
 }
 
 TEST_CASE("CTE SHM cache write-then-read",
@@ -2564,7 +2590,8 @@ TEST_CASE("CTE SHM cache write-then-read",
   }
 
   SECTION("Write then read: the cache reflects the write") {
-    const std::string blob_name = "shm_rw_blob";
+    const std::string blob_name =
+        LocalOwnedBlobName(*fixture->core_client_, tag_id, "shm_rw_blob");
     const clio::run::u64 blob_size = 2048;
     auto test_data = fixture->CreateTestData(blob_size, 'S');
 
@@ -2593,15 +2620,36 @@ TEST_CASE("CTE SHM cache write-then-read",
     REQUIRE(fixture->WaitForTaskCompletion(size_task, 10000));
     REQUIRE(rec.total_size_ == size_task->size_);
 
-    // Payload reads must still be refused until the RAM bdev is SHM-backed
-    // (phase 6): this blob lives on a FILE target, so direct read is invalid.
-    REQUIRE_FALSE(rec.IsDirectReadable());
+    // ASSERT THE INVARIANT, NOT THE DEPLOYMENT. This used to require
+    // REQUIRE_FALSE(rec.IsDirectReadable()) on the grounds that "this blob
+    // lives on a FILE target" -- but which target it lands on is decided by
+    // whatever targets the ambient clio.yaml declares. On a config whose
+    // only CTE target is a SHM-backed RAM tier the blob is legitimately
+    // direct-readable, and the test failed for describing the operator's
+    // config rather than the code.
+    //
+    // What must hold in EVERY config is that the cache does not lie: if it
+    // advertises a direct read, that read has to succeed and return exactly
+    // the bytes the authoritative path would. If it does not advertise one,
+    // the direct read must refuse rather than invent data.
+    {
+      std::vector<char> direct(blob_size, 0);
+      const bool served = fixture->core_client_->TryReadBlobShm(
+          tag_id, blob_name, direct.data(), blob_size, 0);
+      if (rec.IsDirectReadable() && blob_size <= rec.CoveredBytes()) {
+        REQUIRE(served);
+        REQUIRE(std::memcmp(direct.data(), test_data.data(), blob_size) == 0);
+      } else {
+        REQUIRE_FALSE(served);
+      }
+    }
 
     CLIO_IPC->FreeBuffer(blob_data_fullptr);
   }
 
   SECTION("Overwrite then read: the cache reflects the NEW size") {
-    const std::string blob_name = "shm_rw_overwrite";
+    const std::string blob_name = LocalOwnedBlobName(
+        *fixture->core_client_, tag_id, "shm_rw_overwrite");
     const clio::run::u64 first_size = 1024;
     const clio::run::u64 second_size = 4096;
 
@@ -2673,7 +2721,8 @@ TEST_CASE("CTE SHM cache metadata read benchmark",
   const clio::run::u64 kBlobSize = 1024;
   std::vector<std::string> names;
   for (int i = 0; i < kBlobs; ++i) {
-    std::string bn = "bench_blob_" + std::to_string(i);
+    std::string bn = LocalOwnedBlobName(
+        *fixture->core_client_, tag_id, "bench_blob_" + std::to_string(i));
     names.push_back(bn);
     auto data = fixture->CreateTestData(kBlobSize, 'K');
     auto fp = CLIO_IPC->AllocateBuffer(kBlobSize);
@@ -2798,7 +2847,8 @@ TEST_CASE("CTE SHM cache direct payload read",
   }
   REQUIRE(!tag_id.IsNull());
 
-  const std::string blob_name = "direct_read_blob";
+  const std::string blob_name =
+      LocalOwnedBlobName(client, tag_id, "direct_read_blob");
   const clio::run::u64 blob_size = 4096;
   auto test_data = fixture->CreateTestData(blob_size, 'D');
 
@@ -2863,6 +2913,35 @@ TEST_CASE("CTE SHM cache direct payload read",
     std::vector<char> got(blob_size, 0);
     REQUIRE_FALSE(client.TryReadBlobShm(
         tag_id, blob_name, got.data(), blob_size, blob_size / 2));
+  }
+
+  SECTION("Read counters account for each outcome") {
+    // issue #787: these counters are the only way to see the fast path
+    // degrade to RPC, so every outcome must land in exactly one of them.
+    const auto before = clio::cte::core::GetThreadShmReadStats();
+    std::vector<char> got(blob_size, 0);
+    REQUIRE(client.TryReadBlobShm(tag_id, blob_name, got.data(), blob_size));
+    REQUIRE_FALSE(client.TryReadBlobShm(tag_id, blob_name, got.data(),
+                                        blob_size, blob_size / 2));
+    clio::cte::core::ShmBlobRecord missing;
+    REQUIRE_FALSE(
+        client.TryGetBlobRecordShm(tag_id, "no_such_blob_787", &missing));
+    const auto after = clio::cte::core::GetThreadShmReadStats();
+
+    REQUIRE(after.payload_reads - before.payload_reads == 2);
+    REQUIRE(after.payload_hits - before.payload_hits == 1);
+    REQUIRE(after.payload_not_servable - before.payload_not_servable == 1);
+    REQUIRE(after.payload_write_in_flight == before.payload_write_in_flight);
+    REQUIRE(after.payload_raced_writer == before.payload_raced_writer);
+    // The hit reads the record before and after its copy; the refused read
+    // once; the lookup of a missing blob once.
+    REQUIRE(after.record_reads - before.record_reads == 4);
+    // A blob that is not cached is a miss, not a fallback.
+    REQUIRE(after.record_fallbacks == before.record_fallbacks);
+
+    const auto process = clio::cte::core::GetShmReadStats();
+    REQUIRE(process.payload_hits >= after.payload_hits);
+    REQUIRE(process.record_reads >= after.record_reads);
   }
 
   SECTION("Payload benchmark: direct vs RPC") {
@@ -2982,6 +3061,9 @@ TEST_CASE("CTE SHM cache refuses direct reads of transformed blobs",
 
   const clio::run::u64 blob_size = 4096;
   auto test_data = fixture->CreateTestData(blob_size, 'X');
+  const std::string raw_name = LocalOwnedBlobName(client, tag_id, "raw_blob");
+  const std::string xform_name =
+      LocalOwnedBlobName(client, tag_id, "transformed_blob");
 
   // Put the SAME bytes twice: once declared raw, once declared transformed.
   // The only difference between the two blobs is the bit, so any difference in
@@ -3000,13 +3082,13 @@ TEST_CASE("CTE SHM cache refuses direct reads of transformed blobs",
     CLIO_IPC->FreeBuffer(fp);
   };
 
-  put_blob("raw_blob", clio::cte::core::kBlobTransformNone);
-  put_blob("transformed_blob", clio::cte::core::kBlobTransformed |
+  put_blob(raw_name, clio::cte::core::kBlobTransformNone);
+  put_blob(xform_name, clio::cte::core::kBlobTransformed |
                                    clio::cte::core::kBlobTransformCompressed);
 
   clio::cte::core::ShmBlobRecord raw_rec, xform_rec;
-  REQUIRE(client.TryGetBlobRecordShm(tag_id, "raw_blob", &raw_rec));
-  REQUIRE(client.TryGetBlobRecordShm(tag_id, "transformed_blob", &xform_rec));
+  REQUIRE(client.TryGetBlobRecordShm(tag_id, raw_name, &raw_rec));
+  REQUIRE(client.TryGetBlobRecordShm(tag_id, xform_name, &xform_rec));
 
   // CONTROL. Without this the refusal assertions below are vacuous: they would
   // also hold if nothing here were direct-readable in the first place. The raw
@@ -3020,7 +3102,7 @@ TEST_CASE("CTE SHM cache refuses direct reads of transformed blobs",
   }
   {
     std::vector<char> control(blob_size, 0);
-    REQUIRE(client.TryReadBlobShm(tag_id, "raw_blob", control.data(),
+    REQUIRE(client.TryReadBlobShm(tag_id, raw_name, control.data(),
                                   blob_size));
     REQUIRE(std::memcmp(control.data(), test_data.data(), blob_size) == 0);
   }
@@ -3042,7 +3124,7 @@ TEST_CASE("CTE SHM cache refuses direct reads of transformed blobs",
 
   SECTION("The payload fast path refuses") {
     std::vector<char> got(blob_size, 0);
-    REQUIRE_FALSE(client.TryReadBlobShm(tag_id, "transformed_blob", got.data(),
+    REQUIRE_FALSE(client.TryReadBlobShm(tag_id, xform_name, got.data(),
                                         blob_size));
   }
 
@@ -3051,7 +3133,7 @@ TEST_CASE("CTE SHM cache refuses direct reads of transformed blobs",
     // "no such blob".
     auto rd = CLIO_IPC->AllocateBuffer(blob_size);
     REQUIRE(!rd.IsNull());
-    auto g = client.AsyncGetBlob(tag_id, "transformed_blob", 0, blob_size, 0,
+    auto g = client.AsyncGetBlob(tag_id, xform_name, 0, blob_size, 0,
                                  rd.shm_.template Cast<void>(), ShmCacheLocalQuery());
     g.Wait();
     REQUIRE(g->return_code_ == 0);
@@ -3067,9 +3149,9 @@ TEST_CASE("CTE SHM cache refuses direct reads of transformed blobs",
     // A later put that does not declare a transform must not clear the mark:
     // the blob may now be a mix of codec output and raw bytes, and the only
     // safe reading of that is still "transformed".
-    put_blob("transformed_blob", clio::cte::core::kBlobTransformNone);
+    put_blob(xform_name, clio::cte::core::kBlobTransformNone);
     clio::cte::core::ShmBlobRecord after;
-    REQUIRE(client.TryGetBlobRecordShm(tag_id, "transformed_blob", &after));
+    REQUIRE(client.TryGetBlobRecordShm(tag_id, xform_name, &after));
     REQUIRE(after.IsTransformed());
     REQUIRE_FALSE(after.IsDirectReadable());
   }
@@ -3124,7 +3206,8 @@ TEST_CASE("CTE SHM cache write-then-read cycle benchmark",
   }
   REQUIRE(!tag_id.IsNull());
 
-  const std::string blob_name = "wtr_blob";
+  const std::string blob_name =
+      LocalOwnedBlobName(client, tag_id, "wtr_blob");
   const clio::run::u64 kSize = 4096;
   const int kIters = 300;
   auto data = fixture->CreateTestData(kSize, 'W');
@@ -3235,10 +3318,15 @@ TEST_CASE("CTE SHM cache write-then-read cycle benchmark",
        write_us, write_us_last, cycle_shm_meta_us, cycle_rpc_meta_us,
        cycle_shm_data_us, cycle_rpc_data_us, kIters, kSize, sink);
 
-  // Structural sanity: a write+read cycle includes a write, so it cannot take
-  // less than half the write-alone floor. This catches a broken/near-zero
-  // measurement, and holds regardless of runner load.
-  REQUIRE(cycle_shm_meta_us >= std::min(write_us, write_us_last) * 0.5);
+  // Structural sanity: a write+read cycle includes a write, so it cannot be
+  // dramatically cheaper than the write-alone floor. This catches a
+  // broken/near-zero measurement. The bound is deliberately loose (10x): the
+  // loops are separate wall-clock samples, and on a loaded CI runner a
+  // write-alone loop has sampled 2.5x slower than the cycle loop (leak-check:
+  // write-alone 109/89 us vs SHM metadata cycle 43.7 us), which a 0.5x bound
+  // turned into a spurious failure.
+  REQUIRE(cycle_shm_meta_us > 0.0);
+  REQUIRE(cycle_shm_meta_us >= std::min(write_us, write_us_last) * 0.1);
 
   // SHM is EXPECTED to beat RPC — that is the point of the cache — but this is
   // a wall-clock comparison of two timing samples, so on a loaded CI runner

@@ -152,6 +152,12 @@ bool ConfigManager::ClientInit() {
             "Warning: Failed to load configuration from {}, using defaults",
             config_file_path_);
     }
+  } else {
+    // No config file: still per-user (see LoadDefault). The member default
+    // /tmp/clio is shared by every user of the host, so whoever created it
+    // first owned it and every other user's runtime could not write its pool
+    // log there -- durable pools silently failed to come back on a start.
+    conf_dir_ = ctp::SystemInfo::GetMemfdDir();
   }
   ApplyEnvOverrides();
 
@@ -181,6 +187,16 @@ void ConfigManager::ApplyEnvOverrides() {
     std::string addr_env(env);
     if (!addr_env.empty()) {
       server_addr_ = addr_env;
+    }
+  }
+
+  // Check CLIO_IPC_NAMESPACE env var (overrides YAML config, issue #877).
+  // Appended to all shared memory segment names to allow multiple independent
+  // runtimes to coexist with the same ${USER}.
+  if (const char *env = clio::run::env::GetCompat("IPC_NAMESPACE")) {
+    std::string ns_env(env);
+    if (!ns_env.empty()) {
+      ipc_namespace_ = ns_env;
     }
   }
 
@@ -392,8 +408,14 @@ ConfigManager::GetSharedMemorySegmentName(MemorySegment segment,
   // segment (the fallback client attaching the main runtime's segments).
   u32 name_port = (port != 0) ? port : port_;
   // Use CTP's ExpandPath to resolve environment variables
-  return ctp::ConfigParse::ExpandPath(segment_name) + "_" +
-         std::to_string(name_port);
+  std::string result = ctp::ConfigParse::ExpandPath(segment_name) + "_" +
+                       std::to_string(name_port);
+  // Append optional IPC namespace suffix (issue #877) to allow multiple
+  // independent runtimes with the same ${USER}.
+  if (!ipc_namespace_.empty()) {
+    result += "_" + ipc_namespace_;
+  }
+  return result;
 }
 
 std::string ConfigManager::GetHostfilePath() const {
@@ -411,6 +433,12 @@ void ConfigManager::LoadDefault() {
   // Set default configuration values
   num_threads_ = 4;
   queue_depth_ = 1024;
+  // Per-user by default (/tmp/clio_$USER, the same directory as the memfd
+  // links): the learned task-stat models live under <conf_dir>/models, and a
+  // shared /tmp/clio on a multi-user node meant one user's runtimes could not
+  // write the models (an ERROR per container at every start) and would
+  // RESTORE another user's. runtime.conf_dir in the yaml overrides.
+  conf_dir_ = ctp::SystemInfo::GetMemfdDir();
 
   main_segment_size_ = 0;                         // 0 means auto-calculate
   client_data_segment_size_ = 512 * 1024 * 1024;  // 512MB
@@ -423,6 +451,7 @@ void ConfigManager::LoadDefault() {
   client_data_segment_name_ = "chi_client_data_segment_${USER}";
   metadata_segment_name_ = "chi_metadata_segment_${USER}";
   metadata_segment_size_ = 0;  // 0 means auto-calculate
+  ipc_namespace_.clear();      // no per-instance segment suffix
 
   // Set default hostfile path (empty means no networking/distributed mode)
   hostfile_path_ = "";
@@ -471,6 +500,9 @@ void ConfigManager::ParseYAML(YAML::Node &yaml_conf) {
     }
 
     // Worker sleep configuration
+    if (runtime["client_reap_grace_s"]) {
+      client_reap_grace_s_ = runtime["client_reap_grace_s"].as<u32>();
+    }
     if (runtime["first_busy_wait"]) {
       first_busy_wait_ = runtime["first_busy_wait"].as<u32>();
     }
@@ -481,7 +513,8 @@ void ConfigManager::ParseYAML(YAML::Node &yaml_conf) {
           runtime["task_progress_interval_ms"].as<u32>();
     }
 
-    // Configuration directory for persistent runtime config
+    // Configuration directory for persistent runtime config; the default is
+    // the per-user directory set in LoadDefault (see there).
     if (runtime["conf_dir"]) {
       conf_dir_ = runtime["conf_dir"].as<std::string>();
     }
@@ -499,6 +532,12 @@ void ConfigManager::ParseYAML(YAML::Node &yaml_conf) {
     // hosts can back. On Windows CI, CreateFileMapping cannot reserve it and
     // the runtime falls back to the no-cache path, silently disabling the
     // feature — with no way to ask for a smaller segment instead.
+    // Optional per-instance suffix for the shared-memory segment names
+    // (issue #877). Segment names already carry the user and the port; this
+    // separates two runtimes that must share both. CLIO_IPC_NAMESPACE wins.
+    if (runtime["ipc_namespace"]) {
+      ipc_namespace_ = runtime["ipc_namespace"].as<std::string>();
+    }
     if (runtime["metadata_segment_size"]) {
       size_t parsed = 0;
       if (ParseSegmentSizeNode(runtime["metadata_segment_size"],
