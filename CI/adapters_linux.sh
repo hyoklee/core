@@ -31,12 +31,29 @@ export LD_LIBRARY_PATH=/usr/local/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
 git config --global --add safe.directory /workspace
 
-# FUSE backend + ELF interception headers (libelf/HDF5 already in image)
-# Retry: DNS inside the freshly started container is sometimes not ready yet
-# ("Could not resolve archive.ubuntu.com"), which has failed this job on the
-# first apt call. ci-vfd.yml uses the same loop.
-for i in 1 2 3 4 5; do apt-get update -qq && break || sleep 10; done
-for i in 1 2 3 4 5; do apt-get install -y -qq libfuse3-dev fuse3 pkg-config libelf-dev && break || sleep 10; done
+# FUSE backend + ELF interception headers (libelf/HDF5 already in image).
+# Retry update+install as one unit: `apt-get update` exits 0 even when every
+# index fetch failed ("Could not resolve 'archive.ubuntu.com'" -- the container
+# resolver was dead for three runs on 2026-11-11), so only the install result
+# says whether the package lists are real. Fail loudly if fuse3 never lands:
+# without it clio_cte_fuse is silently skipped and the mount smoke fails later
+# with a far less useful message.
+apt_ok=0
+for i in 1 2 3 4 5; do
+  if apt-get update -qq && \
+     apt-get install -y -qq libfuse3-dev fuse3 pkg-config libelf-dev; then
+    apt_ok=1
+    break
+  fi
+  echo "apt attempt $i failed; retrying in 10 s"
+  sleep 10
+done
+if [ "$apt_ok" != 1 ]; then
+  echo "ERROR: could not install libfuse3-dev/fuse3 inside the container."
+  echo "Container resolver config (/etc/resolv.conf):"
+  cat /etc/resolv.conf || true
+  exit 1
+fi
 
 # --------------------------------------------------------------- HDF5 tool gate
 # The HDF5 CLI tools are the differential oracle for both compat suites and for
