@@ -82,7 +82,7 @@ endif()
 # LibPressio's config pulls in zfp, which hard-requires OpenMP for C, so
 # only look it up when the consuming project has C enabled.
 get_property(_clio_enabled_langs GLOBAL PROPERTY ENABLED_LANGUAGES)
-if(@CLIO_CTP_ENABLE_LIBPRESSIO@ AND NOT TARGET LibPressio::libpressio
+if("@CLIO_CTP_ENABLE_LIBPRESSIO@" AND NOT TARGET LibPressio::libpressio
    AND "C" IN_LIST _clio_enabled_langs)
     find_package(LibPressio QUIET)
 endif()
