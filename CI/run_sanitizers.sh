@@ -131,6 +131,49 @@ fi
 # This prints the ctest pass/fail line, the per-test defect counts, and a sample
 # of the actual sanitizer messages from the MemoryChecker output files, which
 # otherwise only reach CDash.
+
+# What a sanitizer runtime prints when it dies on its own account rather than
+# on an instrumented access: an internal consistency CHECK ("AddressSanitizer:
+# CHECK failed: sanitizer_thread_registry.cpp:161 ..."), an mmap that the
+# runtime could not satisfy ("ERROR: AddressSanitizer failed to allocate ..."),
+# or a fatal flag/interface misuse. None of these carry the "ERROR:
+# <Name>Sanitizer: <kind> on address" shape that ctest's memcheck parser and
+# the greps below key on, so such a test shows up as a plain failed test with
+# zero defects and the report stays in its MemoryChecker file.
+SANITIZER_RUNTIME_DEATH='[A-Za-z]+Sanitizer: CHECK failed: |ERROR: [A-Za-z]+Sanitizer failed to |[A-Za-z]+Sanitizer: ERROR: '
+
+# Lines every MemoryChecker file holds even for a passing test under this
+# runtime: the fiber stack-switch warning (Boost.Context tasks, issue #856) and
+# the LSan suppression summary. Dropped when a failed test's file is printed.
+MEMCHECK_NOISE='ignoring requested __asan_handle_no_return|False positive error reports may follow|For details see https://github.com/google/sanitizers|^-{10,}$|^Suppressions used:|^[[:space:]]+count[[:space:]]+bytes[[:space:]]+template|^[[:space:]]+[0-9]+[[:space:]]+[0-9]+[[:space:]]+[^[:space:]]+$|^[[:space:]]*$'
+
+# Print the MemoryChecker file of every test the ctest summary lists as failed.
+# A test that died inside the sanitizer runtime (see SANITIZER_RUNTIME_DEATH)
+# reports no defect, so the defects loop in sanitizer_gate_status() never
+# shows it; the job log then holds only "***Failed 0.19 sec" and the report
+# has to be dug out of CDash. Three such deaths across two PR runs on
+# 2026-11-12 (cte_core_tasks, cte_core_performance, cte_tag_getblob, each
+# within 0.3 s of runtime init) were ASan thread-registry CHECKs
+# ("ThreadStatusCreated == tctx->status") visible nowhere but CDash.
+# Arguments:
+#   $1  path to the ctest -S log of that run
+print_failed_test_memcheck() {
+    local CTEST_LOG="$1"
+    local MEMCHECK_DIR="${BUILD_DIR}/Testing/Temporary"
+    local n name f
+    sed -n '/^The following tests FAILED:/,/^[^[:space:]]/p' "${CTEST_LOG}" \
+        | grep -oE '^[[:space:]]+[0-9]+ - [^[:space:]]+' \
+        | while read -r n _ name; do
+            f="${MEMCHECK_DIR}/MemoryChecker.${n}.log"
+            echo "==== memcheck output of failed test ${n} (${name}): ${f}"
+            if [ ! -s "${f}" ]; then
+                echo "(no MemoryChecker output)"
+                continue
+            fi
+            grep -vE "${MEMCHECK_NOISE}" "${f}" | head -60
+        done
+}
+
 # Decide whether a sanitizer run fails the job (issue #803).
 # Arguments:
 #   $1  sanitizer mode (asan | ubsan | msan | sanitize)
@@ -141,6 +184,7 @@ sanitizer_gate_status() {
     local MODE="$1"
     local CTEST_LOG="$2"
     [ "${MODE}" = "msan" ] && return 0
+    local STATUS=0
     if grep -qE "Defects: [1-9]" "${CTEST_LOG}" 2>/dev/null; then
         print_warning "${MODE}: tests reported sanitizer defects"
         # The reports themselves are only in the MemoryChecker files (and the
@@ -154,18 +198,19 @@ sanitizer_gate_status() {
             echo "==== sanitizer report: ${f}"
             grep -E -A40 "ERROR: [A-Za-z]+Sanitizer|runtime error:" "${f}" | head -80
         done
-        return 1
+        STATUS=1
     fi
     if grep -qE "[0-9]+% tests passed, [1-9][0-9]* tests? failed" \
             "${CTEST_LOG}" 2>/dev/null; then
         print_warning "${MODE}: tests failed"
-        return 1
+        print_failed_test_memcheck "${CTEST_LOG}"
+        STATUS=1
     fi
     if ! grep -qE "[0-9]+% tests passed" "${CTEST_LOG}" 2>/dev/null; then
         print_warning "${MODE}: no ctest summary line; the run did not complete"
         return 1
     fi
-    return 0
+    return "${STATUS}"
 }
 
 emit_findings_summary() {
@@ -217,7 +262,7 @@ emit_findings_summary() {
             echo "<details><summary>Sample sanitizer messages</summary>"
             echo ""
             echo '```'
-            grep -hoE "(runtime error: .*|ERROR: [A-Za-z]+Sanitizer: .*|SUMMARY: [A-Za-z]+Sanitizer: .*)" \
+            grep -hoE "(runtime error: .*|ERROR: [A-Za-z]+Sanitizer: .*|SUMMARY: [A-Za-z]+Sanitizer: .*|(${SANITIZER_RUNTIME_DEATH}).*)" \
                  "${MEMCHECK_DIR}"/MemoryChecker.*.log 2>/dev/null \
                  | sort | uniq -c | sort -rn | head -40 || true
             echo '```'
