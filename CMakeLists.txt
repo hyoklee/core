@@ -126,6 +126,13 @@ option(CLIO_CORE_ENABLE_IO_URING "Enable io_uring async I/O backend (Linux 5.1+,
 option(CLIO_CORE_ENABLE_BOOST_COROUTINES "Use Boost.Context stackful coroutines for task execution instead of C++20 stackless coroutines (issue #620). Opt-in; reuses fiber stacks to avoid the per-task heap frame the stackless backend allocates." OFF)
 
 # Set internal compression flags from CLIO_CTE_ENABLE_COMPRESS
+# cmake/ClioCoreConfig.cmake.in expands CLIO_CTP_ENABLE_LIBPRESSIO whether or
+# not compression is on, but the codec-discovery block guarded by
+# CLIO_CTE_ENABLE_COMPRESS further down is the only place that sets it.
+# Without this default a compression-off build installs an
+# iowarp-coreConfig.cmake containing "if( AND NOT TARGET ...)", and every
+# find_package(clio-core) consumer fails to configure.
+set(CLIO_CTP_ENABLE_LIBPRESSIO OFF)
 if(CLIO_CTE_ENABLE_COMPRESS)
     set(CLIO_CORE_ENABLE_COMPRESS ON)
 else()
