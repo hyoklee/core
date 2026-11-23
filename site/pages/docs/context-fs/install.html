@@ -7,7 +7,7 @@ lede: The filesystem module ships in every CLIO Core install. The mount daemon, 
 facts: pip | Linux and Windows wheels include clio_cte_fuse ; macOS | build from source ; CMake option | CLIO_CTE_ENABLE_FUSE_ADAPTER
 -->
 <h2>What each install method gives you</h2>
-<p>The general install page, <a href="/docs/installation.html">Installation</a>, covers every method. For Context FS the question is whether <code>clio_cte_fuse</code> is in the package.</p>
+<p>The <a href="/index.html#install">install matrix</a> on the home page covers every method. For Context FS the question is whether <code>clio_cte_fuse</code> is in the package.</p>
 <ul class="checks">
   <li><strong>pip</strong> (<code>pip install iowarp-core</code>): the Linux and Windows wheels build the FUSE adapter; the macOS wheel does not. The <code>clio_cte_fuse</code> console script exists on every platform, but on macOS the binary behind it is absent.</li>
   <li><strong>conda</strong> (<code>iowarp</code> channel): built from the <code>release</code> preset, which does not enable the adapter. Build the recipe yourself with a FUSE preset to get it.</li>
@@ -40,8 +40,8 @@ $ cmake --build build-mac-fuse -j"$(sysctl -n hw.ncpu)"
   <section class="tab-panel" data-tab="Windows"><p class="tab-title">Windows</p>
 <p>Install <a href="https://winfsp.dev/rel/">WinFsp</a>. The pip console script adds <code>%ProgramFiles(x86)%\WinFsp\bin</code> to <code>PATH</code> itself and refuses to start if that folder is missing. To build from source you also need WinFsp's developer files (install the MSI with <code>ADDLOCAL=ALL</code>), then:</p>
 <pre data-label="powershell">
-PS&gt;cmake --preset windows-release -DCLIO_CTE_ENABLE_FUSE_ADAPTER=ON
-PS&gt;cmake --build build --config Release
+PS>cmake --preset windows-release -DCLIO_CTE_ENABLE_FUSE_ADAPTER=ON
+PS>cmake --build build --config Release
 </pre>
 <p>Dependencies come from vcpkg; set <code>VCPKG_ROOT</code> first. <a href="/tutorials/fuse-windows.html">FUSE on Windows</a> has the Defender note and the <code>-o uid=-1,gid=-1</code> option for git.</p></section>
 </div>
@@ -59,14 +59,14 @@ PS&gt;cmake --build build --config Release
 <h2>Check that it works</h2>
 <p>Start the runtime, mount, write a file through the mount, and unmount. On Linux:</p>
 <pre data-label="shell">
-$ clio_run start &amp;
+$ clio-run start &
 $ mkdir -p ~/clio-mnt
-$ CLIO_WITH_RUNTIME=0 clio_cte_fuse ~/clio-mnt -f &amp;
-$ echo hello &gt; ~/clio-mnt/hello.txt
+$ CLIO_WITH_RUNTIME=0 clio_cte_fuse ~/clio-mnt -f &
+$ echo hello > ~/clio-mnt/hello.txt
 $ cat ~/clio-mnt/hello.txt
 hello
 $ fusermount3 -u ~/clio-mnt
-$ clio_run stop
+$ clio-run stop
 </pre>
 <p>On Windows mount a drive letter (<code>clio_cte_fuse Z: -f</code>) in a second PowerShell window with <code>$env:CLIO_WITH_RUNTIME = "0"</code>, and stop the daemon with <code>Stop-Process -Name clio_cte_fuse</code>. If <code>clio_cte_fuse</code> reports that its binary was not found, your install does not include the adapter; use one of the methods above that does.</p>
 <p>Next: <a href="/docs/context-fs/quickstart.html">Quickstart</a>.</p>
