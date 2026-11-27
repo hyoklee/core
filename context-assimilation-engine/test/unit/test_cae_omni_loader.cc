@@ -226,6 +226,46 @@ TEST_CASE("LoadOmni - dataset_filter patterns are collected",
   REQUIRE(ctxs[0].exclude_patterns[0] == "/debug");
 }
 
+TEST_CASE("LoadOmni - video block is read", "[cae][omni][video]") {
+  TempYaml f(
+      "transfers:\n"
+      "  - src: dataverse://h/doi:1/X\n    dst: iowarp::v\n    format: hdf5\n"
+      "    video:\n"
+      "      include: [\"*.mp4\", \"*/clip.avi\"]\n"
+      "      width: 320\n      codec: x265\n      crf: 28\n      preset: slow\n");
+  std::vector<AssimilationCtx> ctxs = LoadOmni(f.Path());
+  REQUIRE(ctxs.size() == 1);
+  REQUIRE(ctxs[0].video_patterns.size() == 2);
+  REQUIRE(ctxs[0].video_patterns[1] == "*/clip.avi");
+  REQUIRE(ctxs[0].video_width == 320);
+  REQUIRE(ctxs[0].video_codec == "x265");
+  REQUIRE(ctxs[0].video_crf == 28);
+  REQUIRE(ctxs[0].video_preset == "slow");
+}
+
+TEST_CASE("LoadOmni - no video block means no transcoding",
+          "[cae][omni][video]") {
+  TempYaml f("transfers:\n  - src: s\n    dst: d\n    format: hdf5\n");
+  std::vector<AssimilationCtx> ctxs = LoadOmni(f.Path());
+  REQUIRE(ctxs[0].video_patterns.empty());
+  REQUIRE(ctxs[0].video_codec == "x264");
+}
+
+TEST_CASE("LoadOmni - bad video blocks throw", "[cae][omni][video][error]") {
+  const std::string head = "transfers:\n  - src: s\n    dst: d\n    format: hdf5\n";
+  REQUIRE(ThrowsWith(head + "    video: [a]\n", "'video' must be a map"));
+  REQUIRE(ThrowsWith(head + "    video:\n      width: 10\n",
+                     "'video.include' must list"));
+  REQUIRE(ThrowsWith(head + "    video:\n      include: [x]\n      fps: 5\n",
+                     "unknown key 'video.fps'"));
+  REQUIRE(ThrowsWith(head + "    video:\n      include: [x]\n      codec: vp9\n",
+                     "'video.codec' must be"));
+  REQUIRE(ThrowsWith(head + "    video:\n      include: [x]\n      crf: 99\n",
+                     "'video.crf' must be 0..63"));
+  REQUIRE(ThrowsWith(head + "    video:\n      include: [x]\n      width: -2\n",
+                     "'video.width' must be >= 0"));
+}
+
 TEST_CASE("LoadOmni - dataset_filter with only includes",
           "[cae][omni][filter]") {
   TempYaml f(

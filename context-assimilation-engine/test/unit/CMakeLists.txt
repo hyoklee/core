@@ -500,6 +500,30 @@ if(NOT WIN32 AND ZLIB_FOUND)
   set_tests_properties(cae_dataverse PROPERTIES TIMEOUT 60 LABELS "cae;unit")
   install(TARGETS cae_dataverse_test DESTINATION bin)
 
+  # Video -> HDF5 (video_hdf5.h): filter values, and a round trip of a clip the
+  # test encodes. The round trip runs when CLIO_CAE_H5FFMPEG_PLUGIN_DIR names
+  # the directory of libh5ffmpeg_shared.so; otherwise it checks the refusal.
+  if(CLIO_CAE_ENABLE_VIDEO AND TARGET PkgConfig::CAE_FFMPEG)
+    add_executable(cae_video_hdf5_test
+      ${CMAKE_CURRENT_SOURCE_DIR}/video/test_video_hdf5.cc
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../core/src/factory/video_hdf5.cc)
+    target_include_directories(cae_video_hdf5_test PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/../../core/include
+      ${CMAKE_SOURCE_DIR}/context-runtime/test         # simple_test.h
+      ${HDF5_INCLUDE_DIRS})
+    target_link_libraries(cae_video_hdf5_test PRIVATE ctp::cxx
+      PkgConfig::CAE_FFMPEG ${HDF5_LIBRARIES})
+    set_target_properties(cae_video_hdf5_test PROPERTIES
+      CXX_STANDARD 20
+      CXX_STANDARD_REQUIRED ON)
+    add_test(NAME cae_video_hdf5 COMMAND cae_video_hdf5_test)
+    set(CLIO_CAE_H5FFMPEG_PLUGIN_DIR "" CACHE PATH
+        "Directory of libh5ffmpeg_shared.so, for the cae_video_hdf5 round trip")
+    set_tests_properties(cae_video_hdf5 PROPERTIES TIMEOUT 60 LABELS "cae;unit"
+      ENVIRONMENT "HDF5_PLUGIN_PATH=${CLIO_CAE_H5FFMPEG_PLUGIN_DIR}")
+    install(TARGETS cae_video_hdf5_test DESTINATION bin)
+  endif()
+
   # DataverseStage (dataverse_fetch.cc) end to end against a fake Dataverse on
   # 127.0.0.1 inside the test, through the real curl. Nothing leaves the host.
   if(TARGET clio_cae_core_runtime)

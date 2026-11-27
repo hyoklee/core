@@ -10,11 +10,17 @@
 #include <clio_cae/core/factory/dataverse.h>
 #include <clio_cae/core/factory/dataverse_file_assimilator.h>
 #include <clio_cae/core/factory/path_policy.h>
+#ifdef CAE_ENABLE_VIDEO
+#include <clio_cae/core/factory/video_hdf5.h>
+#endif
 #ifdef CLIO_CAE_ENABLE_HDF5
 #include <clio_cae/core/factory/hdf5_file_assimilator.h>
 #endif
 
+#include <fnmatch.h>
+
 #include <cstring>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -36,6 +42,13 @@ bool EndsWith(const std::string &s, const char *suf) {
 [[maybe_unused]] bool IsHdf5Path(const std::string &p) {
   return EndsWith(p, ".h5") || EndsWith(p, ".hdf5") || EndsWith(p, ".he5") ||
          EndsWith(p, ".hdf");
+}
+
+// The same glob rule as dataset_filter: fnmatch(3) with '*' crossing '/'.
+bool MatchesAny(const std::vector<std::string> &globs, const std::string &p) {
+  for (const auto &g : globs)
+    if (fnmatch(g.c_str(), p.c_str(), 0) == 0) return true;
+  return false;
 }
 
 }  // namespace
@@ -60,6 +73,7 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
   size_t skipped_empty = 0;
   std::string manifest;
   std::vector<std::string> obj_inc, obj_exc, h5_inc, h5_exc;
+  std::map<std::string, size_t> transcoded;  // path -> bytes of <path>.hdf5
 
   if (!ParseDataverseUrl(ctx.src, &source, &err)) {
     HLOG(kError, "DataverseFileAssimilator: {}", err);
@@ -92,6 +106,16 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
       CLIO_CO_RETURN;
     }
   }
+
+#ifndef CAE_ENABLE_VIDEO
+  if (!ctx.video_patterns.empty()) {
+    HLOG(kError,
+         "DataverseFileAssimilator: the transfer has a video block, but video "
+         "support is not compiled in (CLIO_CAE_ENABLE_VIDEO)");
+    error_code = -22;
+    CLIO_CO_RETURN;
+  }
+#endif
 
   // Blocking, like the http(s) download: the transfers run on curl children
   // and helper threads while this worker waits.
@@ -139,6 +163,34 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
     child.chunk_size = ctx.chunk_size;
     child.blob_prefix = ctx.blob_prefix;
     int rc = 0;
+#ifdef CAE_ENABLE_VIDEO
+    if (MatchesAny(ctx.video_patterns, o.path)) {
+      VideoHdf5Options vo;
+      vo.width = ctx.video_width;
+      vo.codec = ctx.video_codec;
+      vo.crf = ctx.video_crf;
+      vo.preset = ctx.video_preset;
+      const std::string h5 = o.local + ".hdf5";
+      const VideoHdf5Result vr = VideoToHdf5(o.local, h5, vo);
+      if (!vr.ok) {
+        HLOG(kError, "DataverseFileAssimilator: video {} -> HDF5 failed: {}",
+             o.path, vr.error);
+        error_code = -23;
+        CLIO_CO_RETURN;
+      }
+      HLOG(kInfo,
+           "DataverseFileAssimilator: video {}: {} frames {}x{} -> {} bytes "
+           "of HDF5 ({} bytes of video)",
+           o.path, vr.frames, vr.width, vr.height, vr.bytes_out, vr.bytes_in);
+      // The HDF5 file is ingested whole: its frames stay compressed by the
+      // FFMPEG filter, and a reader decodes them with the same plugin.
+      child.dst = "iowarp::" + tag_prefix + "/" + o.path + ".hdf5";
+      child.src = "file::" + h5;
+      BinaryFileAssimilator bin(cte_client_);
+      CLIO_CO_AWAIT(bin.Schedule(child, rc));
+      transcoded[o.path] = vr.bytes_out;
+    } else
+#endif
 #ifdef CLIO_CAE_ENABLE_HDF5
     if (ctx.format == "hdf5" && IsHdf5Path(o.path)) {
       child.src = "hdf5::" + o.local;
@@ -177,8 +229,12 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
     m << "# " << ctx.src << " (" << staged.version << ")\n"
       << "# path\tsize\tfile_id\tmember\ttag\n";
     for (const auto &o : staged.objects) {
-      m << o.path << '\t' << o.size << '\t' << o.file_id << '\t' << o.member
-        << '\t' << tag_prefix << '/' << o.path << '\n';
+      const auto t = transcoded.find(o.path);
+      const bool video = t != transcoded.end();
+      const std::string ext = video ? ".hdf5" : "";
+      m << o.path << ext << '\t' << (video ? t->second : o.size) << '\t'
+        << o.file_id << '\t'
+        << o.member << '\t' << tag_prefix << '/' << o.path << ext << '\n';
     }
     manifest = m.str();
   }

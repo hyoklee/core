@@ -56,7 +56,7 @@ const std::set<std::string>& KnownTransferKeys() {
   static const std::set<std::string> keys = {
       "src",       "dst",       "format",         "depends_on",
       "range_off", "range_size", "src_token",     "dst_token",
-      "dataset_filter", "run",  "run_out"};
+      "dataset_filter", "run",  "run_out",        "video"};
   return keys;
 }
 
@@ -172,6 +172,48 @@ std::vector<AssimilationCtx> LoadOmni(const std::string& omni_path,
       }
     }
 
+    // Optional video block: transcode matching objects to HDF5 (video_hdf5.h).
+    if (transfer["video"]) {
+      const std::string where = "Transfer " + std::to_string(i + 1);
+      const YAML::Node& video = transfer["video"];
+      if (!video.IsMap()) {
+        throw std::runtime_error(where + ": 'video' must be a map");
+      }
+      static const std::set<std::string> video_keys = {"include", "width",
+                                                       "codec", "crf",
+                                                       "preset"};
+      for (const auto& kv : video) {
+        const std::string key = kv.first.as<std::string>();
+        if (video_keys.count(key) == 0) {
+          throw std::runtime_error(where + ": unknown key 'video." + key +
+                                   "' (include, width, codec, crf, preset)");
+        }
+      }
+      const YAML::Node& inc = video["include"];
+      if (!inc || !inc.IsSequence() || inc.size() == 0) {
+        throw std::runtime_error(
+            where + ": 'video.include' must list the object globs to transcode");
+      }
+      for (size_t j = 0; j < inc.size(); ++j) {
+        ctx.video_patterns.push_back(inc[j].as<std::string>());
+      }
+      if (video["width"]) ctx.video_width = video["width"].as<int>();
+      if (video["codec"]) ctx.video_codec = video["codec"].as<std::string>();
+      if (video["crf"]) ctx.video_crf = video["crf"].as<int>();
+      if (video["preset"]) ctx.video_preset = video["preset"].as<std::string>();
+      if (ctx.video_width < 0) {
+        throw std::runtime_error(where + ": 'video.width' must be >= 0");
+      }
+      if (ctx.video_crf < 0 || ctx.video_crf > 63) {
+        throw std::runtime_error(where + ": 'video.crf' must be 0..63");
+      }
+      if (ctx.video_codec != "x264" && ctx.video_codec != "x265" &&
+          ctx.video_codec != "svtav1") {
+        throw std::runtime_error(where + ": 'video.codec' must be x264, x265 "
+                                 "or svtav1");
+      }
+    }
+
     // Optional run step: a script that turns src into run_out before ingest.
     if (transfer["run"] || transfer["run_out"]) {
       const std::string where = "Transfer " + std::to_string(i + 1);
@@ -202,6 +244,11 @@ std::vector<AssimilationCtx> LoadOmni(const std::string& omni_path,
     HLOG(kInfo, "    format: {}", ctx.format);
     if (runs != nullptr && !runs->empty() && runs->back().transfer == i) {
       HLOG(kInfo, "    run: {} -> {}", runs->back().script, runs->back().out);
+    }
+    if (!ctx.video_patterns.empty()) {
+      HLOG(kInfo, "    video: {} pattern(s) -> HDF5 ({}, crf {}, width {})",
+           ctx.video_patterns.size(), ctx.video_codec, ctx.video_crf,
+           ctx.video_width);
     }
     if (!ctx.src_token.empty()) {
       HLOG(kInfo, "    src_token: <set>");

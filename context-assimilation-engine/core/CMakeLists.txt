@@ -128,6 +128,28 @@ else()
   set(DATAVERSE_ENABLED FALSE)
 endif()
 
+# Video -> HDF5 transcoding for dataverse:// sources (OMNI `video:` block,
+# video_hdf5.h): FFmpeg's libraries decode, HDF5 writes the frames through the
+# FFMPEG HDF5 filter, a plugin loaded at run time from HDF5_PLUGIN_PATH.
+option(CLIO_CAE_ENABLE_VIDEO "Transcode videos to HDF5 in CAE (needs FFmpeg)" OFF)
+set(VIDEO_ENABLED FALSE)
+if(CLIO_CAE_ENABLE_VIDEO)
+  if(NOT (HDF5_ENABLED AND DATAVERSE_ENABLED))
+    message(FATAL_ERROR "CLIO_CAE_ENABLE_VIDEO needs HDF5 (CLIO_CORE_ENABLE_HDF5) "
+                        "and Dataverse support")
+  endif()
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(CAE_FFMPEG REQUIRED IMPORTED_TARGET GLOBAL
+    libavformat libavcodec libavutil libswscale)
+  message(STATUS "CAE video -> HDF5 support: ENABLED (FFmpeg ${CAE_FFMPEG_libavcodec_VERSION})")
+  add_compile_definitions(CAE_ENABLE_VIDEO)
+  list(APPEND RUNTIME_SOURCES src/factory/video_hdf5.cc)
+  list(APPEND RUNTIME_LINK_LIBRARIES PkgConfig::CAE_FFMPEG)
+  set(VIDEO_ENABLED TRUE)
+else()
+  message(STATUS "CAE video -> HDF5 support: DISABLED")
+endif()
+
 # Conditionally add Globus assimilator if enabled
 if(GLOBUS_ENABLED)
   list(APPEND RUNTIME_SOURCES src/factory/globus_file_assimilator.cc)
@@ -248,6 +270,17 @@ if(DATAVERSE_ENABLED)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(cae_dataverse_tool PRIVATE Threads::Threads ZLIB::ZLIB)
   install(TARGETS cae_dataverse_tool DESTINATION bin)
+endif()
+
+# cae_video_hdf5: transcode one video to HDF5 the way a `video:` block does.
+if(VIDEO_ENABLED)
+  add_executable(cae_video_hdf5
+    src/factory/tools/video_hdf5_tool_main.cc
+    src/factory/video_hdf5.cc)
+  target_include_directories(cae_video_hdf5 PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include ${HDF5_INCLUDE_DIRS})
+  target_link_libraries(cae_video_hdf5 PRIVATE PkgConfig::CAE_FFMPEG ${HDF5_LIBRARIES})
+  install(TARGETS cae_video_hdf5 DESTINATION bin)
 endif()
 
 # OMNI parsing, split out of the clio_cae binary so the unit tests can link it

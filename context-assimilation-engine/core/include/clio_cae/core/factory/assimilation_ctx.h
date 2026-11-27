@@ -84,6 +84,16 @@ struct AssimilationCtx {
   std::vector<std::string> include_patterns;  // Glob patterns for datasets to include
   std::vector<std::string> exclude_patterns;  // Glob patterns for datasets to exclude
 
+  // OMNI `video:` block (video_hdf5.h). Selected objects whose path matches one
+  // of video_patterns are transcoded to HDF5 (8-bit luma frames compressed with
+  // the FFMPEG HDF5 filter) and ingested as <path>.hdf5 instead of the video.
+  // Empty: no transcoding. dataverse:// sources only.
+  std::vector<std::string> video_patterns;
+  int video_width = 0;  // output width; 0 keeps the source width
+  std::string video_codec = "x264";
+  int video_crf = 23;
+  std::string video_preset = "medium";
+
   // Default constructor
   AssimilationCtx()
       : range_off(0), range_size(0) {}
@@ -111,7 +121,8 @@ struct AssimilationCtx {
   void serialize(Archive& ar) {
     ar(src, dst, format, depends_on, range_off, range_size, src_token, dst_token,
        include_patterns, exclude_patterns, src_data, s3_region, s3_profile,
-       on_fault, chunk_size, blob_prefix);
+       on_fault, chunk_size, blob_prefix, video_patterns, video_width,
+       video_codec, video_crf, video_preset);
   }
 };
 
