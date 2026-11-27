@@ -5,8 +5,9 @@
  * This file is part of IOWarp Core.
  */
 
-// Video -> HDF5 (video_hdf5.h): the filter values for each codec, and a round
-// trip of a small clip made here with FFmpeg's mpeg4 encoder. The round trip
+// Video -> HDF5 (video_hdf5.h): the filter values for each codec, a round trip
+// of a small clip made here with FFmpeg's mpeg4 encoder, a partial last chunk,
+// and a threaded batch that must match a serial transcode. The round trip
 // needs the FFMPEG HDF5 filter plugin (HDF5_PLUGIN_PATH); without it the test
 // checks only that the transcode refuses with a clear message.
 
@@ -102,7 +103,40 @@ bool MakeClip(const std::string &path) {
   return ok;
 }
 
+// /frames of an HDF5 file written by VideoToHdf5, or empty if it cannot be read.
+std::vector<uint8_t> ReadFrames(const std::string &h5, hsize_t dims[3]) {
+  std::vector<uint8_t> px;
+  hid_t file = H5Fopen(h5.c_str(), H5F_ACC_RDONLY, H5P_DEFAULT);
+  if (file < 0) return px;
+  hid_t set = H5Dopen2(file, "frames", H5P_DEFAULT);
+  hid_t space = H5Dget_space(set);
+  H5Sget_simple_extent_dims(space, dims, nullptr);
+  px.resize(dims[0] * dims[1] * dims[2]);
+  if (H5Dread(set, H5T_NATIVE_UINT8, H5S_ALL, H5S_ALL, H5P_DEFAULT, px.data()) < 0)
+    px.clear();
+  H5Sclose(space);
+  H5Dclose(set);
+  H5Fclose(file);
+  return px;
+}
+
+std::filesystem::path TestDir(const char *name) {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   (std::string(name) + "_" + std::to_string(::getpid()));
+  std::filesystem::create_directories(dir);
+  return dir;
+}
+
 }  // namespace
+
+TEST_CASE("video_hdf5_threads", "[video]") {
+  hbool_t safe = 0;
+  H5is_library_threadsafe(&safe);
+  REQUIRE(cae::VideoHdf5Threads(4, 2) == (safe ? 2 : 1));  // never more than videos
+  REQUIRE(cae::VideoHdf5Threads(0, 100) >= 1);
+  REQUIRE(cae::VideoHdf5Threads(0, 100) <= 16);
+  REQUIRE(cae::VideoHdf5Threads(3, 0) == 1);
+}
 
 TEST_CASE("video_filter_values", "[video]") {
   unsigned cd[11];
@@ -201,6 +235,65 @@ TEST_CASE("video_to_hdf5_round_trip", "[video]") {
   H5Sclose(space);
   H5Dclose(set);
   H5Fclose(file);
+  std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("video_to_hdf5_partial_last_chunk", "[video]") {
+  // 12 frames in chunks of 5: the last chunk holds 2 frames plus 3 of padding.
+  if (!cae::VideoFilterAvailable()) return;
+  const auto dir = TestDir("cae_video_chunks");
+  const std::string clip = (dir / "clip.mp4").string();
+  REQUIRE(MakeClip(clip));
+  cae::VideoHdf5Options opt;
+  opt.width = 32;
+  opt.crf = 10;
+  opt.frames_per_chunk = 5;
+  const auto r = cae::VideoToHdf5(clip, (dir / "c.hdf5").string(), opt);
+  INFO(r.error);
+  REQUIRE(r.ok);
+  hsize_t dims[3] = {0, 0, 0};
+  const std::vector<uint8_t> px = ReadFrames((dir / "c.hdf5").string(), dims);
+  REQUIRE(dims[0] == kFrames);
+  REQUIRE(px.size() == static_cast<size_t>(kFrames) * 24 * 32);
+  double err_sum = 0;
+  for (int t = 0; t < kFrames; ++t)
+    for (int y = 0; y < 24; ++y)
+      for (int x = 0; x < 32; ++x) {
+        double want = 0;
+        for (int dy = 0; dy < 2; ++dy)
+          for (int dx = 0; dx < 2; ++dx)
+            want += Pixel(t, 2 * x + dx, 2 * y + dy) / 4.0;
+        err_sum += std::fabs(px[(t * 24 + y) * 32 + x] - want);
+      }
+  REQUIRE(err_sum / px.size() < 12.0);
+  std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("video_to_hdf5_batch_matches_serial", "[video]") {
+  // Six transcodes on 4 threads give the same frames as one on its own.
+  if (!cae::VideoFilterAvailable()) return;
+  const auto dir = TestDir("cae_video_batch");
+  const std::string clip = (dir / "clip.mp4").string();
+  REQUIRE(MakeClip(clip));
+  cae::VideoHdf5Options opt;
+  opt.width = 32;
+  const auto solo = cae::VideoToHdf5(clip, (dir / "solo.hdf5").string(), opt);
+  REQUIRE(solo.ok);
+  hsize_t dims[3] = {0, 0, 0};
+  const std::vector<uint8_t> want = ReadFrames((dir / "solo.hdf5").string(), dims);
+  REQUIRE(!want.empty());
+  std::vector<cae::VideoHdf5Job> jobs;
+  for (int i = 0; i < 6; ++i)
+    jobs.push_back({clip, (dir / ("b" + std::to_string(i) + ".hdf5")).string()});
+  const auto res = cae::VideoToHdf5Batch(jobs, opt, 4);
+  REQUIRE(res.size() == jobs.size());
+  for (size_t i = 0; i < jobs.size(); ++i) {
+    INFO(res[i].error);
+    REQUIRE(res[i].ok);
+    REQUIRE(res[i].frames == kFrames);
+    hsize_t d[3] = {0, 0, 0};
+    REQUIRE(ReadFrames(jobs[i].h5_path, d) == want);
+  }
   std::filesystem::remove_all(dir);
 }
 

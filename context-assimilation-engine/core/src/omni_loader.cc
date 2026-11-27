@@ -181,7 +181,7 @@ std::vector<AssimilationCtx> LoadOmni(const std::string& omni_path,
       }
       static const std::set<std::string> video_keys = {"include", "width",
                                                        "codec", "crf",
-                                                       "preset"};
+                                                       "preset", "jobs"};
       for (const auto& kv : video) {
         const std::string key = kv.first.as<std::string>();
         if (video_keys.count(key) == 0) {
@@ -201,6 +201,10 @@ std::vector<AssimilationCtx> LoadOmni(const std::string& omni_path,
       if (video["codec"]) ctx.video_codec = video["codec"].as<std::string>();
       if (video["crf"]) ctx.video_crf = video["crf"].as<int>();
       if (video["preset"]) ctx.video_preset = video["preset"].as<std::string>();
+      if (video["jobs"]) ctx.video_jobs = video["jobs"].as<int>();
+      if (ctx.video_jobs < 0) {
+        throw std::runtime_error(where + ": 'video.jobs' must be >= 0 (0 = auto)");
+      }
       if (ctx.video_width < 0) {
         throw std::runtime_error(where + ": 'video.width' must be >= 0");
       }
@@ -246,9 +250,9 @@ std::vector<AssimilationCtx> LoadOmni(const std::string& omni_path,
       HLOG(kInfo, "    run: {} -> {}", runs->back().script, runs->back().out);
     }
     if (!ctx.video_patterns.empty()) {
-      HLOG(kInfo, "    video: {} pattern(s) -> HDF5 ({}, crf {}, width {})",
+      HLOG(kInfo, "    video: {} pattern(s) -> HDF5 ({}, crf {}, width {}, jobs {})",
            ctx.video_patterns.size(), ctx.video_codec, ctx.video_crf,
-           ctx.video_width);
+           ctx.video_width, ctx.video_jobs);
     }
     if (!ctx.src_token.empty()) {
       HLOG(kInfo, "    src_token: <set>");

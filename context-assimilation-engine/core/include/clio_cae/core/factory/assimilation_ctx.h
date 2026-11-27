@@ -93,6 +93,7 @@ struct AssimilationCtx {
   std::string video_codec = "x264";
   int video_crf = 23;
   std::string video_preset = "medium";
+  int video_jobs = 0;  // videos transcoded at once; 0 = auto (video_hdf5.h)
 
   // Default constructor
   AssimilationCtx()
@@ -122,7 +123,7 @@ struct AssimilationCtx {
     ar(src, dst, format, depends_on, range_off, range_size, src_token, dst_token,
        include_patterns, exclude_patterns, src_data, s3_region, s3_profile,
        on_fault, chunk_size, blob_prefix, video_patterns, video_width,
-       video_codec, video_crf, video_preset);
+       video_codec, video_crf, video_preset, video_jobs);
   }
 };
 

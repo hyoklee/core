@@ -504,6 +504,7 @@ if(NOT WIN32 AND ZLIB_FOUND)
   # test encodes. The round trip runs when CLIO_CAE_H5FFMPEG_PLUGIN_DIR names
   # the directory of libh5ffmpeg_shared.so; otherwise it checks the refusal.
   if(CLIO_CAE_ENABLE_VIDEO AND TARGET PkgConfig::CAE_FFMPEG)
+    find_package(Threads REQUIRED)
     add_executable(cae_video_hdf5_test
       ${CMAKE_CURRENT_SOURCE_DIR}/video/test_video_hdf5.cc
       ${CMAKE_CURRENT_SOURCE_DIR}/../../core/src/factory/video_hdf5.cc)
@@ -512,7 +513,7 @@ if(NOT WIN32 AND ZLIB_FOUND)
       ${CMAKE_SOURCE_DIR}/context-runtime/test         # simple_test.h
       ${HDF5_INCLUDE_DIRS})
     target_link_libraries(cae_video_hdf5_test PRIVATE ctp::cxx
-      PkgConfig::CAE_FFMPEG ${HDF5_LIBRARIES})
+      PkgConfig::CAE_FFMPEG ${HDF5_LIBRARIES} ${CMAKE_DL_LIBS} Threads::Threads)
     set_target_properties(cae_video_hdf5_test PROPERTIES
       CXX_STANDARD 20
       CXX_STANDARD_REQUIRED ON)

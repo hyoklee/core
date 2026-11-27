@@ -20,6 +20,7 @@
 #include <fnmatch.h>
 
 #include <cstring>
+#include <chrono>
 #include <map>
 #include <sstream>
 #include <string>
@@ -74,6 +75,9 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
   std::string manifest;
   std::vector<std::string> obj_inc, obj_exc, h5_inc, h5_exc;
   std::map<std::string, size_t> transcoded;  // path -> bytes of <path>.hdf5
+#ifdef CAE_ENABLE_VIDEO
+  std::map<std::string, VideoHdf5Result> videos;  // path -> its transcode
+#endif
 
   if (!ParseDataverseUrl(ctx.src, &source, &err)) {
     HLOG(kError, "DataverseFileAssimilator: {}", err);
@@ -150,6 +154,52 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
     CLIO_CO_RETURN;
   }
 
+#ifdef CAE_ENABLE_VIDEO
+  // Transcode every selected video first, several at a time (video.jobs): the
+  // decode and the filter's encode run outside HDF5, so the threads overlap.
+  if (!ctx.video_patterns.empty()) {
+    std::vector<VideoHdf5Job> jobs;
+    std::vector<std::string> paths;
+    for (const auto &o : staged.objects) {
+      if (o.size > 0 && MatchesAny(ctx.video_patterns, o.path)) {
+        jobs.push_back({o.local, o.local + ".hdf5"});
+        paths.push_back(o.path);
+      }
+    }
+    VideoHdf5Options vo;
+    vo.width = ctx.video_width;
+    vo.codec = ctx.video_codec;
+    vo.crf = ctx.video_crf;
+    vo.preset = ctx.video_preset;
+    const int threads = VideoHdf5Threads(ctx.video_jobs, jobs.size());
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::vector<VideoHdf5Result> res = VideoToHdf5Batch(jobs, vo, threads);
+    const double secs =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    size_t bytes_in = 0, bytes_out = 0;
+    for (size_t i = 0; i < res.size(); ++i) {
+      const VideoHdf5Result &vr = res[i];
+      if (!vr.ok) {
+        HLOG(kError, "DataverseFileAssimilator: video {} -> HDF5 failed: {}",
+             paths[i], vr.error);
+        error_code = -23;
+        CLIO_CO_RETURN;
+      }
+      HLOG(kInfo,
+           "DataverseFileAssimilator: video {}: {} frames {}x{} -> {} bytes "
+           "of HDF5 ({} bytes of video)",
+           paths[i], vr.frames, vr.width, vr.height, vr.bytes_out, vr.bytes_in);
+      bytes_in += vr.bytes_in;
+      bytes_out += vr.bytes_out;
+      videos[paths[i]] = vr;
+    }
+    HLOG(kInfo,
+         "DataverseFileAssimilator: transcoded {} videos ({} -> {} bytes) in "
+         "{:.1f} s with {} threads",
+         res.size(), bytes_in, bytes_out, secs, threads);
+  }
+#endif
+
   // Ingest each staged object into <tag_prefix>/<path>.
   for (size_t i = 0; i < staged.objects.size(); ++i) {
     const DataverseObject &o = staged.objects[i];
@@ -164,31 +214,14 @@ clio::run::TaskResume DataverseFileAssimilator::Schedule(
     child.blob_prefix = ctx.blob_prefix;
     int rc = 0;
 #ifdef CAE_ENABLE_VIDEO
-    if (MatchesAny(ctx.video_patterns, o.path)) {
-      VideoHdf5Options vo;
-      vo.width = ctx.video_width;
-      vo.codec = ctx.video_codec;
-      vo.crf = ctx.video_crf;
-      vo.preset = ctx.video_preset;
-      const std::string h5 = o.local + ".hdf5";
-      const VideoHdf5Result vr = VideoToHdf5(o.local, h5, vo);
-      if (!vr.ok) {
-        HLOG(kError, "DataverseFileAssimilator: video {} -> HDF5 failed: {}",
-             o.path, vr.error);
-        error_code = -23;
-        CLIO_CO_RETURN;
-      }
-      HLOG(kInfo,
-           "DataverseFileAssimilator: video {}: {} frames {}x{} -> {} bytes "
-           "of HDF5 ({} bytes of video)",
-           o.path, vr.frames, vr.width, vr.height, vr.bytes_out, vr.bytes_in);
+    if (videos.count(o.path) != 0) {
       // The HDF5 file is ingested whole: its frames stay compressed by the
       // FFMPEG filter, and a reader decodes them with the same plugin.
       child.dst = "iowarp::" + tag_prefix + "/" + o.path + ".hdf5";
-      child.src = "file::" + h5;
+      child.src = "file::" + o.local + ".hdf5";
       BinaryFileAssimilator bin(cte_client_);
       CLIO_CO_AWAIT(bin.Schedule(child, rc));
-      transcoded[o.path] = vr.bytes_out;
+      transcoded[o.path] = videos[o.path].bytes_out;
     } else
 #endif
 #ifdef CLIO_CAE_ENABLE_HDF5

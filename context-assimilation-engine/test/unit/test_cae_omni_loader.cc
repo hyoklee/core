@@ -232,7 +232,8 @@ TEST_CASE("LoadOmni - video block is read", "[cae][omni][video]") {
       "  - src: dataverse://h/doi:1/X\n    dst: iowarp::v\n    format: hdf5\n"
       "    video:\n"
       "      include: [\"*.mp4\", \"*/clip.avi\"]\n"
-      "      width: 320\n      codec: x265\n      crf: 28\n      preset: slow\n");
+      "      width: 320\n      codec: x265\n      crf: 28\n      preset: slow\n"
+      "      jobs: 8\n");
   std::vector<AssimilationCtx> ctxs = LoadOmni(f.Path());
   REQUIRE(ctxs.size() == 1);
   REQUIRE(ctxs[0].video_patterns.size() == 2);
@@ -241,6 +242,7 @@ TEST_CASE("LoadOmni - video block is read", "[cae][omni][video]") {
   REQUIRE(ctxs[0].video_codec == "x265");
   REQUIRE(ctxs[0].video_crf == 28);
   REQUIRE(ctxs[0].video_preset == "slow");
+  REQUIRE(ctxs[0].video_jobs == 8);
 }
 
 TEST_CASE("LoadOmni - no video block means no transcoding",
@@ -249,6 +251,7 @@ TEST_CASE("LoadOmni - no video block means no transcoding",
   std::vector<AssimilationCtx> ctxs = LoadOmni(f.Path());
   REQUIRE(ctxs[0].video_patterns.empty());
   REQUIRE(ctxs[0].video_codec == "x264");
+  REQUIRE(ctxs[0].video_jobs == 0);  // auto
 }
 
 TEST_CASE("LoadOmni - bad video blocks throw", "[cae][omni][video][error]") {
@@ -264,6 +267,8 @@ TEST_CASE("LoadOmni - bad video blocks throw", "[cae][omni][video][error]") {
                      "'video.crf' must be 0..63"));
   REQUIRE(ThrowsWith(head + "    video:\n      include: [x]\n      width: -2\n",
                      "'video.width' must be >= 0"));
+  REQUIRE(ThrowsWith(head + "    video:\n      include: [x]\n      jobs: -1\n",
+                     "'video.jobs' must be >= 0"));
 }
 
 TEST_CASE("LoadOmni - dataset_filter with only includes",

@@ -144,7 +144,7 @@ if(CLIO_CAE_ENABLE_VIDEO)
   message(STATUS "CAE video -> HDF5 support: ENABLED (FFmpeg ${CAE_FFMPEG_libavcodec_VERSION})")
   add_compile_definitions(CAE_ENABLE_VIDEO)
   list(APPEND RUNTIME_SOURCES src/factory/video_hdf5.cc)
-  list(APPEND RUNTIME_LINK_LIBRARIES PkgConfig::CAE_FFMPEG)
+  list(APPEND RUNTIME_LINK_LIBRARIES PkgConfig::CAE_FFMPEG ${CMAKE_DL_LIBS})
   set(VIDEO_ENABLED TRUE)
 else()
   message(STATUS "CAE video -> HDF5 support: DISABLED")
@@ -279,7 +279,8 @@ if(VIDEO_ENABLED)
     src/factory/video_hdf5.cc)
   target_include_directories(cae_video_hdf5 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include ${HDF5_INCLUDE_DIRS})
-  target_link_libraries(cae_video_hdf5 PRIVATE PkgConfig::CAE_FFMPEG ${HDF5_LIBRARIES})
+  target_link_libraries(cae_video_hdf5 PRIVATE PkgConfig::CAE_FFMPEG
+    ${HDF5_LIBRARIES} ${CMAKE_DL_LIBS})
   install(TARGETS cae_video_hdf5 DESTINATION bin)
 endif()
 

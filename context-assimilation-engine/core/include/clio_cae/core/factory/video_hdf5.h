@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace clio::cae::core {
 
@@ -66,10 +67,29 @@ bool VideoFilterValues(const VideoHdf5Options &opt, int width, int height,
 /** True if the HDF5 library can load the FFMPEG filter (HDF5_PLUGIN_PATH). */
 bool VideoFilterAvailable();
 
-/** Transcode `video_path` into a new HDF5 file at `h5_path` (overwritten). */
+/** Transcode `video_path` into a new HDF5 file at `h5_path` (overwritten).
+ *  Decoding and the filter's encode run in the calling thread, outside HDF5;
+ *  the encoded chunks are then written with H5Dwrite_chunk. Safe to call from
+ *  several threads at once with a thread-safe HDF5. */
 VideoHdf5Result VideoToHdf5(const std::string &video_path,
                             const std::string &h5_path,
                             const VideoHdf5Options &opt);
+
+/** One video of a batch. */
+struct VideoHdf5Job {
+  std::string video_path, h5_path;
+};
+
+/** Threads a batch of `n_videos` would use: `requested`, or with 0 half the
+ *  hardware threads (at most 16); never more than the videos, and 1 if the
+ *  HDF5 library is not thread-safe. */
+int VideoHdf5Threads(int requested, size_t n_videos);
+
+/** Transcode every job, VideoHdf5Threads(threads, jobs.size()) at a time.
+ *  Results are in job order. */
+std::vector<VideoHdf5Result> VideoToHdf5Batch(const std::vector<VideoHdf5Job> &jobs,
+                                              const VideoHdf5Options &opt,
+                                              int threads);
 
 }  // namespace clio::cae::core
 
