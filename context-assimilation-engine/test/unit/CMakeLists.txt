@@ -503,8 +503,39 @@ if(NOT WIN32 AND ZLIB_FOUND)
   # Video -> HDF5 (video_hdf5.h): filter values, and a round trip of a clip the
   # test encodes. The round trip runs when CLIO_CAE_H5FFMPEG_PLUGIN_DIR names
   # the directory of libh5ffmpeg_shared.so; otherwise it checks the refusal.
+  # CLIO_CAE_BUILD_H5FFMPEG_PLUGIN fetches the filter (pinned) and builds that
+  # plugin here, for CI; it then becomes the default plugin directory.
   if(CLIO_CAE_ENABLE_VIDEO AND TARGET PkgConfig::CAE_FFMPEG)
     find_package(Threads REQUIRED)
+    option(CLIO_CAE_BUILD_H5FFMPEG_PLUGIN
+      "Fetch and build the FFMPEG HDF5 filter plugin for the video tests" OFF)
+    set(_h5ffmpeg_built_dir "")
+    if(CLIO_CAE_BUILD_H5FFMPEG_PLUGIN)
+      include(FetchContent)
+      # Sources only: the filter's own CMake project builds the Python wheel.
+      FetchContent_Populate(h5ffmpeg_filter QUIET
+        GIT_REPOSITORY
+          https://github.com/Cai-Lab-at-University-of-Michigan/ffmpeg_HDF5_filter.git
+        GIT_TAG 78f8dfa8b08c2ba610e28e7a5bcce9016b88f723
+        GIT_SHALLOW FALSE
+        SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/h5ffmpeg_filter-src
+        SUBBUILD_DIR ${CMAKE_BINARY_DIR}/_deps/h5ffmpeg_filter-subbuild)
+      set(_h5ffmpeg_src ${CMAKE_BINARY_DIR}/_deps/h5ffmpeg_filter-src/src)
+      set(_h5ffmpeg_built_dir ${CMAKE_BINARY_DIR}/h5ffmpeg_plugin)
+      add_library(h5ffmpeg_shared MODULE
+        ${_h5ffmpeg_src}/ffmpeg_h5filter.c
+        ${_h5ffmpeg_src}/ffmpeg_h5plugin.c
+        ${_h5ffmpeg_src}/ffmpeg_native.c
+        ${_h5ffmpeg_src}/ffmpeg_utils.c)
+      target_include_directories(h5ffmpeg_shared PRIVATE ${HDF5_INCLUDE_DIRS})
+      target_link_libraries(h5ffmpeg_shared PRIVATE PkgConfig::CAE_FFMPEG
+        ${HDF5_LIBRARIES})
+      set_target_properties(h5ffmpeg_shared PROPERTIES
+        PREFIX "lib"
+        C_STANDARD 11
+        C_EXTENSIONS ON
+        LIBRARY_OUTPUT_DIRECTORY ${_h5ffmpeg_built_dir})
+    endif()
     add_executable(cae_video_hdf5_test
       ${CMAKE_CURRENT_SOURCE_DIR}/video/test_video_hdf5.cc
       ${CMAKE_CURRENT_SOURCE_DIR}/../../core/src/factory/video_hdf5.cc)
@@ -517,9 +548,12 @@ if(NOT WIN32 AND ZLIB_FOUND)
     set_target_properties(cae_video_hdf5_test PROPERTIES
       CXX_STANDARD 20
       CXX_STANDARD_REQUIRED ON)
+    if(TARGET h5ffmpeg_shared)
+      add_dependencies(cae_video_hdf5_test h5ffmpeg_shared)
+    endif()
     add_test(NAME cae_video_hdf5 COMMAND cae_video_hdf5_test)
-    set(CLIO_CAE_H5FFMPEG_PLUGIN_DIR "" CACHE PATH
-        "Directory of libh5ffmpeg_shared.so, for the cae_video_hdf5 round trip")
+    set(CLIO_CAE_H5FFMPEG_PLUGIN_DIR "${_h5ffmpeg_built_dir}" CACHE PATH
+        "Directory of libh5ffmpeg_shared.so, for the video round trips")
     set_tests_properties(cae_video_hdf5 PROPERTIES TIMEOUT 60 LABELS "cae;unit"
       ENVIRONMENT "HDF5_PLUGIN_PATH=${CLIO_CAE_H5FFMPEG_PLUGIN_DIR}")
     install(TARGETS cae_video_hdf5_test DESTINATION bin)
@@ -571,6 +605,18 @@ if(NOT WIN32 AND ZLIB_FOUND)
     )
     set_tests_properties(cae_dataverse_ingest PROPERTIES
       LABELS "cae;http;hdf5;msan_skip")
+    # Video builds also ingest an MP4 through the `video:` block.
+    if(CLIO_CAE_ENABLE_VIDEO AND TARGET PkgConfig::CAE_FFMPEG)
+      target_compile_definitions(cae_dataverse_ingest PRIVATE CAE_TEST_VIDEO)
+      target_include_directories(cae_dataverse_ingest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/video)                # make_clip.h
+      target_link_libraries(cae_dataverse_ingest PRIVATE PkgConfig::CAE_FFMPEG)
+      if(TARGET h5ffmpeg_shared)
+        add_dependencies(cae_dataverse_ingest h5ffmpeg_shared)
+      endif()
+      set_property(TEST cae_dataverse_ingest APPEND PROPERTY ENVIRONMENT
+        "HDF5_PLUGIN_PATH=${CLIO_CAE_H5FFMPEG_PLUGIN_DIR}")
+    endif()
   endif()
 endif()
 

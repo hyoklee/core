@@ -11,7 +11,9 @@
 // Covers dataverse_file_assimilator.cc (staging to file:: and ingest into
 // iowarp::, HDF5 members through the HDF5 assimilator and other members as
 // binary, empty members skipped, the manifest blob, and its error paths) and
-// the http(s) -> iowarp:: hand-off in http_file_assimilator.cc.
+// the http(s) -> iowarp:: hand-off in http_file_assimilator.cc. With
+// CAE_TEST_VIDEO (CLIO_CAE_ENABLE_VIDEO builds) a generated MP4 member goes
+// through the OMNI `video:` block as well.
 
 #include <hdf5.h>
 
@@ -21,6 +23,7 @@
 #include <clio_cae/core/factory/assimilation_ctx.h>
 #include <clio_cte/core/core_client.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -32,6 +35,9 @@
 #include "fake_dataverse.h"
 #include "simple_test.h"
 #include "zip_builder.h"
+#ifdef CAE_TEST_VIDEO
+#include "make_clip.h"
+#endif
 
 namespace cae = clio::cae::core;
 using fake_dataverse::FakeDataverse;
@@ -122,9 +128,18 @@ struct World {
                        false);
       b[902] = kReadme;
       b[903] = MakeZip({{"bad.h5", "not an HDF5 file", false}}, false);
-      x.srv->AddDataset("doi:10.5072/FK2/ING",
-                        {{901, "", "Z.zip", true}, {902, "", "README.txt", true}},
-                        b);
+      std::vector<fake_dataverse::DvFile> files = {
+          {901, "", "Z.zip", true}, {902, "", "README.txt", true}};
+#ifdef CAE_TEST_VIDEO
+      const std::string clip = TmpDir() + "/swing.mp4";
+      if (!make_clip::MakeClip(clip)) {
+        std::fprintf(stderr, "cannot encode the test clip\n");
+        std::exit(1);
+      }
+      b[904] = Slurp(clip);
+      files.push_back({904, "", "swing.mp4", true});
+#endif
+      x.srv->AddDataset("doi:10.5072/FK2/ING", files, b);
 
       if (!clio::run::CLIO_INIT(clio::run::RuntimeMode::kClient, true)) {
         std::fprintf(stderr, "CLIO_INIT failed\n");
@@ -146,12 +161,15 @@ struct World {
   /** Run one transfer; its return code (0 on success). */
   int Ingest(const std::string &src, const std::string &dst,
              const std::vector<std::string> &include,
-             const std::string &format = "hdf5") {
+             const std::string &format = "hdf5",
+             const std::vector<std::string> &video = {}) {
     cae::AssimilationCtx ctx;
     ctx.src = src;
     ctx.dst = dst;
     ctx.format = format;
     ctx.include_patterns = include;
+    ctx.video_patterns = video;
+    ctx.video_width = 32;
     auto t = cae_client->AsyncParseOmni(std::vector<cae::AssimilationCtx>{ctx});
     t.Wait();
     return static_cast<int>(t->GetReturnCode());
@@ -263,5 +281,40 @@ TEST_CASE("dataverse_ingest_errors", "[dataverse][ingest]") {
   REQUIRE(w.Ingest(w.base + "/web/903/bad.zip", "iowarp::e4", {"*.zip/*"}) !=
           0);
 }
+
+TEST_CASE("dataverse_ingest_video_refused", "[dataverse][ingest][video]") {
+  // A video block over a file that is not a video fails the transfer: the
+  // transcode fails with video support, and without it the block is refused.
+  auto &w = World::Get();
+  const std::string src = "dataverse::" + w.base + "/doi:10.5072/FK2/ING";
+  REQUIRE(w.Ingest(src, "iowarp::dvv0", {"README.txt"}, "hdf5",
+                   {"README.txt"}) != 0);
+}
+
+#ifdef CAE_TEST_VIDEO
+TEST_CASE("dataverse_ingest_video", "[dataverse][ingest][video]") {
+  // swing.mp4 is stored as swing.mp4.hdf5; README.txt stays a plain file.
+  auto &w = World::Get();
+  const std::string src = "dataverse::" + w.base + "/doi:10.5072/FK2/ING";
+  const int rc = w.Ingest(src, "iowarp::dvv", {"swing.mp4", "README.txt"},
+                          "hdf5", {"*.mp4"});
+  if (H5Zfilter_avail(32030) <= 0) {
+    std::printf("  (no FFMPEG HDF5 plugin on HDF5_PLUGIN_PATH: refusal only)\n");
+    REQUIRE(rc != 0);
+    return;
+  }
+  REQUIRE(rc == 0);
+  const std::string m = Blob("dvv", "manifest");
+  INFO(m);
+  REQUIRE(m.find("swing.mp4.hdf5\t") != std::string::npos);
+  REQUIRE(m.find("\tdvv/swing.mp4.hdf5\n") != std::string::npos);
+  REQUIRE(m.find("README.txt\t" + std::to_string(kReadme.size()) +
+                 "\t902\t\tdvv/README.txt\n") != std::string::npos);
+  REQUIRE(Blob("dvv/swing.mp4.hdf5", "chunk_0").substr(0, 8) ==
+          "\x89HDF\r\n\x1a\n");
+  REQUIRE(Blob("dvv/swing.mp4", "chunk_0").empty());
+  REQUIRE(Blob("dvv/README.txt", "chunk_0") == kReadme);
+}
+#endif
 
 SIMPLE_TEST_MAIN()

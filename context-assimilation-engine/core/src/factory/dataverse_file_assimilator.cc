@@ -17,10 +17,12 @@
 #include <clio_cae/core/factory/hdf5_file_assimilator.h>
 #endif
 
+#ifdef CAE_ENABLE_VIDEO
 #include <fnmatch.h>
+#endif
 
-#include <cstring>
 #include <chrono>
+#include <cstring>
 #include <map>
 #include <sstream>
 #include <string>
@@ -45,12 +47,14 @@ bool EndsWith(const std::string &s, const char *suf) {
          EndsWith(p, ".hdf");
 }
 
+#ifdef CAE_ENABLE_VIDEO
 // The same glob rule as dataset_filter: fnmatch(3) with '*' crossing '/'.
 bool MatchesAny(const std::vector<std::string> &globs, const std::string &p) {
   for (const auto &g : globs)
     if (fnmatch(g.c_str(), p.c_str(), 0) == 0) return true;
   return false;
 }
+#endif
 
 }  // namespace
 
